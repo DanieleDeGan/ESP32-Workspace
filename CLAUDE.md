@@ -431,6 +431,7 @@ SSD1306 + dashboard web con grafici + orario NTP + OTA. Moduli:
 | `sd_logger.h/.cpp` | CSV con rotazione giornaliera in `/logs/YYYY-MM-DD.csv`, contatori in RAM+NVS |
 | `net_ota.h/.cpp` | gemello di quello del C3, variante "server condiviso": espone `net_server()` |
 | `web_ui.h/.cpp` | dashboard + API JSON registrate sul WebServer di `net_ota` |
+| `www/dashboard.html` | dashboard personalizzata, **non compilata**: sorgente della pagina da caricare su SD via `/dashboard-upload` |
 
 **Vincoli e scelte da conoscere**:
 - **Pin**: OLED SDA=GPIO5/SCL=GPIO6, DHT11 su GPIO0, HW-125 con CS=GPIO1
@@ -448,7 +449,10 @@ SSD1306 + dashboard web con grafici + orario NTP + OTA. Moduli:
   SD per rispondere a quelle funzioni.
 - **La dashboard** può essere sovrascritta caricando un `/www/dashboard.html`
   sulla SD; `/dashboard-upload` serve **sempre** la versione in PROGMEM, ed è la
-  via di recupero se quella caricata a mano è rotta.
+  via di recupero se quella caricata a mano è rotta. Il sorgente di quella in
+  uso è versionato in `www/dashboard.html`, ma è **solo** un sorgente: dopo
+  averlo modificato va ri-caricato a mano da `/dashboard-upload`, perché il nodo
+  serve la copia sulla SD e ricompilare il firmware non cambia nulla.
 - **`web_ui` non deve** duplicare stato: legge `settings_get()`, `sd_logger.*`,
   `rtc_time.*`, `comfort_eval()` direttamente; i ganci `app_*()` implementati
   nel `.ino` coprono solo letture correnti e min/max dall'ultimo avvio.

@@ -1098,6 +1098,36 @@ duplica stato: legge direttamente `settings_get()`, `sd_logger.*`, `rtc_time.*`
 e `comfort_eval()`; i ganci `app_*()` implementati nel `.ino` coprono solo le
 letture correnti e i min/max dall'ultimo avvio, che vivono lì.
 
+#### `www/dashboard.html`
+
+Dashboard personalizzata, **non compilata nel firmware**: è il sorgente della
+pagina che si carica da `/dashboard-upload` e che finisce in
+`/www/dashboard.html` sulla microSD, dove `GET /` la preferisce a quella in
+PROGMEM. Consuma solo le API di `web_ui.cpp`, quindi non richiede modifiche al
+firmware. Rispetto alla dashboard di default aggiunge confronto fra due giorni
+sovrapposti, statistiche giornaliere (medie, escursione, % di tempo in comfort,
+copertura del log), storico multi-giorno, sparkline nelle tile e canvas
+scalati sul `devicePixelRatio`.
+
+**Da sapere**:
+- Il file nel repo è **solo il sorgente**: modificarlo non aggiorna il nodo, e
+  nemmeno ricompilare il firmware serve a qualcosa. Va ri-caricato a mano da
+  `/dashboard-upload`.
+- Deve restare **self-contained** (CSS/JS inline, nessuna richiesta esterna): il
+  nodo non fa da proxy, e una risorsa remota sarebbe irraggiungibile da una LAN
+  senza Internet.
+- Le richieste al nodo sono **sequenziali per scelta**, mai `Promise.all`: il
+  `WebServer` del core è sincrono e serve un client alla volta. Vale soprattutto
+  per lo storico multi-giorno, che oggi fa una richiesta per giorno.
+- La % di tempo in comfort è pesata sul tempo, e la soglia oltre cui un salto è
+  considerato lacuna si ricava dalla **mediana degli intervalli presenti nel
+  file**, non da `settings.logIntervalS`: i CSV vecchi conservano il passo con
+  cui furono scritti, quindi legarla alla configurazione corrente faceva
+  scartare per intero ogni giornata registrata a un passo diverso.
+- La formula del comfort è duplicata in JS (stessa di `comfort.h`): serve a
+  ricalcolare lo storico nel browser quando si cambia la banda, senza rete e
+  senza costo per il nodo. Se `comfort.h` cambia, va allineata anche qui.
+
 ---
 
 ## File a livello repository

@@ -1,0 +1,1277 @@
+<!doctype html>
+<!--
+  ====================================================================
+   EnvNode-C3 — dashboard personalizzata
+  ====================================================================
+   Si carica sulla microSD del nodo da  http://<host>.local/dashboard-upload
+   e finisce in  /www/dashboard.html  (vedi WWW_DASHBOARD_PATH in
+   sd_logger.h). Da quel momento GET / serve QUESTO file al posto della
+   dashboard di default in PROGMEM.
+
+   Regole da non violare:
+   - SELF-CONTAINED: CSS e JS inline, nessuna richiesta esterna (niente
+     CDN, niente font remoti). Il nodo non fa da proxy: qualunque risorsa
+     esterna sarebbe irraggiungibile dalla LAN senza Internet e
+     rallenterebbe il caricamento.
+   - Le fetch verso il device sono SEQUENZIALI. Il WebServer del core
+     ESP32 e' sincrono e serve un client alla volta: richieste parallele
+     (Promise.all) lo mettono in coda e fanno scadere i timeout, oltre a
+     rubare tempo a OTA e campionamento.
+   - Nessuna dipendenza da questo file lato firmware: se e' rotto o la SD
+     viene rimossa, / torna automaticamente alla dashboard di default, e
+     /dashboard-upload e' SEMPRE servita da PROGMEM (via di recupero).
+
+   API consumate (tutte dietro la stessa basic-auth, same-origin):
+     GET  /api/stato                  stato corrente
+     GET  /api/giorni                 ["YYYY-MM-DD", ...]
+     GET  /api/giorno?d=YYYY-MM-DD    [[ts_unix, temp_c, hum_pct], ...]
+     GET  /api/scarica?d=...          CSV grezzo
+     POST /api/elimina?d=...          {ok, errore}
+     GET  /api/config                 configurazione
+     POST /api/config?<campi>         {ok, errore}
+
+   Nota sui fusi: i ts sono unix, resi nel fuso del BROWSER (come faceva
+   la dashboard di default). Se il browser e' su un fuso diverso da
+   quello del nodo (settings tz), gli orari appaiono traslati; i file
+   giornalieri restano quelli tagliati dal nodo.
+  ====================================================================
+-->
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EnvNode-C3</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#0e0f11; --card:#16181c; --card2:#1b1e24; --inset:#101216;
+  --line:#242832; --line2:#31363f;
+  --tx:#e7e9ee; --tx2:#98a0ad; --tx3:#666d7a;
+  --temp:#f0a03c; --hum:#4ab8d8; --ok:#4ec98a; --warn:#e6b23c; --bad:#e0655a;
+  --accent:#5b9df9;
+  --r:14px;
+  --shadow:0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:
+    radial-gradient(1100px 480px at 15% -10%, #171a20 0%, transparent 60%),
+    radial-gradient(900px 420px at 95% 0%, #14181d 0%, transparent 55%),
+    var(--bg);
+  color:var(--tx);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-size:15px; line-height:1.45;
+  padding:1rem 1rem 3rem;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1080px;margin:0 auto}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+
+/* ---------- header ---------- */
+header{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin:.4rem 0 1.1rem}
+.brand{display:flex;flex-direction:column;min-width:0;flex:1 1 220px}
+.brand h1{font-size:1.35rem;font-weight:600;letter-spacing:-.02em;margin:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brand .meta{font-size:.76rem;color:var(--tx3)}
+.pill{display:inline-flex;align-items:center;gap:.45rem;font-size:.75rem;
+  background:var(--card);border:1px solid var(--line);border-radius:999px;
+  padding:.32rem .7rem;color:var(--tx2);white-space:nowrap}
+.pill .led{width:7px;height:7px;border-radius:50%;background:var(--tx3);
+  box-shadow:0 0 0 0 rgba(78,201,138,.5)}
+.pill.on .led{background:var(--ok);animation:beat 2.4s ease-out infinite}
+.pill.off .led{background:var(--bad)}
+@keyframes beat{0%{box-shadow:0 0 0 0 rgba(78,201,138,.45)}70%{box-shadow:0 0 0 7px rgba(78,201,138,0)}100%{box-shadow:0 0 0 0 rgba(78,201,138,0)}}
+
+/* ---------- card ---------- */
+.card{background:linear-gradient(180deg,var(--card2),var(--card));
+  border:1px solid var(--line);border-radius:var(--r);padding:1rem 1.1rem;
+  margin-bottom:1rem;box-shadow:var(--shadow)}
+.card>h2{font-size:.7rem;font-weight:600;text-transform:uppercase;
+  letter-spacing:.09em;color:var(--tx3);margin:0 0 .85rem}
+.card>h2 .hint{float:right;text-transform:none;letter-spacing:0;font-weight:400;color:var(--tx3)}
+
+/* ---------- tiles ---------- */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));gap:.75rem}
+/* seconda fila, informazioni di servizio: piu' fitta e meno appariscente, cosi'
+   le tre tile primarie restano allineate su una riga piena invece di spezzarsi */
+.tiles.sec{grid-template-columns:repeat(auto-fit,minmax(175px,1fr));margin-top:.75rem}
+.tiles.sec .tile{padding:.6rem .8rem}
+.tiles.sec .tile .big{font-size:1.15rem;font-weight:500}
+.tile{background:var(--inset);border:1px solid var(--line);border-radius:11px;
+  padding:.8rem .9rem;position:relative;overflow:hidden}
+.tile .lbl{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3)}
+.tile .big{font-size:2rem;font-weight:600;letter-spacing:-.03em;line-height:1.15;margin-top:.15rem}
+.tile .big .u{font-size:.95rem;font-weight:500;color:var(--tx2);margin-left:.15rem;letter-spacing:0}
+.tile .sub{font-size:.73rem;color:var(--tx3);margin-top:.2rem}
+.tile canvas{width:100%;height:34px;display:block;margin-top:.5rem}
+.tile.t .big{color:var(--temp)} .tile.h .big{color:var(--hum)}
+.delta{font-size:.72rem;margin-left:.4rem;color:var(--tx2);font-weight:500}
+.delta.up{color:var(--temp)} .delta.dn{color:var(--hum)} .delta.flat{color:var(--tx3)}
+
+/* comfort gauge */
+.gauge{margin-top:.55rem}
+.gauge .track{height:8px;border-radius:999px;background:#22262e;position:relative;overflow:hidden}
+.gauge .fill{height:100%;border-radius:999px;transition:width .5s ease,background .5s ease}
+.gauge .ticks{position:relative;height:11px;margin-top:.15rem}
+.gauge .ticks i{position:absolute;top:0;font-style:normal;font-size:.6rem;color:var(--tx3);transform:translateX(-50%)}
+
+/* ---------- controls ---------- */
+.bar{display:flex;gap:.55rem;flex-wrap:wrap;align-items:flex-end}
+.fld{display:flex;flex-direction:column;gap:.25rem;flex:0 1 auto;min-width:0}
+.fld label{font-size:.68rem;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3)}
+select,input{background:var(--inset);color:var(--tx);border:1px solid var(--line2);
+  border-radius:9px;padding:.5rem .6rem;font:inherit;font-size:.88rem;
+  font-variant-numeric:tabular-nums;min-width:0;width:100%}
+select:focus,input:focus{outline:none;border-color:var(--accent);
+  box-shadow:0 0 0 3px rgba(91,157,249,.16)}
+button{border:1px solid var(--line2);border-radius:9px;background:var(--card2);
+  color:var(--tx);font:inherit;font-size:.85rem;padding:.5rem .85rem;cursor:pointer;
+  transition:background .15s,border-color .15s}
+button:hover:not(:disabled){background:#232830;border-color:#3d434e}
+button:disabled{opacity:.45;cursor:default}
+button.pri{background:var(--accent);border-color:var(--accent);color:#08111f;font-weight:600}
+button.pri:hover:not(:disabled){background:#74aefa;border-color:#74aefa}
+button.dan{color:#f0a49c;border-color:#4a2b2b}
+button.dan:hover:not(:disabled){background:#3a2020;border-color:#6a3a3a}
+
+/* ---------- stats strip ---------- */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:.55rem;margin-top:.9rem}
+.stat{background:var(--inset);border:1px solid var(--line);border-radius:9px;padding:.5rem .6rem}
+.stat .k{font-size:.63rem;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3)}
+.stat .v{font-size:1.05rem;font-weight:600;margin-top:.1rem;letter-spacing:-.01em}
+
+/* ---------- charts ---------- */
+.chart{width:100%;height:200px;display:block;border-radius:10px;background:var(--inset);
+  border:1px solid var(--line);touch-action:pan-y}
+.chart.tall{height:240px}
+.chart.short{height:150px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:1rem}
+.grid2 .card{margin-bottom:0}
+.legend{display:flex;gap:1rem;flex-wrap:wrap;font-size:.73rem;color:var(--tx2);margin-top:.55rem}
+.legend span{display:inline-flex;align-items:center;gap:.35rem}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+.dash{width:15px;height:0;border-top:2px dashed currentColor;display:inline-block}
+
+/* ---------- misc ---------- */
+.muted{color:var(--tx3);font-size:.76rem;line-height:1.5}
+.msg{font-size:.78rem;margin:.6rem 0 0;min-height:1.1em}
+.msg.ok{color:var(--ok)} .msg.err{color:var(--bad)}
+.prog{height:4px;border-radius:999px;background:#22262e;overflow:hidden;margin-top:.7rem;display:none}
+.prog.on{display:block}
+.prog i{display:block;height:100%;background:var(--accent);width:0;transition:width .2s}
+.rows{display:flex;gap:.8rem;flex-wrap:wrap}
+.rows .fld{flex:1 1 130px}
+footer{display:flex;gap:1.1rem;flex-wrap:wrap;justify-content:center;
+  color:var(--tx3);font-size:.76rem;margin-top:1.6rem;padding-top:1rem;border-top:1px solid var(--line)}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+#tip{position:fixed;z-index:9;pointer-events:none;display:none;
+  background:#0a0c0f;border:1px solid var(--line2);border-radius:8px;
+  padding:.4rem .55rem;font-size:.73rem;line-height:1.5;white-space:nowrap;
+  box-shadow:0 6px 20px rgba(0,0,0,.5);font-variant-numeric:tabular-nums}
+#tip b{font-weight:600}
+@media(max-width:520px){
+  body{padding:.7rem .7rem 2.5rem;font-size:14px}
+  .card{padding:.85rem .8rem}
+  .tile .big{font-size:1.7rem}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="brand">
+    <h1 id="hNome">EnvNode-C3</h1>
+    <div class="meta" id="hMeta">connessione…</div>
+  </div>
+  <span class="pill" id="pLink"><span class="led"></span><span id="pLinkTx">…</span></span>
+  <span class="pill" id="pOra">—</span>
+</header>
+
+<!-- ======================= STATO ======================= -->
+<section class="card">
+  <h2>Adesso <span class="hint" id="hUpd"></span></h2>
+  <div class="tiles">
+
+    <div class="tile t">
+      <div class="lbl">Temperatura</div>
+      <div class="big num"><span id="vT">--</span><span class="u">°C</span><span class="delta" id="dT"></span></div>
+      <div class="sub" id="sT">&nbsp;</div>
+      <canvas id="spT"></canvas>
+    </div>
+
+    <div class="tile h">
+      <div class="lbl">Umidità</div>
+      <div class="big num"><span id="vH">--</span><span class="u">%</span><span class="delta" id="dH"></span></div>
+      <div class="sub" id="sH">&nbsp;</div>
+      <canvas id="spH"></canvas>
+    </div>
+
+    <div class="tile">
+      <div class="lbl">Comfort</div>
+      <div class="big num"><span id="vC">--</span></div>
+      <div class="sub" id="sC">&nbsp;</div>
+      <div class="gauge">
+        <div class="track"><div class="fill" id="gFill" style="width:0"></div></div>
+        <div class="ticks"><i style="left:60%">60</i><i style="left:80%">80</i></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="tiles sec">
+    <div class="tile">
+      <div class="lbl">microSD</div>
+      <div class="big num"><span id="vSD">--</span></div>
+      <div class="sub" id="sSD">&nbsp;</div>
+      <div class="gauge"><div class="track"><div class="fill" id="gSD" style="width:0;background:var(--accent)"></div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="lbl">Rete</div>
+      <div class="big num"><span id="vNet">--</span></div>
+      <div class="sub" id="sNet">&nbsp;</div>
+    </div>
+
+    <div class="tile">
+      <div class="lbl">Sistema</div>
+      <div class="big num"><span id="vUp">--</span></div>
+      <div class="sub" id="sSys">&nbsp;</div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= GIORNO ======================= -->
+<section class="card">
+  <h2>Giorno <span class="hint">← → per cambiare</span></h2>
+  <div class="bar">
+    <div class="fld" style="flex:1 1 150px"><label for="selA">Giorno</label>
+      <select id="selA"></select></div>
+    <div class="fld" style="flex:1 1 150px"><label for="selB">Confronta con</label>
+      <select id="selB"><option value="">— nessuno —</option></select></div>
+    <button id="bRefresh">Ricarica</button>
+    <button id="bCsv">Scarica CSV</button>
+    <button id="bDel" class="dan">Elimina</button>
+  </div>
+  <div class="stats" id="stats"></div>
+  <p class="msg" id="mDay"></p>
+</section>
+
+<div class="grid2">
+  <section class="card">
+    <h2>Temperatura</h2>
+    <canvas class="chart" id="cT"></canvas>
+    <div class="legend" id="lgT"></div>
+  </section>
+  <section class="card">
+    <h2>Umidità</h2>
+    <canvas class="chart" id="cH"></canvas>
+    <div class="legend" id="lgH"></div>
+  </section>
+</div>
+
+<div class="grid2" style="margin-top:1rem">
+  <section class="card">
+    <h2>Comfort nel tempo</h2>
+    <canvas class="chart" id="cS"></canvas>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--ok)"></i>≥80 confortevole</span>
+      <span><i class="dot" style="background:var(--warn)"></i>60–79 accettabile</span>
+      <span><i class="dot" style="background:var(--bad)"></i>&lt;60 scomodo</span>
+    </div>
+  </section>
+  <section class="card">
+    <h2>Temperatura / umidità <span class="hint">traiettoria del giorno</span></h2>
+    <canvas class="chart" id="cXY"></canvas>
+    <div class="legend">
+      <span><i class="dash" style="color:var(--tx2)"></i>banda di comfort</span>
+      <span><i class="dot" style="background:var(--ok)"></i>dentro</span>
+      <span><i class="dot" style="background:var(--bad)"></i>fuori</span>
+    </div>
+  </section>
+</div>
+
+<!-- ======================= STORICO ======================= -->
+<section class="card" style="margin-top:1rem">
+  <h2>Storico multi-giorno</h2>
+  <div class="bar">
+    <div class="fld" style="flex:0 1 130px"><label for="selN">Ultimi</label>
+      <select id="selN">
+        <option value="7" selected>7 giorni</option>
+        <option value="14">14 giorni</option>
+        <option value="30">30 giorni</option>
+      </select></div>
+    <button id="bHist" class="pri">Carica storico</button>
+    <button id="bHistStop" disabled>Interrompi</button>
+  </div>
+  <div class="prog" id="pHist"><i></i></div>
+  <p class="msg" id="mHist">Una richiesta per giorno, in sequenza: su tanti giorni ci vuole un po'.</p>
+  <div id="histBox" hidden>
+    <canvas class="chart tall" id="cHistT" style="margin-top:.9rem"></canvas>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--temp)"></i>escursione temperatura (min–max)</span>
+      <span><i class="dot" style="background:#fff"></i>media</span>
+    </div>
+    <canvas class="chart short" id="cHistC" style="margin-top:.9rem"></canvas>
+    <div class="legend"><span>% di tempo dentro la banda di comfort, giorno per giorno</span></div>
+  </div>
+</section>
+
+<!-- ======================= IMPOSTAZIONI ======================= -->
+<section class="card">
+  <h2>Impostazioni</h2>
+  <div class="rows">
+    <div class="fld"><label for="fNodo">Nome nodo</label><input id="fNodo" maxlength="23"></div>
+    <div class="fld"><label for="fLog">Intervallo log (s)</label><input id="fLog" type="number" min="5" max="3600"></div>
+    <div class="fld"><label for="fPage">Rotazione OLED (s)</label><input id="fPage" type="number" min="2" max="30"></div>
+  </div>
+  <div class="rows" style="margin-top:.7rem">
+    <div class="fld"><label for="fTMin">Temp min (°C)</label><input id="fTMin" type="number" step="0.5"></div>
+    <div class="fld"><label for="fTMax">Temp max (°C)</label><input id="fTMax" type="number" step="0.5"></div>
+    <div class="fld"><label for="fHMin">Umid. min (%)</label><input id="fHMin" type="number" step="1"></div>
+    <div class="fld"><label for="fHMax">Umid. max (%)</label><input id="fHMax" type="number" step="1"></div>
+  </div>
+  <div class="rows" style="margin-top:.7rem">
+    <div class="fld" style="flex:1 1 100%"><label for="fTz">Fuso orario (stringa POSIX TZ)</label><input id="fTz"></div>
+  </div>
+  <div class="bar" style="margin-top:.85rem">
+    <button id="bSave" class="pri">Applica</button>
+    <button id="bReload">Rileggi dal nodo</button>
+  </div>
+  <p class="msg" id="mCfg"></p>
+  <p class="muted" style="margin-top:.7rem">Cambiare la banda di comfort ricolora subito anche
+  lo storico già scaricato: il punteggio si ricalcola nel browser, non sul nodo.</p>
+</section>
+
+<footer>
+  <a href="/update">Aggiorna firmware</a>
+  <a href="/dashboard-upload">Dashboard personalizzata / ripristino</a>
+  <span id="fwTag"></span>
+</footer>
+
+</div>
+<div id="tip"></div>
+
+<script>
+"use strict";
+/* =====================================================================
+   Stato globale + utilita'
+   ===================================================================== */
+const $ = id => document.getElementById(id);
+const tip = $('tip');
+
+const ST = {
+  cfg:  null,          // /api/config
+  days: [],            // elenco date, crescente
+  rowsA: [], rowsB: [],// [[ts,t,h],...] ordinate
+  dayA: '', dayB: '',
+  hist: [],            // [{date,tMin,tAvg,tMax,hMin,hAvg,hMax,pct,n}]
+  // Cache delle RIGHE, non delle statistiche gia' calcolate: la % di comfort
+  // dipende dalla banda, che si cambia da questa stessa pagina. Tenendo le
+  // righe, un cambio di soglie ricalcola lo storico all'istante e senza rete
+  // (e' quello che promette la nota in fondo alle impostazioni). 30 giorni di
+  // log a 60 s sono ~43k terne: irrilevante per un browser.
+  rowsCache: new Map(),// date -> [[ts,t,h],...]
+  histAbort: false,
+  online: false
+};
+
+const CSS = k => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
+const COL = {};
+function readColors(){
+  ['--temp','--hum','--ok','--warn','--bad','--tx2','--tx3','--line','--line2','--accent','--inset']
+    .forEach(k => COL[k.slice(2)] = CSS(k));
+}
+readColors();
+
+const n1 = v => (v==null||isNaN(v)) ? '--' : v.toFixed(1).replace('.', ',');
+const n0 = v => (v==null||isNaN(v)) ? '--' : Math.round(v).toString();
+
+function hhmm(ts){
+  return new Date(ts*1000).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
+}
+function dmy(ts){
+  return new Date(ts*1000).toLocaleDateString('it-IT',{day:'2-digit',month:'2-digit'});
+}
+function uptimeStr(s){
+  const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60);
+  if(d) return d+'g '+h+'h';
+  if(h) return h+'h '+m+'m';
+  return m+'m';
+}
+// Mezzanotte locale del giorno a cui appartiene ts (per l'asse "ora del giorno").
+function midnightOf(ts){
+  const d = new Date(ts*1000);
+  d.setHours(0,0,0,0);
+  return Math.floor(d.getTime()/1000);
+}
+function withAlpha(hex,a){
+  const h = hex.replace('#','');
+  const v = h.length===3 ? h.split('').map(c=>c+c).join('') : h;
+  const n = parseInt(v,16);
+  return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+a+')';
+}
+
+/* Stessa formula di comfort.h (duplicata lato browser apposta: ricalcolare
+   qui lo storico contro le soglie correnti costa zero al nodo). */
+function comfortEval(t,h,c){
+  const distT = t<c.t_min ? c.t_min-t : (t>c.t_max ? t-c.t_max : 0);
+  const distH = h<c.h_min ? c.h_min-h : (h>c.h_max ? h-c.h_max : 0);
+  const pT = Math.min(distT/6*50, 50);
+  const pH = Math.min(distH/30*50, 50);
+  const score = Math.max(0, Math.min(100, Math.round(100-pT-pH)));
+  const inRange = t>=c.t_min && t<=c.t_max && h>=c.h_min && h<=c.h_max;
+  let label;
+  if (score>=80) label='Confortevole';
+  else if (score>=60) label='Accettabile';
+  else if (pT>0 && pH>0) label='Scomodo';
+  else if (pT>0) label = t<c.t_min ? 'Troppo freddo' : 'Troppo caldo';
+  else label = h<c.h_min ? 'Troppo secco' : 'Troppo umido';
+  return {score,label,inRange};
+}
+const scoreColor = s => s>=80 ? COL.ok : (s>=60 ? COL.warn : COL.bad);
+
+/* Le richieste al nodo passano tutte da qui: il WebServer del core e'
+   sincrono, quindi niente parallelismo e un timeout esplicito (una fetch
+   appesa bloccherebbe la coda delle successive). */
+async function api(path, opts){
+  const o = Object.assign({cache:'no-store'}, opts||{});
+  const ac = new AbortController();
+  const to = setTimeout(()=>ac.abort(), (o.timeout||20000));
+  o.signal = ac.signal;
+  try{
+    const r = await fetch(path, o);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    return await r.json();
+  } finally { clearTimeout(to); }
+}
+function setMsg(el, text, kind){
+  el.textContent = text || '';
+  el.className = 'msg' + (kind ? ' '+kind : '');
+}
+
+/* =====================================================================
+   Canvas: nitidezza su schermi HiDPI + ridisegno su resize + hover
+   ===================================================================== */
+const RO = new ResizeObserver(es => es.forEach(e => {
+  if (e.target.__render) e.target.__render();
+}));
+
+function fit(cv){
+  const dpr = window.devicePixelRatio || 1;
+  const r = cv.getBoundingClientRect();
+  const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
+  if (cv.width !== Math.round(w*dpr) || cv.height !== Math.round(h*dpr)){
+    cv.width = Math.round(w*dpr); cv.height = Math.round(h*dpr);
+  }
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  return {ctx,w,h};
+}
+function empty(ctx,w,h,txt){
+  ctx.fillStyle = COL.tx3; ctx.font = '12px system-ui';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(txt, w/2, h/2);
+  ctx.textAlign='start'; ctx.textBaseline='alphabetic';
+}
+function showTip(ev, html){
+  tip.innerHTML = html;
+  tip.style.display = 'block';
+  const r = tip.getBoundingClientRect();
+  let x = ev.clientX + 14, y = ev.clientY - r.height - 10;
+  if (x + r.width > innerWidth - 8)  x = ev.clientX - r.width - 14;
+  if (y < 8) y = ev.clientY + 16;
+  tip.style.left = x+'px'; tip.style.top = y+'px';
+}
+const hideTip = () => { tip.style.display='none'; };
+
+/* Un grafico = una funzione che ridisegna leggendo lo stato corrente.
+   Cambiati i dati basta chiamare cv.__render(). */
+function mount(cv, drawFn){
+  cv.__hover = null;
+  cv.__render = () => drawFn(cv, cv.__hover);
+  RO.observe(cv);
+  cv.addEventListener('pointermove', ev => {
+    const r = cv.getBoundingClientRect();
+    cv.__hover = {x: ev.clientX-r.left, y: ev.clientY-r.top, ev};
+    cv.__render();
+  });
+  cv.addEventListener('pointerleave', () => { cv.__hover=null; hideTip(); cv.__render(); });
+  cv.__render();
+}
+
+/* =====================================================================
+   Grafico a linee temporale (una o due serie sovrapposte)
+   ===================================================================== */
+function drawTime(cv, hover, opts){
+  const {ctx,w,h} = fit(cv);
+  const S = (opts.series||[]).filter(s => s.pts && s.pts.length);
+  if (!S.length){ empty(ctx,w,h,opts.empty||'nessun dato per questo giorno'); return; }
+
+  const pad = {l:44, r:12, t:14, b:24};
+  let xMin=Infinity, xMax=-Infinity, yMin=Infinity, yMax=-Infinity;
+  S.forEach(s => s.pts.forEach(p => {
+    if(p.x<xMin)xMin=p.x; if(p.x>xMax)xMax=p.x;
+    if(p.y<yMin)yMin=p.y; if(p.y>yMax)yMax=p.y;
+  }));
+  if (opts.band){ yMin=Math.min(yMin,opts.band.min); yMax=Math.max(yMax,opts.band.max); }
+  if (opts.yFixed){ yMin=opts.yFixed[0]; yMax=opts.yFixed[1]; }
+  else { const s=(yMax-yMin)||2; yMin-=s*.14; yMax+=s*.14; }
+  if (xMax<=xMin) xMax = xMin+3600;
+
+  const X = x => pad.l + (w-pad.l-pad.r)*(x-xMin)/(xMax-xMin);
+  const Y = y => h-pad.b - (h-pad.t-pad.b)*(y-yMin)/(yMax-yMin);
+  const dec = opts.dec==null ? 1 : opts.dec;
+
+  // banda di comfort
+  if (opts.band){
+    ctx.fillStyle = withAlpha(COL.ok, .07);
+    const yTop = Y(Math.min(opts.band.max, yMax)), yBot = Y(Math.max(opts.band.min, yMin));
+    ctx.fillRect(pad.l, yTop, w-pad.l-pad.r, yBot-yTop);
+    ctx.strokeStyle = withAlpha(COL.ok,.28); ctx.lineWidth=1; ctx.setLineDash([3,3]);
+    [opts.band.min, opts.band.max].forEach(v => {
+      if(v<yMin||v>yMax) return;
+      ctx.beginPath(); ctx.moveTo(pad.l, Y(v)+.5); ctx.lineTo(w-pad.r, Y(v)+.5); ctx.stroke();
+    });
+    ctx.setLineDash([]);
+  }
+
+  // griglia + asse Y
+  ctx.font = '10px system-ui'; ctx.lineWidth = 1;
+  for (let i=0;i<=4;i++){
+    const gy = Math.round(pad.t + (h-pad.t-pad.b)*i/4) + .5;
+    ctx.strokeStyle = COL.line;
+    ctx.beginPath(); ctx.moveTo(pad.l, gy); ctx.lineTo(w-pad.r, gy); ctx.stroke();
+    ctx.fillStyle = COL.tx3; ctx.textAlign='right'; ctx.textBaseline='middle';
+    ctx.fillText((yMax-(yMax-yMin)*i/4).toFixed(dec), pad.l-6, gy);
+  }
+
+  // asse X: etichette orarie
+  const nT = w<420 ? 3 : 5;
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillStyle=COL.tx3;
+  for (let i=0;i<=nT;i++){
+    const xv = xMin + (xMax-xMin)*i/nT;
+    ctx.fillText(hhmm(opts.ref + xv), Math.min(w-pad.r-14, Math.max(pad.l+14, X(xv))), h-pad.b+6);
+  }
+  ctx.textAlign='start'; ctx.textBaseline='alphabetic';
+
+  // serie
+  S.forEach(s => {
+    const path = () => {
+      ctx.beginPath();
+      s.pts.forEach((p,i) => i ? ctx.lineTo(X(p.x),Y(p.y)) : ctx.moveTo(X(p.x),Y(p.y)));
+    };
+    if (s.fill){
+      const g = ctx.createLinearGradient(0, pad.t, 0, h-pad.b);
+      g.addColorStop(0, withAlpha(s.color,.30));
+      g.addColorStop(1, withAlpha(s.color,0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.moveTo(X(s.pts[0].x), h-pad.b);
+      s.pts.forEach(p => ctx.lineTo(X(p.x), Y(p.y)));
+      ctx.lineTo(X(s.pts[s.pts.length-1].x), h-pad.b);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = s.width || 2;
+    ctx.lineJoin='round'; ctx.lineCap='round';
+    ctx.setLineDash(s.dash || []);
+    path(); ctx.stroke();
+    ctx.setLineDash([]);
+  });
+
+  // crosshair + tooltip
+  if (hover && hover.x>=pad.l && hover.x<=w-pad.r){
+    const xv = xMin + (xMax-xMin)*(hover.x-pad.l)/(w-pad.l-pad.r);
+    const hits = [];
+    S.forEach(s => {
+      let best=null, bd=Infinity;
+      s.pts.forEach(p => { const d=Math.abs(p.x-xv); if(d<bd){bd=d;best=p;} });
+      if (best) hits.push({s,p:best});
+    });
+    if (hits.length){
+      const px = X(hits[0].p.x);
+      ctx.strokeStyle = COL.line2; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(px+.5, pad.t); ctx.lineTo(px+.5, h-pad.b); ctx.stroke();
+      ctx.setLineDash([]);
+      hits.forEach(hi => {
+        ctx.fillStyle = hi.s.color;
+        ctx.beginPath(); ctx.arc(X(hi.p.x), Y(hi.p.y), 3.6, 0, 6.284); ctx.fill();
+        ctx.strokeStyle = COL.inset; ctx.lineWidth=2; ctx.stroke();
+      });
+      showTip(hover.ev, hits.map(hi =>
+        '<span style="color:'+hi.s.color+'">&#9679;</span> '+
+        (hi.s.name ? hi.s.name+' ' : '')+
+        '<b>'+hi.p.y.toFixed(dec)+(opts.unit||'')+'</b> · '+hhmm(hi.p.ts)
+      ).join('<br>'));
+    }
+  }
+}
+
+/* =====================================================================
+   Scatter temperatura/umidita' con banda e traiettoria
+   ===================================================================== */
+function drawScatter(cv, hover){
+  const {ctx,w,h} = fit(cv);
+  const c = ST.cfg, rows = ST.rowsA;
+  if (!c || !rows.length){ empty(ctx,w,h,'nessun dato per questo giorno'); return; }
+
+  const pad = {l:42, r:14, t:14, b:28};
+  const ts = rows.map(r=>r[1]), hs = rows.map(r=>r[2]);
+  const rng = (arr, extra) => {
+    const a = arr.concat(extra);
+    let mn=Math.min.apply(null,a), mx=Math.max.apply(null,a);
+    if (mn===mx){ mn-=1; mx+=1; }
+    const p=(mx-mn)*.12; return [mn-p, mx+p];
+  };
+  const [x0,x1] = rng(ts, [c.t_min, c.t_max]);
+  const [y0,y1] = rng(hs, [c.h_min, c.h_max]);
+  const X = v => pad.l + (w-pad.l-pad.r)*(v-x0)/(x1-x0);
+  const Y = v => h-pad.b - (h-pad.t-pad.b)*(v-y0)/(y1-y0);
+
+  // griglia
+  ctx.font='10px system-ui'; ctx.lineWidth=1;
+  for (let i=0;i<=4;i++){
+    const gy = Math.round(pad.t+(h-pad.t-pad.b)*i/4)+.5;
+    ctx.strokeStyle=COL.line;
+    ctx.beginPath(); ctx.moveTo(pad.l,gy); ctx.lineTo(w-pad.r,gy); ctx.stroke();
+    ctx.fillStyle=COL.tx3; ctx.textAlign='right'; ctx.textBaseline='middle';
+    ctx.fillText((y1-(y1-y0)*i/4).toFixed(0), pad.l-6, gy);
+  }
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  for (let i=0;i<=4;i++){
+    const xv = x0+(x1-x0)*i/4;
+    ctx.fillText(xv.toFixed(1), Math.min(w-pad.r-12, Math.max(pad.l+12, X(xv))), h-pad.b+6);
+  }
+  ctx.textAlign='start'; ctx.textBaseline='alphabetic';
+  // unita' sul lato sinistro: a destra si sovrapporrebbero all'ultimo tick
+  ctx.fillStyle=COL.tx3;
+  ctx.fillText('%', 4, pad.t+4);
+  ctx.fillText('°C', 4, h-5);
+
+  // banda di comfort
+  ctx.fillStyle = withAlpha(COL.ok,.07);
+  ctx.fillRect(X(c.t_min), Y(c.h_max), X(c.t_max)-X(c.t_min), Y(c.h_min)-Y(c.h_max));
+  ctx.strokeStyle = withAlpha(COL.tx2,.5); ctx.setLineDash([4,3]); ctx.lineWidth=1;
+  ctx.strokeRect(X(c.t_min), Y(c.h_max), X(c.t_max)-X(c.t_min), Y(c.h_min)-Y(c.h_max));
+  ctx.setLineDash([]);
+
+  // traiettoria temporale, molto tenue
+  ctx.strokeStyle = withAlpha(COL.tx2,.16); ctx.lineWidth=1; ctx.beginPath();
+  rows.forEach((r,i) => i ? ctx.lineTo(X(r[1]),Y(r[2])) : ctx.moveTo(X(r[1]),Y(r[2])));
+  ctx.stroke();
+
+  // punti (i piu' recenti piu' opachi)
+  rows.forEach((r,i) => {
+    const e = comfortEval(r[1], r[2], c);
+    const a = .35 + .65*(i/Math.max(1,rows.length-1));
+    ctx.fillStyle = withAlpha(e.inRange ? COL.ok : COL.bad, a);
+    ctx.beginPath(); ctx.arc(X(r[1]), Y(r[2]), 3.4, 0, 6.284); ctx.fill();
+  });
+
+  if (hover){
+    let best=null, bd=Infinity;
+    rows.forEach(r => {
+      const dx=X(r[1])-hover.x, dy=Y(r[2])-hover.y, d=dx*dx+dy*dy;
+      if(d<bd){bd=d;best=r;}
+    });
+    if (best && bd < 40*40){
+      const e = comfortEval(best[1], best[2], c);
+      ctx.strokeStyle='#fff'; ctx.lineWidth=1.6;
+      ctx.beginPath(); ctx.arc(X(best[1]), Y(best[2]), 6.5, 0, 6.284); ctx.stroke();
+      showTip(hover.ev,
+        '<b>'+n1(best[1])+' °C · '+n0(best[2])+' %</b><br>'+
+        hhmm(best[0])+' · <span style="color:'+scoreColor(e.score)+'">'+e.label+' ('+e.score+')</span>');
+    } else hideTip();
+  }
+}
+
+/* =====================================================================
+   Sparkline nelle tile
+   ===================================================================== */
+function sparkline(cv, vals, color){
+  const {ctx,w,h} = fit(cv);
+  if (!vals || vals.length<2) return;
+  let mn=Math.min.apply(null,vals), mx=Math.max.apply(null,vals);
+  if (mn===mx){ mn-=.5; mx+=.5; }
+  const X = i => (w-2)*i/(vals.length-1) + 1;
+  const Y = v => h-3 - (h-7)*(v-mn)/(mx-mn);
+  const g = ctx.createLinearGradient(0,0,0,h);
+  g.addColorStop(0, withAlpha(color,.35)); g.addColorStop(1, withAlpha(color,0));
+  ctx.fillStyle=g; ctx.beginPath(); ctx.moveTo(X(0),h);
+  vals.forEach((v,i)=>ctx.lineTo(X(i),Y(v)));
+  ctx.lineTo(X(vals.length-1),h); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle=color; ctx.lineWidth=1.5; ctx.lineJoin='round'; ctx.beginPath();
+  vals.forEach((v,i)=> i?ctx.lineTo(X(i),Y(v)):ctx.moveTo(X(i),Y(v)));
+  ctx.stroke();
+  ctx.fillStyle=color;
+  ctx.beginPath(); ctx.arc(X(vals.length-1), Y(vals[vals.length-1]), 2.2, 0, 6.284); ctx.fill();
+}
+
+/* =====================================================================
+   Storico: barre min-max per giorno + % comfort
+   ===================================================================== */
+function drawHistRange(cv, hover){
+  const {ctx,w,h} = fit(cv);
+  const D = ST.hist;
+  if (!D.length){ empty(ctx,w,h,'storico non caricato'); return; }
+  const pad = {l:42, r:12, t:14, b:26};
+  let mn=Infinity, mx=-Infinity;
+  D.forEach(d=>{ if(d.tMin<mn)mn=d.tMin; if(d.tMax>mx)mx=d.tMax; });
+  if (ST.cfg){ mn=Math.min(mn,ST.cfg.t_min); mx=Math.max(mx,ST.cfg.t_max); }
+  const s=(mx-mn)||2; mn-=s*.12; mx+=s*.12;
+  const slot = (w-pad.l-pad.r)/D.length;
+  const bw = Math.min(20, slot*.45);
+  const X = i => pad.l + slot*(i+.5);
+  const Y = v => h-pad.b - (h-pad.t-pad.b)*(v-mn)/(mx-mn);
+
+  if (ST.cfg){
+    ctx.fillStyle = withAlpha(COL.ok,.07);
+    ctx.fillRect(pad.l, Y(ST.cfg.t_max), w-pad.l-pad.r, Y(ST.cfg.t_min)-Y(ST.cfg.t_max));
+  }
+  ctx.font='10px system-ui'; ctx.lineWidth=1;
+  for (let i=0;i<=4;i++){
+    const gy=Math.round(pad.t+(h-pad.t-pad.b)*i/4)+.5;
+    ctx.strokeStyle=COL.line;
+    ctx.beginPath(); ctx.moveTo(pad.l,gy); ctx.lineTo(w-pad.r,gy); ctx.stroke();
+    ctx.fillStyle=COL.tx3; ctx.textAlign='right'; ctx.textBaseline='middle';
+    ctx.fillText((mx-(mx-mn)*i/4).toFixed(1), pad.l-6, gy);
+  }
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  const every = Math.ceil(D.length / Math.max(2, Math.floor((w-pad.l-pad.r)/54)));
+  D.forEach((d,i)=>{
+    if (i%every) return;
+    ctx.fillStyle=COL.tx3;
+    ctx.fillText(d.date.slice(8)+'/'+d.date.slice(5,7), X(i), h-pad.b+6);
+  });
+  ctx.textAlign='start'; ctx.textBaseline='alphabetic';
+
+  D.forEach((d,i)=>{
+    const yT=Y(d.tMax), yB=Y(d.tMin);
+    const g = ctx.createLinearGradient(0,yT,0,yB);
+    g.addColorStop(0, withAlpha(COL.temp,.85)); g.addColorStop(1, withAlpha(COL.temp,.38));
+    ctx.fillStyle=g;
+    const r=Math.min(bw/2, (yB-yT)/2);
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(X(i)-bw/2, yT, bw, Math.max(2,yB-yT), r);
+    else ctx.rect(X(i)-bw/2, yT, bw, Math.max(2,yB-yT));
+    ctx.fill();
+    ctx.fillStyle='#fff';
+    ctx.beginPath(); ctx.arc(X(i), Y(d.tAvg), 2.4, 0, 6.284); ctx.fill();
+  });
+
+  if (hover){
+    const i = Math.round((hover.x-pad.l)/slot - .5);
+    if (i>=0 && i<D.length){
+      const d=D[i];
+      ctx.strokeStyle=COL.line2; ctx.lineWidth=1;
+      ctx.strokeRect(X(i)-slot/2, pad.t, slot, h-pad.t-pad.b);
+      showTip(hover.ev,
+        '<b>'+d.date+'</b><br>'+
+        '<span style="color:'+COL.temp+'">&#9679;</span> T '+n1(d.tMin)+' / <b>'+n1(d.tAvg)+'</b> / '+n1(d.tMax)+' °C<br>'+
+        '<span style="color:'+COL.hum+'">&#9679;</span> U '+n0(d.hMin)+' / <b>'+n0(d.hAvg)+'</b> / '+n0(d.hMax)+' %<br>'+
+        'comfort '+n0(d.pct)+'% · '+d.n+' campioni');
+    } else hideTip();
+  }
+}
+
+function drawHistComfort(cv, hover){
+  const {ctx,w,h} = fit(cv);
+  const D = ST.hist;
+  if (!D.length){ empty(ctx,w,h,'storico non caricato'); return; }
+  const pad={l:42,r:12,t:12,b:22};
+  const slot=(w-pad.l-pad.r)/D.length, bw=Math.min(22, slot*.55);
+  const X=i=>pad.l+slot*(i+.5);
+  const Y=v=>h-pad.b-(h-pad.t-pad.b)*v/100;
+  ctx.font='10px system-ui';
+  for (let i=0;i<=2;i++){
+    const v=i*50, gy=Math.round(Y(v))+.5;
+    ctx.strokeStyle=COL.line; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(pad.l,gy); ctx.lineTo(w-pad.r,gy); ctx.stroke();
+    ctx.fillStyle=COL.tx3; ctx.textAlign='right'; ctx.textBaseline='middle';
+    ctx.fillText(v+'%', pad.l-6, gy);
+  }
+  ctx.textAlign='start'; ctx.textBaseline='alphabetic';
+  D.forEach((d,i)=>{
+    // pct null = giornata senza intervalli utilizzabili (un solo campione, o
+    // solo lacune). Va resa come "dato assente", non come barra a zero: una
+    // barra rossa rasoterra si legge come "0% di comfort", che e' un'altra
+    // cosa. Si disegna un trattino grigio sulla base.
+    if (d.pct==null){
+      ctx.strokeStyle = COL.line2; ctx.lineWidth=2; ctx.setLineDash([2,2]);
+      ctx.beginPath(); ctx.moveTo(X(i)-bw/2, Y(0)); ctx.lineTo(X(i)+bw/2, Y(0)); ctx.stroke();
+      ctx.setLineDash([]);
+      return;
+    }
+    const col = d.pct>=80?COL.ok : (d.pct>=50?COL.warn:COL.bad);
+    ctx.fillStyle = withAlpha(col,.8);
+    const y=Y(d.pct), hh=Math.max(2, h-pad.b-y);
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(X(i)-bw/2, y, bw, hh, Math.min(4,bw/2));
+    else ctx.rect(X(i)-bw/2, y, bw, hh);
+    ctx.fill();
+  });
+  if (hover){
+    const i=Math.round((hover.x-pad.l)/slot-.5);
+    if (i>=0 && i<D.length){
+      const d=D[i];
+      showTip(hover.ev, '<b>'+d.date+'</b><br>'+
+        (d.pct==null ? 'dati insufficienti per il calcolo'
+                     : n0(d.pct)+'% in comfort · passo '+(d.step||'?')+' s'));
+    } else hideTip();
+  }
+}
+
+/* =====================================================================
+   Statistiche di un giorno
+   ===================================================================== */
+function dayStats(rows, cfg){
+  if (!rows.length) return null;
+  let tMin=Infinity,tMax=-Infinity,hMin=Infinity,hMax=-Infinity,tSum=0,hSum=0;
+  rows.forEach(r=>{
+    if(r[1]<tMin)tMin=r[1]; if(r[1]>tMax)tMax=r[1];
+    if(r[2]<hMin)hMin=r[2]; if(r[2]>hMax)hMax=r[2];
+    tSum+=r[1]; hSum+=r[2];
+  });
+  // % di tempo in comfort PESATA SUL TEMPO, non sul numero di campioni: con
+  // campionamento irregolare (riavvii, SD assente, intervallo di log cambiato
+  // a meta' giornata) contare i campioni darebbe piu' peso ai tratti campionati
+  // fitto. Ogni campione "vale" fino al successivo (step, last-value-carried-
+  // forward); oltre una certa soglia il salto e' una LACUNA e viene escluso dal
+  // totale invece che troncato: il tempo senza dati e' ignoto, non e' ne'
+  // comfort ne' disagio, e attribuirlo all'ultimo stato noto falserebbe la
+  // percentuale. La % e' quindi "sul tempo effettivamente coperto dal log", non
+  // sulle 24 ore.
+  //
+  // La soglia si ricava dalla MEDIANA degli intervalli realmente presenti nel
+  // file, non da cfg.log_int_s: i file vecchi conservano il passo con cui sono
+  // stati scritti, quindi bastava cambiare l'intervallo di log da web per
+  // vedersi scartare per intero ogni giornata precedente (covered=0, pct=null)
+  // e comparire uno 0% che non significava niente. La mediana e' robusta ai
+  // singoli buchi; cfg.log_int_s resta solo come fallback.
+  let pct = null, covered = 0, step = null;
+  if (cfg && rows.length>1){
+    const deltas = [];
+    for (let i=0;i<rows.length-1;i++){
+      const d = rows[i+1][0]-rows[i][0];
+      if (d>0) deltas.push(d);
+    }
+    if (deltas.length){
+      const sorted = deltas.slice().sort((a,b)=>a-b);
+      step = sorted[Math.floor(sorted.length/2)];
+    }
+    const cap = Math.max(60, (step || cfg.log_int_s || 60) * 3);
+    let tot=0, inr=0;
+    for (let i=0;i<rows.length-1;i++){
+      const dt = rows[i+1][0]-rows[i][0];
+      if (dt<=0 || dt>cap) continue;          // duplicati / lacune: fuori dal conto
+      tot += dt;
+      if (comfortEval(rows[i][1], rows[i][2], cfg).inRange) inr += dt;
+    }
+    covered = tot;
+    pct = tot>0 ? inr/tot*100 : null;
+  }
+  return {
+    n: rows.length, tMin, tMax, hMin, hMax,
+    tAvg: tSum/rows.length, hAvg: hSum/rows.length,
+    tRange: tMax-tMin, hRange: hMax-hMin,
+    pct, covered, step, from: rows[0][0], to: rows[rows.length-1][0]
+  };
+}
+
+function renderStats(){
+  const s = dayStats(ST.rowsA, ST.cfg);
+  if (!s){ $('stats').innerHTML=''; return; }
+  const sB = ST.rowsB.length ? dayStats(ST.rowsB, ST.cfg) : null;
+  const cmp = (a,b,dec,u) => {
+    if (b==null) return '';
+    const d = a-b;
+    const arrow = Math.abs(d)<Math.pow(10,-dec)/2 ? '=' : (d>0?'▲':'▼');
+    return '<span class="delta '+(d>0?'up':(d<0?'dn':'flat'))+'">'+arrow+' '+
+           Math.abs(d).toFixed(dec).replace('.',',')+(u||'')+'</span>';
+  };
+  const box = (k,v,extra,tt) => '<div class="stat"'+(tt?' title="'+tt+'"':'')+
+    '><div class="k">'+k+'</div><div class="v num">'+v+(extra||'')+'</div></div>';
+  const ore = s.covered ? (s.covered/3600).toFixed(1).replace('.',',')+' h di log' : 'copertura ignota';
+  $('stats').innerHTML =
+    box('T media', n1(s.tAvg)+' °C', cmp(s.tAvg, sB?sB.tAvg:null, 1)) +
+    box('T min / max', n1(s.tMin)+' / '+n1(s.tMax)) +
+    box('Escursione T', n1(s.tRange)+' °C', cmp(s.tRange, sB?sB.tRange:null, 1)) +
+    box('U media', n0(s.hAvg)+' %', cmp(s.hAvg, sB?sB.hAvg:null, 0)) +
+    box('U min / max', n0(s.hMin)+' / '+n0(s.hMax)) +
+    box('In comfort', s.pct==null?'--':n0(s.pct)+' %', cmp(s.pct, sB?sB.pct:null, 0),
+        'percentuale sul tempo effettivamente coperto dal log ('+ore+'), le lacune sono escluse') +
+    box('Campioni', s.n.toString(), '', ore) +
+    box('Coperto', hhmm(s.from)+'–'+hhmm(s.to));
+}
+
+/* =====================================================================
+   Rendering dei grafici del giorno
+   ===================================================================== */
+function ptsOf(rows, idx){
+  if (!rows.length) return [];
+  const ref = midnightOf(rows[0][0]);
+  return rows.map(r => ({x: r[0]-ref, y: r[idx], ts: r[0]}));
+}
+function scorePts(rows){
+  if (!rows.length || !ST.cfg) return [];
+  const ref = midnightOf(rows[0][0]);
+  return rows.map(r => ({x: r[0]-ref, y: comfortEval(r[1],r[2],ST.cfg).score, ts: r[0]}));
+}
+const refOf = rows => rows.length ? midnightOf(rows[0][0]) : 0;
+
+function legendFor(el, color, unit){
+  if (!ST.dayB){ el.innerHTML=''; return; }
+  el.innerHTML =
+    '<span><i class="dot" style="background:'+color+'"></i>'+ST.dayA+'</span>'+
+    '<span style="color:'+COL.tx2+'"><i class="dash"></i>&nbsp;'+ST.dayB+'</span>';
+}
+
+function renderDayCharts(){
+  ['cT','cH','cS','cXY'].forEach(id => $(id).__render && $(id).__render());
+  legendFor($('lgT'), COL.temp, '°C');
+  legendFor($('lgH'), COL.hum, '%');
+}
+
+/* =====================================================================
+   /api/stato
+   ===================================================================== */
+async function loadStato(){
+  let s;
+  try { s = await api('/api/stato', {timeout:8000}); }
+  catch(e){
+    ST.online = false;
+    $('pLink').className='pill off'; $('pLinkTx').textContent='non raggiungibile';
+    return;
+  }
+  ST.online = true;
+  $('hNome').textContent = s.nodo || 'EnvNode-C3';
+  $('hMeta').textContent = 'firmware ' + s.fw + ' · ' + (s.wifi ? s.ip : 'offline');
+  $('fwTag').textContent = 'fw ' + s.fw;
+  $('pLink').className = 'pill ' + (s.wifi ? 'on' : 'off');
+  $('pLinkTx').textContent = s.wifi ? (s.rssi + ' dBm') : 'WiFi assente';
+  $('pOra').textContent = s.ora + ' · ' + s.ora_fonte;
+  $('hUpd').textContent = 'aggiornato ' + new Date().toLocaleTimeString('it-IT');
+
+  // temperatura / umidita'
+  $('vT').textContent = s.temp==null ? '--' : n1(s.temp);
+  $('vH').textContent = s.hum==null  ? '--' : n0(s.hum);
+  $('sT').innerHTML = s.temp_min==null ? '&nbsp;'
+    : 'dal boot: '+n1(s.temp_min)+' – '+n1(s.temp_max)+' °C';
+  $('sH').innerHTML = s.hum_min==null ? '&nbsp;'
+    : 'dal boot: '+n0(s.hum_min)+' – '+n0(s.hum_max)+' %';
+
+  // comfort
+  if (s.comfort_score==null){
+    $('vC').textContent='--'; $('sC').innerHTML='&nbsp;'; $('gFill').style.width='0';
+  } else {
+    const col = scoreColor(s.comfort_score);
+    $('vC').textContent = s.comfort_score;
+    $('vC').style.color = col;
+    $('sC').textContent = s.comfort_label + (s.comfort_in_range ? ' · dentro banda' : ' · fuori banda');
+    $('gFill').style.width = s.comfort_score+'%';
+    $('gFill').style.background = col;
+  }
+
+  // SD
+  if (s.sd){
+    const used = s.sd_totali_mb - s.sd_liberi_mb;
+    $('vSD').textContent = (s.sd_liberi_mb/1024).toFixed(1).replace('.',',')+' GB liberi';
+    $('sSD').textContent = s.record_oggi+' righe oggi · '+s.record_totali+' totali';
+    $('gSD').style.width = (s.sd_totali_mb ? used/s.sd_totali_mb*100 : 0)+'%';
+  } else {
+    $('vSD').textContent = 'assente';
+    $('sSD').textContent = s.sd_errore || 'non montata';
+    $('gSD').style.width = '0';
+  }
+
+  // rete + sistema
+  $('vNet').textContent = s.wifi ? s.ip : 'offline';
+  $('sNet').textContent = s.wifi ? ('RSSI '+s.rssi+' dBm') : 'in riconnessione';
+  $('vUp').textContent = uptimeStr(s.uptime);
+  $('sSys').textContent = 'heap '+Math.round(s.heap/1024)+' kB · errori DHT '+s.dht_errori;
+}
+
+/* =====================================================================
+   /api/config
+   ===================================================================== */
+async function loadConfig(){
+  const c = await api('/api/config');
+  ST.cfg = c;
+  $('fNodo').value=c.nodo; $('fLog').value=c.log_int_s; $('fPage').value=c.page_sec;
+  $('fTMin').value=c.t_min; $('fTMax').value=c.t_max;
+  $('fHMin').value=c.h_min; $('fHMax').value=c.h_max;
+  $('fTz').value=c.tz;
+  return c;
+}
+
+/* =====================================================================
+   Giorni
+   ===================================================================== */
+async function loadDays(){
+  const list = (await api('/api/giorni')).slice().sort();
+  ST.days = list;
+  const optA = list.map(d=>'<option value="'+d+'">'+d+'</option>').join('');
+  $('selA').innerHTML = optA;
+  $('selB').innerHTML = '<option value="">— nessuno —</option>' + optA;
+  if (list.length){
+    const keep = list.indexOf(ST.dayA)>=0 ? ST.dayA : list[list.length-1];
+    $('selA').value = keep;
+    await selectDay(keep);
+  } else {
+    setMsg($('mDay'), 'Nessun log sulla microSD.', null);
+  }
+}
+
+async function fetchDay(date){
+  const rows = await api('/api/giorno?d='+encodeURIComponent(date), {timeout:60000});
+  // Il CSV puo' contenere righe fuori ordine (riavvio con orario stimato poi
+  // corretto da NTP): senza sort il grafico "torna indietro".
+  return rows.slice().sort((a,b)=>a[0]-b[0]);
+}
+
+async function selectDay(date){
+  if (!date) return;
+  setMsg($('mDay'), 'Caricamento '+date+'…', null);
+  try {
+    ST.dayA = date;
+    ST.rowsA = await fetchDay(date);
+    // il confronto si ricarica DOPO, mai in parallelo (WebServer sincrono)
+    if (ST.dayB && ST.dayB!==date) ST.rowsB = await fetchDay(ST.dayB);
+    else { ST.rowsB = []; }
+    setMsg($('mDay'), ST.rowsA.length ? '' : 'Il file di '+date+' è vuoto.', null);
+  } catch(e){
+    ST.rowsA = []; ST.rowsB = [];
+    setMsg($('mDay'), 'Errore nel caricamento: '+e.message, 'err');
+  }
+  renderStats();
+  renderDayCharts();
+  sparkline($('spT'), ST.rowsA.map(r=>r[1]), COL.temp);
+  sparkline($('spH'), ST.rowsA.map(r=>r[2]), COL.hum);
+  updateDelta();
+}
+
+// Variazione nell'ultima ora di dati del giorno selezionato.
+function updateDelta(){
+  const put = (el, rows, idx, dec, unit) => {
+    const e = $(el);
+    if (rows.length<2){ e.textContent=''; return; }
+    const last = rows[rows.length-1];
+    const t0 = last[0]-3600;
+    let ref = rows[0];
+    for (let i=rows.length-1;i>=0;i--){ if(rows[i][0]<=t0){ ref=rows[i]; break; } }
+    const d = last[idx]-ref[idx];
+    e.title = 'variazione nell\'ultima ora di dati del giorno selezionato';
+    if (Math.abs(d) < Math.pow(10,-dec)/2){ e.textContent='→'; e.className='delta flat'; return; }
+    e.textContent = (d>0?'▲':'▼')+' '+Math.abs(d).toFixed(dec).replace('.',',')+unit;
+    e.className = 'delta ' + (d>0?'up':'dn');
+  };
+  put('dT', ST.rowsA, 1, 1, '');
+  put('dH', ST.rowsA, 2, 0, '');
+}
+
+/* =====================================================================
+   Storico multi-giorno — una richiesta alla volta, interrompibile
+   ===================================================================== */
+async function loadHistory(){
+  const n = parseInt($('selN').value, 10);
+  const days = ST.days.slice(-n);
+  if (!days.length){ setMsg($('mHist'),'Nessun giorno disponibile.','err'); return; }
+
+  ST.histAbort = false;
+  $('bHist').disabled = true; $('bHistStop').disabled = false;
+  $('pHist').classList.add('on');
+  const bar = $('pHist').firstElementChild;
+  const out = [];
+
+  const oggi = ST.days[ST.days.length-1];
+  let daCache = 0;
+
+  for (let i=0;i<days.length;i++){
+    if (ST.histAbort) break;
+    const d = days[i];
+    bar.style.width = (i/days.length*100)+'%';
+    try {
+      // L'ultimo giorno cresce mentre lo si guarda: quello si rilegge sempre.
+      let rows = (d===oggi) ? null : ST.rowsCache.get(d);
+      if (rows) daCache++;
+      else {
+        setMsg($('mHist'), 'Scarico '+d+'  ('+(i+1)+'/'+days.length+')…', null);
+        rows = await fetchDay(d);
+        ST.rowsCache.set(d, rows);
+        // respiro per il WebServer sincrono: solo dopo una richiesta VERA,
+        // cosi' ricaricare da cache resta istantaneo
+        await new Promise(r => setTimeout(r, 80));
+      }
+      const st = dayStats(rows, ST.cfg);
+      if (st){ st.date = d; out.push(st); }
+    } catch(e){
+      setMsg($('mHist'), 'Errore su '+d+': '+e.message+' — proseguo.', 'err');
+    }
+  }
+
+  bar.style.width = '100%';
+  ST.hist = out;
+  $('histBox').hidden = out.length===0;
+  $('cHistT').__render(); $('cHistC').__render();
+  $('bHist').disabled = false; $('bHistStop').disabled = true;
+  setTimeout(()=>{ $('pHist').classList.remove('on'); bar.style.width='0'; }, 500);
+  setMsg($('mHist'),
+    ST.histAbort ? ('Interrotto: '+out.length+' giorni caricati.')
+                 : (out.length+' giorni'+(daCache?' ('+daCache+' dalla cache)':'')+'.'),
+    ST.histAbort ? null : 'ok');
+}
+
+// Cambio di banda: le statistiche si rifanno dalle righe gia' in cache, senza
+// toccare la rete. Le medie/estremi non dipendono dalla banda, la % di comfort si.
+function recomputeHist(){
+  if (!ST.hist.length) return;
+  ST.hist = ST.hist.map(old => {
+    const rows = ST.rowsCache.get(old.date);
+    if (!rows) return old;
+    const st = dayStats(rows, ST.cfg);
+    if (!st) return old;
+    st.date = old.date;
+    return st;
+  });
+  $('cHistT').__render(); $('cHistC').__render();
+}
+
+/* =====================================================================
+   Eventi
+   ===================================================================== */
+$('selA').addEventListener('change', () => selectDay($('selA').value));
+$('selB').addEventListener('change', async () => {
+  ST.dayB = $('selB').value;
+  if (ST.dayB && ST.dayB !== ST.dayA){
+    setMsg($('mDay'), 'Caricamento confronto '+ST.dayB+'…', null);
+    try { ST.rowsB = await fetchDay(ST.dayB); setMsg($('mDay'),'',null); }
+    catch(e){ ST.rowsB=[]; setMsg($('mDay'),'Errore sul confronto: '+e.message,'err'); }
+  } else ST.rowsB = [];
+  renderStats(); renderDayCharts();
+});
+$('bRefresh').addEventListener('click', () => selectDay($('selA').value));
+$('bCsv').addEventListener('click', () => {
+  const d = $('selA').value;
+  if (d) location.href = '/api/scarica?d='+encodeURIComponent(d);
+});
+$('bDel').addEventListener('click', async () => {
+  const d = $('selA').value;
+  if (!d) return;
+  if (!confirm('Eliminare definitivamente il log di '+d+'?\nNon si può annullare.')) return;
+  try {
+    const r = await api('/api/elimina?d='+encodeURIComponent(d), {method:'POST'});
+    if (r.ok){
+      ST.rowsCache.delete(d);
+      ST.hist = ST.hist.filter(x => x.date !== d);
+      $('cHistT').__render(); $('cHistC').__render();
+      setMsg($('mDay'), d+' eliminato.', 'ok');
+      ST.dayA=''; await loadDays(); await loadStato();
+    } else setMsg($('mDay'), 'Errore: '+r.errore, 'err');
+  } catch(e){ setMsg($('mDay'), 'Errore: '+e.message, 'err'); }
+});
+
+document.addEventListener('keydown', ev => {
+  if (ev.target.tagName==='INPUT' || ev.target.tagName==='SELECT') return;
+  if (ev.key!=='ArrowLeft' && ev.key!=='ArrowRight') return;
+  const i = ST.days.indexOf(ST.dayA);
+  const j = i + (ev.key==='ArrowRight' ? 1 : -1);
+  if (j>=0 && j<ST.days.length){ $('selA').value = ST.days[j]; selectDay(ST.days[j]); }
+});
+
+$('bHist').addEventListener('click', loadHistory);
+$('bHistStop').addEventListener('click', () => { ST.histAbort = true; });
+
+$('bSave').addEventListener('click', async () => {
+  const p = new URLSearchParams({
+    nodo:$('fNodo').value, log_int_s:$('fLog').value, page_sec:$('fPage').value,
+    t_min:$('fTMin').value, t_max:$('fTMax').value,
+    h_min:$('fHMin').value, h_max:$('fHMax').value, tz:$('fTz').value
+  });
+  setMsg($('mCfg'), 'Salvataggio…', null);
+  try {
+    const r = await api('/api/config?'+p.toString(), {method:'POST'});
+    if (r.ok){
+      setMsg($('mCfg'), 'Salvato.', 'ok');
+      await loadConfig();
+      renderStats(); renderDayCharts(); recomputeHist();
+      await loadStato();
+    } else setMsg($('mCfg'), 'Errore: '+r.errore, 'err');
+  } catch(e){ setMsg($('mCfg'), 'Errore: '+e.message, 'err'); }
+});
+$('bReload').addEventListener('click', async () => {
+  try { await loadConfig(); setMsg($('mCfg'),'Riletto dal nodo.','ok'); renderDayCharts(); }
+  catch(e){ setMsg($('mCfg'),'Errore: '+e.message,'err'); }
+});
+
+/* =====================================================================
+   Montaggio grafici + avvio
+   ===================================================================== */
+[$('spT'), $('spH')].forEach(cv => {
+  cv.__render = () => sparkline(cv,
+    ST.rowsA.map(r => r[cv.id==='spT' ? 1 : 2]),
+    cv.id==='spT' ? COL.temp : COL.hum);
+  RO.observe(cv);
+});
+
+mount($('cT'), (cv,hv) => drawTime(cv, hv, {
+  ref: refOf(ST.rowsA), unit:' °C', dec:1,
+  band: ST.cfg ? {min:ST.cfg.t_min, max:ST.cfg.t_max} : null,
+  series: [
+    {pts: ptsOf(ST.rowsB,1), color: COL.tx2, dash:[5,4], width:1.5, name: ST.dayB},
+    {pts: ptsOf(ST.rowsA,1), color: COL.temp, fill:true, name: ST.dayB ? ST.dayA : ''}
+  ]
+}));
+
+mount($('cH'), (cv,hv) => drawTime(cv, hv, {
+  ref: refOf(ST.rowsA), unit:' %', dec:0,
+  band: ST.cfg ? {min:ST.cfg.h_min, max:ST.cfg.h_max} : null,
+  series: [
+    {pts: ptsOf(ST.rowsB,2), color: COL.tx2, dash:[5,4], width:1.5, name: ST.dayB},
+    {pts: ptsOf(ST.rowsA,2), color: COL.hum, fill:true, name: ST.dayB ? ST.dayA : ''}
+  ]
+}));
+
+mount($('cS'), (cv,hv) => drawTime(cv, hv, {
+  ref: refOf(ST.rowsA), unit:'', dec:0, yFixed:[0,100],
+  series: [
+    {pts: scorePts(ST.rowsB), color: COL.tx2, dash:[5,4], width:1.5, name: ST.dayB},
+    {pts: scorePts(ST.rowsA), color: COL.ok, fill:true, name: ST.dayB ? ST.dayA : ''}
+  ]
+}));
+
+mount($('cXY'), drawScatter);
+mount($('cHistT'), drawHistRange);
+mount($('cHistC'), drawHistComfort);
+
+/* Polling sospeso quando la pagina non e' visibile (telefono in tasca, tab in
+   secondo piano). Con un WebServer sincrono ogni richiesta e' tempo tolto a
+   campionamento, scrittura su SD e OTA: una dashboard dimenticata aperta
+   martellerebbe il nodo ogni 5 s per giorni senza che nessuno la guardi.
+   Al ritorno in primo piano si aggiorna subito, senza aspettare il tick. */
+let pollTimer = null;
+function startPolling(){
+  if (pollTimer) return;
+  pollTimer = setInterval(loadStato, 5000);
+}
+function stopPolling(){
+  if (!pollTimer) return;
+  clearInterval(pollTimer); pollTimer = null;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopPolling();
+  else { loadStato(); startPolling(); }
+});
+
+(async function boot(){
+  await loadStato();
+  try { await loadConfig(); } catch(e){ setMsg($('mCfg'),'Config non leggibile: '+e.message,'err'); }
+  try { await loadDays(); } catch(e){ setMsg($('mDay'),'Elenco giorni non leggibile: '+e.message,'err'); }
+  if (!document.hidden) startPolling();
+})();
+</script>
+</body>
+</html>
