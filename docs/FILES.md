@@ -40,7 +40,8 @@ funzionale.
 Non usano nessuna di queste librerie: `examples/Diag_Hub/` e
 `examples/Diag_Node/` (diagnostica ESP-NOW su `esp_now.h` grezzo), il template
 **`starters/C3_OLED_OTA/`** e il progetto **`projects/EnvNode_C3/`**, che sono
-per un'altra scheda. Vedi le rispettive sezioni.
+per un'altra scheda, e **`projects/Timelapse_XIAO/`**, che è sulla stessa
+scheda del nodo camera ma senza ESP-NOW. Vedi le rispettive sezioni.
 
 ---
 
@@ -974,6 +975,7 @@ riusarne i moduli (che sono già scritti per essere staccabili) in un nodo nuovo
 | Progetto | Scheda | Nato da |
 |---|---|---|
 | `EnvNode_C3` | ESP32-C3 Supermini | `starters/C3_OLED_OTA` |
+| `Timelapse_XIAO` | Seeed XIAO ESP32-S3 Sense | `starters/XIAO_S3_Camera` |
 
 ---
 
@@ -1127,6 +1129,133 @@ scalati sul `devicePixelRatio`.
 - La formula del comfort è duplicata in JS (stessa di `comfort.h`): serve a
   ricalcolare lo storico nel browser quando si cambia la banda, senza rete e
   senza costo per il nodo. Se `comfort.h` cambia, va allineata anche qui.
+
+---
+
+### `projects/Timelapse_XIAO/` — camera timelapse con galleria web
+
+**Ruolo**: camera che scatta a intervallo regolare e conserva l'archivio
+ordinato per giorno sulla microSD, con una web UI per inquadrare, configurare,
+sfogliare e riprodurre la sequenza. Cresciuto da `starters/XIAO_S3_Camera`
+sostituendo il PIR con un timer e il progressivo dei file con data/ora.
+
+**Catena**: timer → `camera_grab_fresh()` → `/timelapse/AAAA-MM-GG/HHMMSS.JPG`
+→ riga nel CSV del giorno → galleria/riproduzione dal browser.
+
+**Hardware**: nessun cablaggio oltre l'alimentazione USB. Camera e microSD sono
+quelle della scheda Sense (stessi pin dello starter: SD su SPI, CS=GPIO21).
+GPIO liberi per aggiunte: D1–D5 (GPIO 2, 3, 4, 5, 6).
+
+**Dipendenze**: solo core ESP32 (`esp_camera` bundled, `SD`, `SPI`, `WebServer`,
+`ArduinoOTA`, `Preferences`, `time.h`). **Nessuna** libreria di `libraries/` e
+nessuna da Library Manager: a differenza del nodo camera non usa ESP-NOW, quindi
+la cartella è spostabile fuori dal repo così com'è. FQBN:
+`esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=default_8MB`.
+
+#### `Timelapse_XIAO.ino`
+
+Logica applicativa: impostazioni persistite in NVS (attivo, intervallo, finestra
+oraria, politica dello spazio, MB minimi liberi), timer degli scatti, scatto
+(`do_capture()`), gestione dello spazio (`ensureSpace()`), ganci `app_*()` per
+`web_ui`. Rilancia il sync NTP quando `net_takeReconnectedFlag()` segnala una
+riconnessione e ritenta il mount della card ogni 30 s se manca.
+
+**Da sapere**:
+- `nextSlot()` allinea gli scatti all'**orologio** (multiplo dell'intervallo
+  sull'epoch), non all'ultimo scatto: con intervallo 60 le foto cadono al
+  secondo `:00`. Il prossimo slot si ricalcola **prima** dello scatto e ad ogni
+  giro, quindi un salto dell'orologio (primo sync NTP) o una pausa lunga non
+  producono una raffica di recuperi — gli slot persi si contano in `s_skipped`
+  e si saltano.
+- `app_pump()`, chiamata ad ogni frame dal ciclo dello stream MJPEG, **non
+  scatta**: riallinea solo il timer. La camera sta già servendo lo stream e una
+  scrittura su SD lo bloccherebbe. Come nello starter, lì dentro non si chiama
+  `net_loop()`.
+- `inWindow()` con `inizio == fine` vale "sempre"; `inizio > fine` è una
+  finestra a cavallo della mezzanotte.
+- Sotto `EPOCH_PLAUSIBLE` (2020-01-01) non si scatta: senza un orario credibile
+  si creerebbero cartelle datate 1970.
+
+#### `camera.h` / `camera.cpp`
+
+Copia identica di quelli di `starters/XIAO_S3_Camera` (stesso hardware, stessi
+pin, stessa tabella di risoluzioni). Se si corregge un bug qui, va corretto
+anche là: sono due copie, non un modulo condiviso — è la stessa scelta fatta per
+`net_ota.*` fra gli starter.
+
+#### `storage.h` / `storage.cpp`
+
+microSD SPI organizzata **per giorno**: foto in `/timelapse/AAAA-MM-GG/` col
+nome `HHMMSS.JPG` (ora locale), CSV in `/timelapse/log/AAAA-MM-GG.csv` con
+colonne `ts_iso,boot_id,fonte_ora,sorgente,file,byte,esito`. Espone elenco
+giorni/foto, apertura e cancellazione (foto, intero giorno, CSV in download),
+occupazione della card e contatori.
+
+**Da sapere**:
+- I nomi a lunghezza fissa con zeri iniziali rendono l'ordine alfabetico uguale
+  all'ordine temporale: la web UI non legge mai le date dal filesystem, che
+  `SD.h` non espone in modo affidabile su tutte le versioni del core.
+- `sd_photos_today()` è un contatore in **RAM**: la directory del giorno si
+  scandisce una volta sola, al primo scatto del giorno (o dopo il boot), non ad
+  ogni richiesta di stato.
+- `SD.usedBytes()` percorre la FAT, quindi occupazione e spazio libero sono
+  **cachati 15 s** (`USAGE_TTL_MS`) e invalidati ad ogni scrittura/eliminazione:
+  la web UI chiede lo stato ogni 3 s.
+- `sd_delete_day()` rimuove i file uno alla volta riaprendo la directory ad ogni
+  giro (non si cancella mentre la si sta iterando) e poi fa `rmdir`; il CSV del
+  giorno **resta**, è il registro di cosa è successo.
+- Ogni nome che arriva dal web passa da `sd_day_is_valid()` +
+  `sd_name_is_safe()`: senza, l'URL aprirebbe qualunque file della card.
+- Un secondo scatto nello stesso secondo (manuale sopra l'automatico) prende un
+  suffisso `_1`, non sovrascrive.
+
+#### `rtc_time.h` / `rtc_time.cpp`
+
+Copia del modulo di `EnvNode_C3` (codice puro, non dipende dalla scheda), con il
+commento adattato. Stesso ordine obbligato in `setup()`: `rtctime_begin(tz)` →
+`rtctime_seedFromBuild()` → (WiFi) → `rtctime_onWifiConnected()`, quest'ultima a
+**ogni** riconnessione. Il fuso qui è la costante `TZ_POSIX` nel `.ino`, non
+un'impostazione da web: questa scheda non viaggia.
+
+#### `net_ota.h` / `net_ota.cpp`
+
+Gemello di quelli degli altri nodi (WiFi + ArduinoOTA + `/update`, la `/` la
+registra `web_ui`), con in più il **watchdog di riconnessione WiFi** di
+`EnvNode_C3` — ritento a 30 s, re-init completo dello stack a 5 min, riavvio
+della scheda a 30 min — e `net_takeReconnectedFlag()`, che lo sketch consuma per
+rilanciare NTP. `s_updateInProgress` impedisce al watchdog di toccare la
+connessione mentre un OTA sta scrivendo la partizione. Di norma non si tocca.
+
+#### `web_ui.h` / `web_ui.cpp`
+
+Pagina di controllo in PROGMEM (self-contained, nessuna CDN) e API HTTP:
+`/stream`, `/snapshot.jpg`, `/api/scatta`, `/api/stato`, `/api/config`,
+`/api/giorni`, `/api/foto`, `/foto`, `/log`, `/api/elimina`,
+`/api/elimina-giorno`. Tutto dietro la basic-auth di `net_ota`. La UI legge
+orario, SD e camera direttamente dai rispettivi moduli e chiede al `.ino` solo
+ciò che vive lì (ganci `app_*()`).
+
+**Da sapere**:
+- La galleria mostra i JPEG a piena risoluzione rimpiccioliti dal browser
+  (`loading=lazy`): **niente miniature sulla card**, costerebbero una seconda
+  codifica per scatto e il doppio dello spazio. Su una giornata da migliaia di
+  scatti la pagina resta pesante — è il compromesso scelto.
+- Il player è puro JS: scarica una foto alla volta e precarica la successiva, e
+  a 20 fps il WiFi non ce la fa. Per il montaggio vero si copia la cartella
+  dalla microSD.
+- `/foto` risponde con `Cache-Control: max-age=86400`: i file non cambiano mai,
+  e senza cache il player riscaricherebbe ogni fotogramma ad ogni passaggio.
+- I campi del form non vengono sovrascritti dal polling dello stato mentre sono
+  a fuoco (`set()` in pagina), altrimenti scrivere un valore diventerebbe una
+  lotta con l'aggiornamento ogni 3 s.
+- Lo stream tiene fermo il web server (server sincrono): dura al massimo
+  `WEB_STREAM_MAX_MS` (5 min) e durante quel tempo gli scatti si saltano.
+
+#### `secrets.h.example` → `secrets.h`
+
+Come per gli altri nodi: `secrets.h` è gitignorato (pattern globale), qui c'è
+solo il template. Tenere un `OTA_HOSTNAME` **diverso** da quello del nodo
+camera, o le due schede si contendono lo stesso nome mDNS.
 
 ---
 

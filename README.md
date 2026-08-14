@@ -36,6 +36,7 @@ divisione per chip o duplicherebbe le librerie o le lascerebbe comunque fuori.
 | Progetto | Scheda | Cos'è |
 |---|---|---|
 | `projects/EnvNode_C3/` | ESP32-C3 Supermini | nodo ambientale in funzione: DHT11 + log su microSD + dashboard web con grafici + OTA |
+| `projects/Timelapse_XIAO/` | Seeed XIAO ESP32-S3 **Sense** | camera timelapse: scatto a intervallo su microSD per giorno, galleria web con riproduzione, NTP + OTA |
 
 ## Le librerie condivise (`libraries/`)
 
@@ -473,6 +474,36 @@ Partition Scheme **Minimal SPIFFS**: serve la partizione OTA.
 
 `secrets.h` vale la stessa regola degli starter: copia `secrets.h.example` e
 riempilo, il file vero non entra nel repo.
+
+### `Timelapse_XIAO` — camera timelapse con galleria web
+
+Nato dallo starter `XIAO_S3_Camera`, con lo scatto comandato da un **timer**
+invece che dal PIR:
+
+- **scatto a intervallo** configurabile (default 60 s), allineato all'orologio
+  — con intervallo 60 le foto cadono al secondo `:00` di ogni minuto, non
+  "60 secondi dopo l'ultima";
+- **finestra oraria** giornaliera opzionale (es. 07 → 20: di notte non scatta,
+  e una finestra che scavalca la mezzanotte è ammessa);
+- **archivio per giorno** sulla microSD: `/timelapse/2026-08-14/143000.JPG`, più
+  un CSV al giorno in `/timelapse/log/` con una riga per scatto, **anche per
+  quelli falliti** — in un timelapse il buco nella sequenza è l'informazione
+  interessante;
+- **galleria web** che sfoglia un giorno alla volta e lo **riproduce come un
+  filmato** (play/pausa, 2–20 fps, cursore), con download ed eliminazione della
+  singola foto o dell'intera giornata;
+- **gestione dello spazio**: sotto la soglia di MB liberi o si ferma (default) o
+  elimina il giorno più vecchio come un buffer circolare — mai quello in corso;
+- **orario vero** via NTP (`rtc_time.*`, lo stesso modulo di `EnvNode_C3`): qui
+  non è un lusso, i nomi delle cartelle e dei file *sono* la data e l'ora;
+- **OTA** e watchdog di riconnessione WiFi, perché resta acceso per settimane.
+
+Niente PIR e niente ESP-NOW: non dipende da `libraries/` ed è spostabile fuori
+dal repo così com'è. L'unico cablaggio è l'alimentazione USB.
+
+`secrets.h`: stessa regola, copia `secrets.h.example` e riempilo. Tieni un
+`OTA_HOSTNAME` diverso da quello del nodo camera, o i due si pestano i piedi su
+mDNS.
 
 ---
 

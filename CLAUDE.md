@@ -50,6 +50,13 @@ toccare) vedi `docs/FILES.md`. Per il pinout/hardware della board AMOLED vedi
 | `starters/XIAO_S3_Camera/hub_link.h/.cpp` | nodo ESP-NOW sopra `EspNowLink` (pairing, notifiche, comandi) |
 | `starters/XIAO_S3_Camera/secrets.h.example` | come per il C3: si copia in `secrets.h`, **gitignorato** |
 | `projects/EnvNode_C3/` | **progetto reale** (ESP32-C3): DHT11 + microSD SPI + dashboard web con grafici + orario NTP + OTA — vedi sezione dedicata |
+| `projects/Timelapse_XIAO/` | **progetto** (XIAO ESP32-S3 Sense): camera timelapse a intervallo, archivio per giorno su microSD, galleria web con riproduzione, NTP + OTA — vedi sezione dedicata |
+| `projects/Timelapse_XIAO/Timelapse_XIAO.ino` | timer degli scatti, gestione dello spazio, impostazioni — qui va la logica applicativa |
+| `projects/Timelapse_XIAO/storage.h/.cpp` | microSD SPI organizzata per giorno: `/timelapse/<giorno>/<ora>.JPG` + CSV giornaliero |
+| `projects/Timelapse_XIAO/camera.h/.cpp` | copia di quello del nodo camera (stesso hardware, stessi pin) |
+| `projects/Timelapse_XIAO/rtc_time.h/.cpp` | copia di quello di `EnvNode_C3`: stima da build-time, poi NTP |
+| `projects/Timelapse_XIAO/net_ota.h/.cpp` | WiFi + ArduinoOTA + `/update`, con watchdog di riconnessione — di norma non si tocca |
+| `projects/Timelapse_XIAO/web_ui.h/.cpp` | pagina di controllo, galleria/riproduzione e API HTTP |
 | `examples/Orientation_IMU/` | demo autosufficiente: livella per veicolo basata sull'IMU onboard, UI costruita in codice (non SquareLine) |
 | `examples/Link_Hub_Demo/` | demo lato hub di `EspNowLink`: schermo AMOLED, pairing/lista nodi associati |
 | `examples/Link_Node_Demo/` | demo nodo sensore finto: solo Serial, nessuna dipendenza dai pin AMOLED, gira su qualunque board ESP32 |
@@ -135,6 +142,13 @@ obbligatoria per la camera) ma **vuole** `--libraries libraries`, perché usa
 
 ```
 arduino-cli compile --fqbn "esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=default_8MB" --libraries libraries starters/XIAO_S3_Camera
+```
+
+`projects/Timelapse_XIAO/` gira sulla stessa scheda ma **non** vuole
+`--libraries libraries`: non usa ESP-NOW, quindi è self-contained.
+
+```
+arduino-cli compile --fqbn "esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=default_8MB" projects/Timelapse_XIAO
 ```
 
 Equivalente Arduino IDE: Board **XIAO_ESP32S3**, PSRAM **OPI PSRAM**
@@ -456,6 +470,70 @@ SSD1306 + dashboard web con grafici + orario NTP + OTA. Moduli:
 - **`web_ui` non deve** duplicare stato: legge `settings_get()`, `sd_logger.*`,
   `rtc_time.*`, `comfort_eval()` direttamente; i ganci `app_*()` implementati
   nel `.ino` coprono solo letture correnti e min/max dall'ultimo avvio.
+
+## `projects/Timelapse_XIAO/` — camera timelapse con galleria web
+
+Cresciuto da `starters/XIAO_S3_Camera/`, stessa scheda, scatto comandato da un
+**timer** invece che dal PIR:
+
+```
+timer -> scatto -> /timelapse/<AAAA-MM-GG>/<HHMMSS>.JPG  ->  galleria web
+```
+
+**Cosa cambia rispetto allo starter da cui nasce**:
+- **niente PIR e niente ESP-NOW**, quindi niente `hub_link.*` e **nessuna
+  dipendenza da `libraries/`**: la cartella si sposta fuori dal repo così com'è
+  (a differenza del nodo camera, che si porta dietro `EspNowLink`);
+- `storage.*` è riscritto: non un progressivo `IMG_%05lu` in un'unica cartella,
+  ma **una cartella per giorno** e il nome = ora locale dello scatto. I nomi
+  sono a lunghezza fissa con zeri iniziali, quindi ordinarli alfabeticamente
+  equivale a ordinarli nel tempo — la web UI non deve leggere le date dal
+  filesystem, che `SD.h` non espone in modo affidabile su tutte le versioni del
+  core;
+- c'è `rtc_time.*` (copia da `EnvNode_C3`, modulo puro): senza orario vero i
+  nomi non significano niente. Vale lo stesso ordine obbligato in `setup()`:
+  `rtctime_begin(TZ_POSIX)` → `rtctime_seedFromBuild()` → (WiFi) →
+  `rtctime_onWifiConnected()`, **a ogni riconnessione** — qui la riconnessione
+  la segnala `net_takeReconnectedFlag()`;
+- `net_ota.*` ha in più il **watchdog di riconnessione WiFi** (ritento a 30 s,
+  re-init dello stack a 5 min, riavvio a 30 min), come su `EnvNode_C3`: sta
+  acceso per settimane.
+
+**Scelte da conoscere prima di metterci le mani**:
+- **Gli slot sono allineati all'orologio**, non "ultimo scatto + intervallo":
+  il prossimo istante è un multiplo dell'intervallo contato sull'epoch. Il conto
+  si rifà ad ogni giro, quindi il primo sync NTP (che sposta l'orologio anche di
+  ore) o uno stream MJPEG lungo **non** lasciano una coda di scatti arretrati da
+  recuperare tutti insieme: gli slot persi si saltano e basta (contati in
+  `s_skipped`).
+- **Durante lo stream non si scatta**: `app_pump()` — chiamata ad ogni frame dal
+  ciclo dello stream, dove il web server è fermo — riallinea soltanto il timer.
+  La camera sta già servendo frame allo stream e una scrittura su SD lo
+  bloccherebbe. Come nello starter, dentro `app_pump()` **non** si chiama
+  `net_loop()`.
+- **Spazio esaurito**: due politiche, in NVS. `APP_FULL_STOP` (default) smette
+  di scattare; `APP_FULL_RING` elimina il **giorno più vecchio** — mai quello in
+  corso, o con una card piccola si finirebbe a cancellare le foto di un'ora fa.
+  La soglia è in MB liberi (`min_liberi`, default 200).
+- **Il CSV giornaliero registra anche gli scatti falliti** (`esito` diverso da
+  `ok`): in un timelapse il buco nella sequenza è proprio ciò che si vuole
+  spiegare. Colonne: `ts_iso,boot_id,fonte_ora,sorgente,file,byte,esito`.
+  `sd_delete_day()` cancella le foto ma **lascia** il CSV.
+- **Niente miniature sulla card**: la galleria mostra i JPEG a piena
+  risoluzione rimpiccioliti dal browser (`loading=lazy`). Generarle costerebbe
+  una seconda codifica per scatto e il doppio dello spazio; il prezzo è che una
+  giornata da migliaia di scatti fa una pagina pesante.
+- **Risoluzione e qualità non sono persistite** (a differenza di intervallo,
+  finestra oraria e politica dello spazio): dopo un riavvio la camera riparte
+  dai default di `camera.cpp`. Se servisse, il posto giusto è `settings_save()`
+  nel `.ino`, non `camera.cpp`.
+- Il **fuso orario** è una costante di compilazione (`TZ_POSIX` nel `.ino`), non
+  un'impostazione da web come in `EnvNode_C3`: questa scheda non viaggia.
+
+**Dove scrivere la logica**: nel `.ino` (timer, scatto, spazio, nuove
+periferiche in `loop()` senza bloccare a lungo). `camera.*`, `storage.*`,
+`rtc_time.*`, `net_ota.*`, `web_ui.*` sono boilerplate per compito. GPIO liberi
+per aggiunte: D1–D5 (GPIO 2, 3, 4, 5, 6) — D8/D9/D10 e GPIO21 sono la microSD.
 
 ## Workflow SquareLine Studio (per `starters/AMOLED_1.91_LVGL/`)
 
