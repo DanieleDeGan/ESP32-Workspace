@@ -338,6 +338,33 @@ l'AP e tutti devono usare quello (`Link_InitEx` con il canale dell'AP, non
 `Link_Init`). **Fissare il canale 2,4 GHz nel router**, altrimenti un giorno
 cambia da solo e i nodi diventano muti.
 
+**Alimentare il sensore da un GPIO** (proposta, da decidere quando si cabla il
+nodo — il filo di alimentazione va a un pin invece che al 3V3 fisso). L'LDO
+della basetta piu' l'eventuale LED piu' il riposo dei sensori stanno sulle
+decine di µA, cioe' lo stesso ordine dei ~43 µA di deep sleep della XIAO:
+spegnere il modulo fra una lettura e l'altra puo' quasi dimezzare il consumo a
+riposo. AHT20 + BMP280 assorbono qualche centinaio di µA con picchi sotto i
+2 mA, quindi un GPIO basta e non serve un MOSFET. Tre vincoli che vanno decisi
+prima di saldare:
+
+- **il pin dev'essere RTC-capable** (sul C3 sono GPIO0-5), altrimenti
+  `gpio_hold_en()` + `gpio_deep_sleep_hold_en()` non lo possono tenere basso
+  durante il sonno e i GPIO tornano flottanti. Suggeriti **D2/GPIO4** o
+  **D3/GPIO5** — non D1/GPIO3, riservato al partitore della batteria;
+- **prima di dormire, SDA e SCL vanno messi a ingresso senza pull-up interno**:
+  i pull-up dell'I2C stanno sulla basetta e si spengono con lei, quindi un pin
+  dell'ESP32 che resta alto spinge corrente nei piedini di un chip non
+  alimentato e, attraverso i diodi di protezione, ne alimenta parzialmente il
+  VDD. Il sensore resta "mezzo acceso", consuma e non si resetta pulito. Da
+  fuori sembra solo che il deep sleep consumi piu' del previsto;
+- **il sensore va reinizializzato ad ogni risveglio**, non solo al primo boot:
+  accensione, ~100 ms di attesa (l'AHT20 lo chiede da datasheet), `Wire.begin()`,
+  lettura. Se non e' scritto cosi' fin dall'inizio, il giorno che si aggiunge il
+  deep sleep sembrera' che il sensore si sia rotto.
+
+Il partitore della batteria invece conviene lasciarlo fisso: 2x1 MΩ sono ~1,7 µA,
+non valgono la complicazione di commutarli.
+
 **Sicurezza delle celle**:
 
 - **verificare la polarità del JST col tester** prima di collegarlo ai pad B+/B−
