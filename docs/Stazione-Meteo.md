@@ -384,6 +384,10 @@ cella.
 
 ### Fase 5 — pagine immagine
 
+Le scelte di interfaccia (modello delle pagine, impostazioni, messaggi,
+anteprima) stanno nella sezione **Web UI dell'hub** piu' sotto, che e' una bozza
+aperta: leggerla prima di implementare.
+
 - endpoint di upload che accetta esattamente 15.000 byte e scrive
   `/images/<nome>.bin`, con la stessa regola difensiva di `sd_name_is_safe()`;
 - galleria web che rilegge i `.bin` e li ridisegna su canvas (il codice
@@ -395,8 +399,173 @@ cella.
 
 ### Fase 6 — pagine extra
 
+Qui si realizza il modello delle pagine descritto in **Web UI dell'hub**: elenco
+di pagine con tipo/layout/attiva/durata, e i tre comandi dell'interfaccia
+(rotazione, durata, fissa una pagina) che ne discendono senza meccanismi propri.
+
 Astrazione "pagina" (elenco + callback di disegno), cambio con il tasto BOOT
 oppure da web. Il cambio pagina è sempre un refresh completo.
+
+## Web UI dell'hub — specifica in lavorazione
+
+> **Work in progress.** Questa sezione è una bozza aperta, scritta il 2026-08-21
+> discutendone a voce: niente qui è deciso in via definitiva e ci si tornerà
+> sopra. Serve a fissare le scelte mentre sono fresche e a far vedere quali
+> conseguenze hanno sul firmware, non a chiudere il discorso.
+
+**Dipende tutto dalla Fase 3**: oggi l'hub non ha né WiFi, né web server, né SD
+montata. `www/dither.html` è una pagina a sé che gira nel browser e produce un
+`.bin`; non è ancora "la web UI". Nessuna delle funzioni qui sotto può esistere
+prima che l'hub stia in rete e sappia leggere e scrivere la card.
+
+### Il modello delle pagine è la spina dorsale
+
+Tutto quello che si vuole dall'interfaccia — scegliere layout, ruotare le
+pagine, fissarne una, mostrare messaggi — è **la stessa struttura**: un elenco
+di pagine, ognuna con
+
+| campo | significato |
+|---|---|
+| `tipo` | valori / grafico / nodi / immagine / messaggi |
+| `layout` | quale disposizione, fra le poche previste per quel tipo |
+| `attiva` | partecipa alla rotazione sì/no |
+| `durata_s` | per quanto resta a schermo quando ruota |
+| `parametri` | dipendono dal tipo (quale immagine, quale nodo, ecc.) |
+
+Conseguenza da non perdere di vista: **«fissa una singola pagina» non è una
+funzione a sé**, è "tutte le altre disattivate". Stessa cosa per «cambio pagina
+automatico»: è la rotazione che si ferma quando resta una sola pagina attiva.
+Una struttura sola, tre comandi nell'interfaccia — non tre meccanismi nel
+firmware.
+
+### Layout: pochi e fissi, nessun editor
+
+Per ogni tipo di pagina si prevedono **3-4 disposizioni fisse**, scelte da un
+menu. Per i valori, per esempio: "un numerone", "dentro/fuori a due colonne",
+"con grafico in basso".
+
+Un editor visuale (trascina i riquadri, ridimensiona) è mesi di lavoro per una
+cosa che si usa tre volte e poi non si tocca più. Se un giorno servisse davvero
+una disposizione fuori standard, la strada corta esiste già ed è un'altra: si
+compone l'immagine nel browser e la si manda come pagina immagine.
+
+### Rotazione: i vincoli vengono dalle misure, non dai gusti
+
+- Ogni cambio pagina è un **refresh completo: 2197 ms misurati**, e lampeggia.
+  Sotto il minuto non ha senso. Default proposto: **5-10 minuti**.
+- **Ore di silenzio**: niente rotazione di notte. Nessuno guarda, e ogni refresh
+  risparmiato è consumo e usura in meno.
+- **Pulsante "refresh completo adesso"** nella web UI, per togliere il ghosting
+  quando si accumula senza aspettare il ciclo.
+- Il **tasto BOOT continua a cambiare pagina**: se la rete cade, il pannello
+  deve restare governabile a mano. Vale come principio generale — la web UI è un
+  telecomando comodo, non l'unico modo di usare l'oggetto.
+
+### La striscia del verdetto su ogni pagina
+
+Proposta: la riga "conviene aprire le finestre / no" con dentro e fuori sta
+**su tutte le pagine**, foto e messaggi compresi.
+
+Costa zero, e la ragione è una misura: **il refresh parziale costa uguale
+qualunque sia la finestra** (562 ms, l'SSD1683 fa comunque una passata su tutto
+il pannello). Non c'è nessun risparmio nel tenere la striscia fuori dalle
+pagine, e c'è un guadagno evidente nel non far sparire mai l'unica informazione
+per cui il progetto esiste.
+
+### Pagina messaggi
+
+Il bigliettino sul frigo, scritto dal telefono. Modello di un messaggio:
+
+```
+testo       max ~200 caratteri, UTF-8
+creato      timestamp
+scadenza    quando sparisce da solo (o "mai")
+priorita'   normale | urgente
+```
+
+Un messaggio **urgente** porta il pannello su quella pagina subito, scavalcando
+la rotazione: è la differenza fra una lavagnetta e un modo per lasciare un
+avviso a chi torna a casa.
+
+Tre dettagli che si scoprirebbero solo implementando:
+
+- **Gli accenti.** I font Adafruit GFX sono ASCII puro: "perché" diventa
+  "perch?". Serve **`U8g2_for_Adafruit_GFX`**, che gestisce UTF-8 — la libreria
+  che fino a ieri avevo escluso perché per i numeri non serviva. Con l'italiano
+  serve.
+- **Corpo automatico**: messaggio corto → font grande, lungo → font piccolo con
+  a capo automatico. Si fa provando 24/18/12/9 pt con `getTextBounds()` e
+  tenendo il più grande che ci sta.
+- **Un pulsante "manda al pannello" esplicito**, non aggiornamento mentre si
+  scrive: ogni carattere costerebbe un refresh da 2,2 s.
+
+### Anteprima 1:1 di quello che c'è sul pannello
+
+L'hub espone i suoi 15.000 byte su un endpoint, il browser li ridisegna su un
+canvas — il codice `unpack()`/`paint()` **esiste già** in `dither.html`.
+
+Costa pochissimo ed è la funzione che rende tutto il resto usabile: comporre una
+pagina, controllare un messaggio o verificare un layout da un'altra stanza,
+senza andare a guardare il pannello. Dopo i messaggi, è la cosa che
+consiglierei di fare per prima.
+
+### Pagine che consiglio di prevedere fin dall'inizio
+
+- **Stato dei nodi**: chi è vivo, ultimo contatto, batteria. Con nodi a batteria
+  sparsi per casa, *accorgersi* che uno è morto è metà del progetto: senza,
+  guardi un numero fermo da tre giorni credendolo vero. Vale sia come pagina sul
+  pannello sia come schermata web.
+- **Grafico**: temperatura delle ultime 24 h e trend barometrico a 3 ore del
+  BMP280. È la previsione del tempo casalinga, e su e-ink si legge benissimo.
+
+### Dove vivono le cose
+
+| cosa | dove | perché |
+|---|---|---|
+| impostazioni (rotazione, durate, ore di silenzio, layout scelti) | **NVS** | poche decine di byte, devono sopravvivere al riavvio anche senza card |
+| elenco delle pagine e loro parametri | **NVS** | idem; è configurazione, non dati |
+| immagini `.bin` | **SD**, `/images/<nome>.bin` | 15 KB l'una, non stanno in flash |
+| messaggi | **SD**, più l'ultimo attivo in NVS | così un messaggio urgente si rivede anche se la card viene tolta |
+| storico per i grafici | **SD**, CSV giornaliero | come `EnvNode_C3` |
+
+Attenzione ai **cicli di scrittura della NVS**: vale la lezione di
+`EnvNode_C3` — mai scrivere ad ogni cambio, solo quando l'utente conferma
+un'impostazione.
+
+### Vincolo che condiziona il codice: il WebServer è sincrono
+
+Come sul nodo camera (`starters/XIAO_S3_Camera/`): finché si serve una
+richiesta, la scheda non fa altro. Quindi handler **corti**, nessun lavoro lungo
+dentro — un refresh del pannello da 2,2 s non si fa dentro un handler HTTP, si
+mette in coda e lo esegue il `loop()`. È la stessa regola dei callback ESP-NOW e
+di quelli LVGL sull'altra scheda: **la richiesta accoda, il loop lavora.**
+
+Per fortuna qui non c'è niente di tempo reale: un pannello che risponde mezzo
+secondo dopo va benissimo.
+
+### L'opinione di fondo
+
+Il rischio di questo elenco di funzioni non è tecnico, è d'uso: **un pannello
+che ruota fra sei pagine diventa un salvaschermo che nessuno legge**. Il valore
+dell'e-ink è che l'informazione *sta lì* e la si guarda passando.
+
+Quindi: **rotazione spenta di default**, una pagina primaria quasi sempre a
+schermo (il verdetto con dentro/fuori), le altre come scelta deliberata. La
+rotazione automatica resta disponibile, ma come opzione, non come modo normale
+di funzionare.
+
+### Da decidere, quando ci si torna sopra
+
+1. I messaggi si disegnano **come testo a bordo** (leggeri, aggiornabili,
+   ricercabili) o **come immagine composta nel browser** (tipografia libera, ma
+   15 KB l'uno e non modificabili dalla scheda)? La proposta è testo, con
+   l'immagine come strada già disponibile per i casi speciali.
+2. Quante pagine immagine si tengono sulla card e con quale politica quando si
+   riempie — la stessa scelta già fatta in `Timelapse_XIAO` (stop o ring).
+3. Serve un'autenticazione sulla web UI oltre alla basic-auth di `/update`?
+   Vale la stessa premessa degli altri sketch: **LAN fidata**, non Internet.
+4. La rotazione deve tornare da sola alla pagina primaria dopo un po' che
+   nessuno tocca niente (tipo "screensaver al contrario")?
 
 ## Domande aperte
 
