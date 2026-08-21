@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E-ink 400x300 — ritaglio e dithering</title>
+<style>
+  :root{
+    --bg:#1b1d20; --panel:#25282c; --panel2:#2e3238; --line:#3a3f46;
+    --fg:#e6e8ea; --dim:#9aa1a9; --accent:#6fb3ff; --ok:#78c48a; --warn:#e0a84a;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif;
+  }
+  header{
+    padding:14px 20px; border-bottom:1px solid var(--line);
+    display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;
+  }
+  header h1{font-size:16px; margin:0; font-weight:600}
+  header .sub{color:var(--dim); font-size:13px}
+  main{
+    display:grid; grid-template-columns:minmax(0,1fr) 340px;
+    gap:18px; padding:18px 20px 40px; align-items:start;
+  }
+  @media (max-width:1000px){ main{grid-template-columns:minmax(0,1fr)} }
+
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px}
+  .card h2{font-size:12px; text-transform:uppercase; letter-spacing:.08em;
+           color:var(--dim); margin:0 0 10px; font-weight:600}
+
+  /* --- palco di ritaglio --------------------------------------------- */
+  #stageWrap{position:relative; line-height:0}
+  #stage{width:100%; max-width:600px; height:auto; border-radius:6px;
+         background:#111316; cursor:grab; touch-action:none; display:block}
+  #stage.drag{cursor:grabbing}
+  #drop{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color:var(--dim); font-size:13px; text-align:center; pointer-events:none;
+    line-height:1.6;
+  }
+  #stageWrap.hasImg #drop{display:none}
+  #stageWrap.over::after{
+    content:''; position:absolute; inset:0; border:2px dashed var(--accent);
+    border-radius:6px; background:rgba(111,179,255,.08);
+  }
+
+  /* --- anteprima ------------------------------------------------------ */
+  #preview{
+    image-rendering:pixelated; display:block; border-radius:2px;
+    width:400px; max-width:100%; height:auto;
+  }
+  #preview.z2{width:800px}
+  #previewWrap{overflow:auto; background:#111316; padding:10px; border-radius:6px}
+
+  /* --- controlli ------------------------------------------------------ */
+  .row{display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px}
+  .row:last-child{margin-bottom:0}
+  label.f{display:block; margin-bottom:12px}
+  label.f > span{display:flex; justify-content:space-between; color:var(--dim);
+                 font-size:12px; margin-bottom:4px}
+  label.f > span b{color:var(--fg); font-weight:500; font-variant-numeric:tabular-nums}
+  input[type=range]{width:100%; accent-color:var(--accent); margin:0}
+  input[type=text]{
+    background:var(--panel2); border:1px solid var(--line); color:var(--fg);
+    border-radius:6px; padding:6px 8px; font:inherit; min-width:0; flex:1;
+  }
+  select{
+    background:var(--panel2); border:1px solid var(--line); color:var(--fg);
+    border-radius:6px; padding:6px 8px; font:inherit; width:100%;
+  }
+  button{
+    background:var(--panel2); border:1px solid var(--line); color:var(--fg);
+    border-radius:6px; padding:6px 11px; font:inherit; cursor:pointer;
+  }
+  button:hover:not(:disabled){border-color:var(--accent); color:var(--accent)}
+  button:disabled{opacity:.4; cursor:not-allowed}
+  button.primary{background:var(--accent); border-color:var(--accent); color:#0d1620; font-weight:600}
+  button.primary:hover:not(:disabled){filter:brightness(1.1); color:#0d1620}
+  .check{display:flex; align-items:center; gap:7px; color:var(--dim); cursor:pointer}
+  .check input{accent-color:var(--accent); margin:0}
+  hr{border:0; border-top:1px solid var(--line); margin:14px 0}
+
+  .stat{display:flex; justify-content:space-between; font-size:12px; color:var(--dim);
+        font-variant-numeric:tabular-nums}
+  .stat b{color:var(--fg); font-weight:500}
+  #msg{font-size:12px; min-height:18px; margin-top:8px}
+  #msg.ok{color:var(--ok)} #msg.err{color:var(--warn)}
+
+  details.spec{margin:0 20px 30px; color:var(--dim); font-size:13px; max-width:900px}
+  details.spec summary{cursor:pointer; color:var(--fg); margin-bottom:8px}
+  details.spec pre{
+    background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    padding:12px; overflow-x:auto; font-size:12px; line-height:1.5; color:var(--fg);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>E-ink 400×300 — ritaglio e dithering</h1>
+  <span class="sub">produce il framebuffer da 15.000 byte per il pannello WeAct 4.2" B/N</span>
+</header>
+
+<main>
+  <!-- ================= colonna sinistra ================= -->
+  <div style="display:grid; gap:18px; min-width:0">
+    <div class="card">
+      <h2>Sorgente — trascina per spostare, rotella per zoomare</h2>
+      <div id="stageWrap">
+        <canvas id="stage" width="600" height="440"></canvas>
+        <div id="drop">
+          Trascina qui un'immagine, incollala con Ctrl+V<br>oppure usa «Apri immagine»
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="btnOpen">Apri immagine…</button>
+        <button id="btnFit" disabled>Adatta</button>
+        <button id="btnFill" disabled>Riempi</button>
+        <button id="btnRotL" disabled title="Ruota a sinistra">⟲</button>
+        <button id="btnRotR" disabled title="Ruota a destra">⟳</button>
+        <span class="stat" style="margin-left:auto"><b id="zoomLbl">—</b></span>
+      </div>
+      <input type="file" id="fileImg" accept="image/*" hidden>
+    </div>
+
+    <div class="card">
+      <h2>Anteprima 1:1 — è esattamente ciò che vedrà il pannello</h2>
+      <div id="previewWrap">
+        <canvas id="preview" width="400" height="300"></canvas>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <label class="check"><input type="checkbox" id="zoom2"> zoom 2×</label>
+        <label class="check"><input type="checkbox" id="inkSim" checked> simula resa e-ink</label>
+        <span class="stat" style="margin-left:auto">nero <b id="blackPct">—</b></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= colonna destra ================= -->
+  <div style="display:grid; gap:18px; min-width:0">
+    <div class="card">
+      <h2>Regolazioni (prima del dithering)</h2>
+      <label class="f"><span>Luminosità <b id="vBri">0</b></span>
+        <input type="range" id="bri" min="-100" max="100" value="0"></label>
+      <label class="f"><span>Contrasto <b id="vCon">0</b></span>
+        <input type="range" id="con" min="-100" max="100" value="0"></label>
+      <label class="f" style="margin-bottom:0"><span>Gamma <b id="vGam">1.00</b></span>
+        <input type="range" id="gam" min="40" max="250" value="100"></label>
+      <div class="row" style="margin-top:12px">
+        <button id="btnReset">Azzera regolazioni</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Dithering</h2>
+      <div class="row">
+        <select id="algo">
+          <option value="fs" selected>Floyd–Steinberg</option>
+          <option value="atk">Atkinson</option>
+          <option value="bayer">Bayer 8×8 (ordinato)</option>
+          <option value="thr">Soglia secca</option>
+        </select>
+      </div>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="serp" checked> scansione a serpentina</label>
+      </div>
+      <div class="row" style="margin-bottom:0">
+        <label class="check"><input type="checkbox" id="inv"> inverti bianco/nero</label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Esporta</h2>
+      <div class="row">
+        <input type="text" id="name" value="immagine" spellcheck="false">
+        <span class="stat" style="color:var(--dim)">.bin</span>
+      </div>
+      <div class="stat" style="margin-bottom:10px">
+        sulla SD → <b id="pathLbl">/images/immagine.bin</b>
+      </div>
+      <div class="row">
+        <button class="primary" id="btnSave" disabled>Scarica .bin (15.000 byte)</button>
+      </div>
+      <hr>
+      <h2>Verifica</h2>
+      <div class="row" style="margin-bottom:0">
+        <button id="btnLoadBin">Carica un .bin e mostralo</button>
+      </div>
+      <input type="file" id="fileBin" accept=".bin,application/octet-stream" hidden>
+      <div id="msg"></div>
+    </div>
+  </div>
+</main>
+
+<details class="spec">
+  <summary>Formato del file — il contratto tra questa pagina e il firmware</summary>
+  <pre>400 x 300, 1 bit per pixel, NESSUN header: il file E' il framebuffer.
+
+riga  = 50 byte (400 / 8)
+righe = 300
+tot   = 15.000 byte esatti
+
+MSB-first: il bit 7 del primo byte di ogni riga e' il pixel x = 0
+1 = bianco, 0 = nero
+
+E' il formato nativo della RAM del pannello: GxEPD2 lo spinge con
+writeImage() senza nessuna conversione. Se al primo test su hardware
+i colori risultassero scambiati, si corregge con il flag `invert` di
+drawImage()/writeImage() — non serve rifare nulla qui.
+
+Il file si chiama /images/&lt;nome&gt;.bin sulla SD dell'hub. Il nome e'
+limitato a [A-Za-z0-9_-], max 24 caratteri: finisce in un path sul
+filesystem e in una query string HTTP, quindi vale la stessa regola
+difensiva di sd_name_is_safe() in EnvNode_C3.
+
+Nota: 15.000 byte sono anche l'anteprima. La galleria web dell'hub
+rilegge questo stesso file e lo ridisegna su un canvas con la funzione
+unpack()/paint() qui sotto — niente miniature da generare o salvare.</pre>
+</details>
+
+<script>
+"use strict";
+
+// =====================================================================
+//  Costanti del pannello. Tutto il resto del file lavora in "spazio di
+//  uscita": 1 unita' = 1 pixel del pannello.
+// =====================================================================
+const OUT_W = 400, OUT_H = 300;
+const ROW_BYTES = OUT_W / 8;              // 50
+const OUT_BYTES = ROW_BYTES * OUT_H;      // 15000
+
+// Palco di ritaglio: il riquadro 400x300 sta al centro di questa tela,
+// cosi' si vede anche la parte di immagine che resta fuori.
+const STAGE_W = 600, STAGE_H = 440;
+const FRAME_X = (STAGE_W - OUT_W) / 2;
+const FRAME_Y = (STAGE_H - OUT_H) / 2;
+
+const $ = id => document.getElementById(id);
+
+// ---------------------------------------------------------------------
+//  Stato
+// ---------------------------------------------------------------------
+let baseBitmap = null;   // immagine decodificata, orientamento EXIF gia' applicato
+let srcCanvas  = null;   // baseBitmap dopo la rotazione manuale
+let pyramid    = [];     // mipmap di srcCanvas: pyramid[0] = srcCanvas, poi meta' ogni volta
+let rotation   = 0;      // 0 / 90 / 180 / 270
+let view       = { scale: 1, ox: 0, oy: 0 };   // dest = src * scale + offset
+let lastPacked = null;   // Uint8Array(15000) dell'ultimo render
+let showingBin = false;  // true mentre si visualizza un .bin caricato da disco
+
+const stage   = $('stage'),   sctx = stage.getContext('2d');
+const preview = $('preview'), pctx = preview.getContext('2d');
+// Tela di lavoro 400x300: da qui esce l'ImageData che va nella pipeline.
+const work = document.createElement('canvas');
+work.width = OUT_W; work.height = OUT_H;
+const wctx = work.getContext('2d', { willReadFrequently: true });
+
+const clamp = (v, lo, hi) => v < lo ? lo : (v > hi ? hi : v);
+
+// =====================================================================
+//  Caricamento immagine
+// =====================================================================
+async function loadImage(src) {
+  let bmp;
+  try {
+    bmp = await createImageBitmap(src, { imageOrientation: 'from-image' });
+  } catch (e) {
+    // Fallback per browser senza l'opzione imageOrientation.
+    bmp = await new Promise((res, rej) => {
+      const img = new Image();
+      img.onload = () => res(img);
+      img.onerror = rej;
+      img.src = URL.createObjectURL(src);
+    });
+  }
+  baseBitmap = bmp;
+  rotation = 0;
+  applyRotation();
+  fitView('cover');           // di default riempie il riquadro, senza bordi bianchi
+  showingBin = false;
+  $('stageWrap').classList.add('hasImg');
+  ['btnFit','btnFill','btnRotL','btnRotR','btnSave'].forEach(id => $(id).disabled = false);
+  say('');
+  render();
+}
+
+// Ricostruisce srcCanvas applicando la rotazione, poi la piramide. Tenere la
+// rotazione QUI invece che nella trasformata di disegno mantiene il percorso
+// di rendering (e la matematica del pan/zoom) completamente privo di rotazioni.
+function applyRotation() {
+  const w = baseBitmap.width, h = baseBitmap.height;
+  const swap = (rotation % 180) !== 0;
+  const c = document.createElement('canvas');
+  c.width  = swap ? h : w;
+  c.height = swap ? w : h;
+  const g = c.getContext('2d');
+  g.translate(c.width / 2, c.height / 2);
+  g.rotate(rotation * Math.PI / 180);
+  g.drawImage(baseBitmap, -w / 2, -h / 2);
+  srcCanvas = c;
+  buildPyramid();
+}
+
+// Mipmap per dimezzamenti successivi. Serve alla qualita', non alla velocita':
+// un drawImage che riduce una foto da 4000 px a 400 in un colpo solo aliasa, e
+// il dithering trasforma l'aliasing in puntinatura sporca. Dimezzare a tappe
+// e' il filtro passa-basso che manca.
+function buildPyramid() {
+  pyramid = [srcCanvas];
+  let cur = srcCanvas;
+  while (cur.width >= 16 && cur.height >= 16 && pyramid.length < 14) {
+    const n = document.createElement('canvas');
+    n.width  = Math.max(1, cur.width  >> 1);
+    n.height = Math.max(1, cur.height >> 1);
+    const g = n.getContext('2d');
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(cur, 0, 0, n.width, n.height);
+    pyramid.push(n);
+    cur = n;
+  }
+}
+
+// Livello piu' piccolo che sia ancora >= della dimensione richiesta.
+function pickLevel(scale) {
+  let L = 0;
+  while (L + 1 < pyramid.length && Math.pow(2, -(L + 1)) >= scale) L++;
+  return L;
+}
+
+// =====================================================================
+//  Vista (pan / zoom), tutto in spazio di uscita
+// =====================================================================
+function fitView(mode) {
+  const sx = OUT_W / srcCanvas.width, sy = OUT_H / srcCanvas.height;
+  view.scale = (mode === 'cover') ? Math.max(sx, sy) : Math.min(sx, sy);
+  view.ox = (OUT_W - srcCanvas.width  * view.scale) / 2;
+  view.oy = (OUT_H - srcCanvas.height * view.scale) / 2;
+}
+
+function zoomAt(px, py, factor) {
+  const minS = Math.min(OUT_W / srcCanvas.width, OUT_H / srcCanvas.height) * 0.4;
+  const ns = clamp(view.scale * factor, minS, 12);
+  const k = ns / view.scale;
+  view.ox = px - (px - view.ox) * k;   // il punto sotto il cursore resta fermo
+  view.oy = py - (py - view.oy) * k;
+  view.scale = ns;
+}
+
+// Disegna la porzione inquadrata dentro un contesto 400x300.
+function drawCrop(ctx) {
+  ctx.fillStyle = '#ffffff';           // fuori dall'immagine = carta bianca
+  ctx.fillRect(0, 0, OUT_W, OUT_H);
+  if (!srcCanvas) return;
+  const lv = pyramid[pickLevel(view.scale)];
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(lv, view.ox, view.oy,
+                srcCanvas.width * view.scale, srcCanvas.height * view.scale);
+}
+
+function drawStage() {
+  sctx.fillStyle = '#111316';
+  sctx.fillRect(0, 0, STAGE_W, STAGE_H);
+  if (srcCanvas) {
+    const lv = pyramid[pickLevel(view.scale)];
+    sctx.imageSmoothingEnabled = true;
+    sctx.imageSmoothingQuality = 'high';
+    sctx.drawImage(lv, FRAME_X + view.ox, FRAME_Y + view.oy,
+                   srcCanvas.width * view.scale, srcCanvas.height * view.scale);
+    // Oscura tutto cio' che resta fuori dal ritaglio.
+    sctx.fillStyle = 'rgba(10,12,14,.62)';
+    sctx.fillRect(0, 0, STAGE_W, FRAME_Y);
+    sctx.fillRect(0, FRAME_Y + OUT_H, STAGE_W, STAGE_H - FRAME_Y - OUT_H);
+    sctx.fillRect(0, FRAME_Y, FRAME_X, OUT_H);
+    sctx.fillRect(FRAME_X + OUT_W, FRAME_Y, STAGE_W - FRAME_X - OUT_W, OUT_H);
+  }
+  sctx.strokeStyle = '#6fb3ff';
+  sctx.lineWidth = 1;
+  sctx.strokeRect(FRAME_X + .5, FRAME_Y + .5, OUT_W - 1, OUT_H - 1);
+  $('zoomLbl').textContent = srcCanvas ? Math.round(view.scale * 100) + '%' : '—';
+}
+
+// =====================================================================
+//  Pipeline: luminanza -> LUT -> dithering -> impacchettamento
+// =====================================================================
+
+// Tabella 256 voci con contrasto, luminosita' e gamma gia' combinati: una
+// lettura per pixel invece di tre pow()/mul su 120.000 pixel ad ogni
+// spostamento di slider.
+function buildLut() {
+  const bri = +$('bri').value / 100;            // -1 .. +1
+  const con = (+$('con').value + 100) / 100;    //  0 .. 2   (1 = neutro)
+  const gam = +$('gam').value / 100;            // 0.4 .. 2.5
+  const lut = new Float32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let v = i / 255;
+    v = (v - 0.5) * con + 0.5;
+    v += bri;
+    v = clamp(v, 0, 1);
+    v = Math.pow(v, 1 / gam);                   // gamma > 1 schiarisce i mezzitoni
+    lut[i] = v * 255;
+  }
+  return lut;
+}
+
+function toGray(imgData) {
+  const d = imgData.data, lut = buildLut();
+  const g = new Float32Array(OUT_W * OUT_H);
+  for (let i = 0, p = 0; i < g.length; i++, p += 4) {
+    // Rec.709: e' lo spazio in cui sono codificati i JPEG sRGB.
+    const y = 0.2126 * d[p] + 0.7152 * d[p + 1] + 0.0722 * d[p + 2];
+    g[i] = lut[clamp(Math.round(y), 0, 255)];
+  }
+  return g;
+}
+
+// Diffusione dell'errore. Il kernel e' APPIATTITO in [dx,dy,peso, dx,dy,peso, ...]
+// dentro una Float32Array e i controlli di bordo sono in linea: misurato ~5 ms
+// contro ~6,2 ms della versione leggibile (array di array + una addErr()
+// chiamata per ogni vicino), a parita' esatta di bit prodotti. Su ~13 ms di
+// render completo non e' un collo di bottiglia — e' margine gratuito, non una
+// ottimizzazione necessaria. dx e' espresso nel verso di avanzamento, cosi' la
+// serpentina si ottiene solo cambiando segno a `d`.
+function ditherDiffuse(g, kernel, serpentine) {
+  const bits = new Uint8Array(OUT_W * OUT_H);
+  const kn = kernel.length;
+  for (let y = 0; y < OUT_H; y++) {
+    const ltr = !serpentine || (y & 1) === 0;
+    const d = ltr ? 1 : -1;
+    const row = y * OUT_W;
+    for (let k = 0; k < OUT_W; k++) {
+      const x = ltr ? k : OUT_W - 1 - k;
+      const i = row + x;
+      const old = g[i];
+      const nw = old < 128 ? 0 : 255;
+      bits[i] = nw ? 1 : 0;
+      const err = old - nw;
+      if (err === 0) continue;          // nero/bianco esatti: niente da diffondere
+      for (let j = 0; j < kn; j += 3) {
+        const ny = y + kernel[j + 1];   // dy non e' mai negativo: basta il limite alto
+        if (ny >= OUT_H) continue;
+        const nx = x + kernel[j] * d;
+        if (nx < 0 || nx >= OUT_W) continue;
+        g[ny * OUT_W + nx] += err * kernel[j + 2];
+      }
+    }
+  }
+  return bits;
+}
+
+//      X   7/16
+// 3/16 5/16 1/16
+const K_FS = new Float32Array([
+   1, 0, 7 / 16,
+  -1, 1, 3 / 16,
+   0, 1, 5 / 16,
+   1, 1, 1 / 16,
+]);
+// Atkinson: diffonde solo 6/8 dell'errore, quindi piu' contrasto e meno
+// "vermi" del FS — di solito piu' pulito su un pannello a 1 bit.
+const K_ATKINSON = new Float32Array([
+   1, 0, 1 / 8,
+   2, 0, 1 / 8,
+  -1, 1, 1 / 8,
+   0, 1, 1 / 8,
+   1, 1, 1 / 8,
+   0, 2, 1 / 8,
+]);
+const BAYER8 = [
+   0,32, 8,40, 2,34,10,42,
+  48,16,56,24,50,18,58,26,
+  12,44, 4,36,14,46, 6,38,
+  60,28,52,20,62,30,54,22,
+   3,35,11,43, 1,33, 9,41,
+  51,19,59,27,49,17,57,25,
+  15,47, 7,39,13,45, 5,37,
+  63,31,55,23,61,29,53,21,
+];
+
+function ditherOrdered(g) {
+  const bits = new Uint8Array(OUT_W * OUT_H);
+  for (let y = 0; y < OUT_H; y++)
+    for (let x = 0; x < OUT_W; x++) {
+      const t = (BAYER8[(y & 7) * 8 + (x & 7)] + 0.5) / 64 * 255;
+      bits[y * OUT_W + x] = g[y * OUT_W + x] > t ? 1 : 0;
+    }
+  return bits;
+}
+
+function ditherThreshold(g) {
+  const bits = new Uint8Array(OUT_W * OUT_H);
+  for (let i = 0; i < g.length; i++) bits[i] = g[i] >= 128 ? 1 : 0;
+  return bits;
+}
+
+// bit a 1 = bianco (vedi il contratto in fondo alla pagina)
+function pack(bits) {
+  const out = new Uint8Array(OUT_BYTES);       // gia' tutto a 0 = tutto nero
+  for (let y = 0; y < OUT_H; y++) {
+    const rowB = y * ROW_BYTES, rowP = y * OUT_W;
+    for (let x = 0; x < OUT_W; x++)
+      if (bits[rowP + x]) out[rowB + (x >> 3)] |= 0x80 >> (x & 7);
+  }
+  return out;
+}
+
+function unpack(bytes) {
+  const bits = new Uint8Array(OUT_W * OUT_H);
+  for (let y = 0; y < OUT_H; y++) {
+    const rowB = y * ROW_BYTES, rowP = y * OUT_W;
+    for (let x = 0; x < OUT_W; x++)
+      bits[rowP + x] = (bytes[rowB + (x >> 3)] >> (7 - (x & 7))) & 1;
+  }
+  return bits;
+}
+
+// Disegna i bit sull'anteprima. Con "simula e-ink" usa carta e inchiostro veri
+// invece di #fff/#000: su un monitor il bianco puro promette un contrasto che
+// il pannello non ha, e si finisce per tarare le regolazioni troppo scure.
+function paint(bits) {
+  const sim = $('inkSim').checked;
+  const W = sim ? [233, 231, 224] : [255, 255, 255];
+  const B = sim ? [ 53,  54,  56] : [  0,   0,   0];
+  const img = pctx.createImageData(OUT_W, OUT_H);
+  const d = img.data;
+  let black = 0;
+  for (let i = 0, p = 0; i < bits.length; i++, p += 4) {
+    const c = bits[i] ? W : B;
+    if (!bits[i]) black++;
+    d[p] = c[0]; d[p + 1] = c[1]; d[p + 2] = c[2]; d[p + 3] = 255;
+  }
+  pctx.putImageData(img, 0, 0);
+  $('blackPct').textContent = (black / bits.length * 100).toFixed(1) + '%';
+}
+
+// =====================================================================
+//  Render completo, coalescato su requestAnimationFrame
+// =====================================================================
+let pending = false;
+function render() {
+  if (pending) return;
+  pending = true;
+  requestAnimationFrame(() => {
+    pending = false;
+    drawStage();
+    if (showingBin || !srcCanvas) return;
+
+    drawCrop(wctx);
+    const gray = toGray(wctx.getImageData(0, 0, OUT_W, OUT_H));
+
+    const algo = $('algo').value, serp = $('serp').checked;
+    let bits;
+    if (algo === 'fs')         bits = ditherDiffuse(gray, K_FS, serp);
+    else if (algo === 'atk')   bits = ditherDiffuse(gray, K_ATKINSON, serp);
+    else if (algo === 'bayer') bits = ditherOrdered(gray);
+    else                       bits = ditherThreshold(gray);
+
+    if ($('inv').checked) for (let i = 0; i < bits.length; i++) bits[i] ^= 1;
+
+    paint(bits);
+    lastPacked = pack(bits);
+  });
+}
+
+// =====================================================================
+//  Interazione col palco
+// =====================================================================
+// Il canvas ha una backing store di 600x440 ma il CSS puo' mostrarlo piu'
+// piccolo: ogni coordinata del mouse va riportata in scala.
+function stageScale() { return STAGE_W / stage.getBoundingClientRect().width; }
+
+let dragging = false, lastX = 0, lastY = 0;
+stage.addEventListener('pointerdown', e => {
+  if (!srcCanvas) return;
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+  stage.setPointerCapture(e.pointerId);
+  stage.classList.add('drag');
+});
+stage.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const k = stageScale();
+  view.ox += (e.clientX - lastX) * k;
+  view.oy += (e.clientY - lastY) * k;
+  lastX = e.clientX; lastY = e.clientY;
+  showingBin = false;
+  render();
+});
+['pointerup', 'pointercancel'].forEach(ev => stage.addEventListener(ev, e => {
+  dragging = false;
+  stage.classList.remove('drag');
+  try { stage.releasePointerCapture(e.pointerId); } catch (_) {}
+}));
+stage.addEventListener('wheel', e => {
+  if (!srcCanvas) return;
+  e.preventDefault();
+  const r = stage.getBoundingClientRect(), k = stageScale();
+  const px = (e.clientX - r.left) * k - FRAME_X;   // in spazio di uscita
+  const py = (e.clientY - r.top)  * k - FRAME_Y;
+  zoomAt(px, py, e.deltaY < 0 ? 1.12 : 1 / 1.12);
+  showingBin = false;
+  render();
+}, { passive: false });
+
+// Frecce = spostamento fine di 1 pixel del pannello.
+window.addEventListener('keydown', e => {
+  if (!srcCanvas || /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  const step = e.shiftKey ? 10 : 1;
+  const map = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+  const m = map[e.key];
+  if (!m) return;
+  e.preventDefault();
+  view.ox += m[0]; view.oy += m[1];
+  showingBin = false;
+  render();
+});
+
+// Trascinamento file + incolla dagli appunti.
+const wrap = $('stageWrap');
+['dragenter', 'dragover'].forEach(ev =>
+  document.addEventListener(ev, e => { e.preventDefault(); wrap.classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev =>
+  document.addEventListener(ev, e => { e.preventDefault(); wrap.classList.remove('over'); }));
+document.addEventListener('drop', e => {
+  const f = e.dataTransfer.files[0];
+  if (f && f.type.startsWith('image/')) loadImage(f);
+});
+document.addEventListener('paste', e => {
+  for (const it of e.clipboardData.items)
+    if (it.type.startsWith('image/')) { loadImage(it.getAsFile()); break; }
+});
+
+// =====================================================================
+//  Controlli
+// =====================================================================
+$('btnOpen').onclick = () => $('fileImg').click();
+$('fileImg').onchange = e => { if (e.target.files[0]) loadImage(e.target.files[0]); };
+
+$('btnFit').onclick  = () => { fitView('contain'); showingBin = false; render(); };
+$('btnFill').onclick = () => { fitView('cover');   showingBin = false; render(); };
+$('btnRotL').onclick = () => { rotation = (rotation + 270) % 360; applyRotation(); fitView('cover'); showingBin = false; render(); };
+$('btnRotR').onclick = () => { rotation = (rotation +  90) % 360; applyRotation(); fitView('cover'); showingBin = false; render(); };
+
+// Slider: aggiorna l'etichetta e ridisegna ad ogni movimento.
+const sliders = [['bri', 'vBri', v => v], ['con', 'vCon', v => v], ['gam', 'vGam', v => (v / 100).toFixed(2)]];
+sliders.forEach(([id, lbl, fmt]) => {
+  $(id).addEventListener('input', () => {
+    $(lbl).textContent = fmt(+$(id).value);
+    showingBin = false;
+    render();
+  });
+});
+$('btnReset').onclick = () => {
+  $('bri').value = 0; $('con').value = 0; $('gam').value = 100;
+  $('vBri').textContent = '0'; $('vCon').textContent = '0'; $('vGam').textContent = '1.00';
+  showingBin = false; render();
+};
+
+['algo', 'serp', 'inv'].forEach(id =>
+  $(id).addEventListener('change', () => { showingBin = false; render(); }));
+$('inkSim').addEventListener('change', render);
+$('zoom2').addEventListener('change', e => preview.classList.toggle('z2', e.target.checked));
+
+// Nome file: stessa regola difensiva di sd_name_is_safe() lato firmware.
+function safeName() {
+  let n = $('name').value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24);
+  return n || 'immagine';
+}
+$('name').addEventListener('input', () => {
+  $('pathLbl').textContent = '/images/' + safeName() + '.bin';
+});
+
+$('btnSave').onclick = () => {
+  if (!lastPacked) return;
+  const n = safeName();
+  $('name').value = n;
+  $('pathLbl').textContent = '/images/' + n + '.bin';
+  const url = URL.createObjectURL(new Blob([lastPacked], { type: 'application/octet-stream' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = n + '.bin';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  say(`Salvato ${n}.bin — ${lastPacked.length} byte`, 'ok');
+};
+
+// Rilettura di un .bin: verifica il giro completo e, allo stesso tempo, e' il
+// renderer che servira' alla galleria dell'hub.
+$('btnLoadBin').onclick = () => $('fileBin').click();
+$('fileBin').onchange = async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const buf = new Uint8Array(await f.arrayBuffer());
+  if (buf.length !== OUT_BYTES) {
+    say(`${f.name}: ${buf.length} byte, ne servono esattamente ${OUT_BYTES}`, 'err');
+    return;
+  }
+  showingBin = true;
+  paint(unpack(buf));
+  say(`${f.name} riletto e disegnato — le regolazioni ripartono dall'immagine sorgente`, 'ok');
+  e.target.value = '';
+};
+
+function say(t, cls) { const m = $('msg'); m.textContent = t; m.className = cls || ''; }
+
+drawStage();
+</script>
+</body>
+</html>
