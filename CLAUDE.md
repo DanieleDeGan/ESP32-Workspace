@@ -184,6 +184,37 @@ su qualunque ESP32: per un C3 usa `esp32:esp32:esp32c3:CDCOnBoot=cdc`. **Senza
 USB si vede solo il log di boot della ROM, non lo sketch — errore facile da
 scambiare per "lo sketch non parte".
 
+### `Serial.setTxTimeoutMs(0)` — obbligatorio su C3 e S3
+
+Su queste schede la `Serial` dell'USB **non è una UART ma la CDC del chip**. Se
+il PC ha riconosciuto la porta e nessuno la sta leggendo, il buffer si riempie e
+ogni `print()` **blocca** fino a un timeout interno — e finché blocca, `loop()` è
+fermo, quindi web server, OTA, sensori e timer con lui. Rimedio, subito dopo
+`Serial.begin()`:
+
+```cpp
+#if ARDUINO_USB_CDC_ON_BOOT
+  Serial.setTxTimeoutMs(0);   // se nessuno ascolta, il log si butta
+#endif
+```
+
+Il `#if` serve perché con *USB CDC On Boot: Disabled* la `Serial` torna a essere
+una UART, che quel metodo non ce l'ha e non ne ha bisogno (verificato: entrambe
+le configurazioni compilano).
+
+**Il sintomo non somiglia alla causa** ed è costato una mezza giornata il
+2026-08-22 su `MeteoNode_C3`: da rete la pagina moriva dopo ogni comando che
+stampa molte righe insieme, mentre **con il monitor seriale collegato le stesse
+identiche operazioni erano istantanee**. È proprio quell'asimmetria — "da
+seriale va, da rete no" — il segnale da riconoscere, perché il monitor aperto
+non è lo strumento con cui si osserva il problema: è la cosa che lo fa sparire.
+Il caso peggiore non è "non c'è mai stato un monitor" ma "c'è stato e se n'è
+andato"; un nodo alimentato da un caricatore non se ne accorge (senza pin dati
+la porta non viene mai riconosciuta), ma basta collegarlo a un PC.
+
+Presente in tutti gli sketch del repo che restano accesi senza cavo. Va messo
+anche in ogni sketch nuovo per queste board.
+
 Per caricare su scheda reale (non solo verificare) serve `--upload -p <porta_seriale>`,
 non testato da qui in quanto richiede la scheda collegata. Le schede con OTA si
 caricano via USB solo la prima volta: poi si aggiornano via rete (vedi

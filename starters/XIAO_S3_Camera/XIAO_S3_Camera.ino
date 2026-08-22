@@ -57,7 +57,10 @@
 
 // Versione firmware: cambiala ad ogni build, cosi' dalla web UI riconosci
 // quale firmware sta girando dopo un aggiornamento OTA.
-static const char* FW_VERSION = "v1";
+// Da incrementare a ogni firmware caricato: la web UI lo mostra, ed e' l'unico
+// modo per sapere da remoto quale versione sta davvero girando.
+//   v2  2026-08-22  Serial.setTxTimeoutMs(0), vedi la nota in setup()
+static const char* FW_VERSION = "v2";
 
 // Nome con cui il nodo si presenta all'hub (max 15 caratteri: LINK_NAME_LEN).
 #define NODE_NAME "CamGavone"
@@ -255,6 +258,21 @@ void app_pump() {
 
 void setup() {
   Serial.begin(115200);
+
+  // Scritture su Serial mai bloccanti. Su questa board la Serial dell'USB non
+  // e' una UART ma la CDC del chip: se il PC ha riconosciuto la porta e nessuno
+  // la sta leggendo, il buffer si riempie e ogni print() aspetta un timeout
+  // interno. Finche' aspetta, loop() e' fermo - e con lui net_loop(), quindi
+  // web server, OTA, PIR ed ESP-NOW. Questo sketch stampa una riga di stato
+  // ogni 10 s piu' una per scatto e una per rilevamento, e sta acceso da solo
+  // per giorni: senza questa riga, il giorno che lo si lascia collegato a un PC
+  // con il monitor chiuso smette di rispondere e sembra un guasto della rete.
+  //
+  // Il guardia serve perche' con "USB CDC On Boot: Disabled" la Serial torna
+  // a essere una UART, che questo metodo non ce l'ha e non ne ha bisogno.
+#if ARDUINO_USB_CDC_ON_BOOT
+  Serial.setTxTimeoutMs(0);
+#endif
   delay(300);   // il CDC USB impiega un attimo: senza, si perde il banner
 
   Serial.println();

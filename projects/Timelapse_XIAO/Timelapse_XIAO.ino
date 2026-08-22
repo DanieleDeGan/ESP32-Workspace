@@ -58,7 +58,10 @@
 
 // Versione firmware: cambiala ad ogni build, cosi' dalla web UI riconosci
 // quale firmware sta girando dopo un aggiornamento OTA.
-static const char* FW_VERSION = "v1";
+// Da incrementare a ogni firmware caricato: la web UI lo mostra, ed e' l'unico
+// modo per sapere da remoto quale versione sta davvero girando.
+//   v2  2026-08-22  Serial.setTxTimeoutMs(0), vedi la nota in setup()
+static const char* FW_VERSION = "v2";
 
 // Nome mostrato nella web UI.
 #define NODE_NAME "Timelapse"
@@ -380,6 +383,21 @@ void app_pump() {
 
 void setup() {
   Serial.begin(115200);
+
+  // Scritture su Serial mai bloccanti. Su questa board la Serial dell'USB non
+  // e' una UART ma la CDC del chip: se il PC ha riconosciuto la porta e nessuno
+  // la sta leggendo, il buffer si riempie e ogni print() aspetta un timeout
+  // interno. Finche' aspetta, loop() e' fermo - e con lui net_loop() e il timer
+  // degli scatti. Qui pesa piu' che altrove: c'e' una riga di stato ogni 30 s
+  // PIU' una riga per ogni foto, e un timelapse e' fatto apposta per restare
+  // acceso settimane. Perdere qualche riga di log quando nessuno la legge non
+  // costa niente; perdere gli scatti si'.
+  //
+  // Il guardia serve perche' con "USB CDC On Boot: Disabled" la Serial torna
+  // a essere una UART, che questo metodo non ce l'ha e non ne ha bisogno.
+#if ARDUINO_USB_CDC_ON_BOOT
+  Serial.setTxTimeoutMs(0);
+#endif
   delay(300);   // il CDC USB impiega un attimo: senza, si perde il banner
 
   Serial.println();

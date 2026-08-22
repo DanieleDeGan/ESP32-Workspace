@@ -39,7 +39,10 @@ Adafruit_SSD1306 oled(OLED_W, OLED_H, &Wire, OLED_RST);
 
 // Versione firmware: cambiala a ogni build, cosi' a schermo riconosci quale
 // firmware sta girando dopo un aggiornamento OTA.
-static const char* FW_VERSION = "v3";
+// Da incrementare a ogni firmware caricato: la pagina lo mostra, ed e' l'unico
+// modo per sapere da remoto quale versione sta davvero girando.
+//   v4  2026-08-22  Serial.setTxTimeoutMs(0), vedi la nota in setup()
+static const char* FW_VERSION = "v4";
 
 static bool     otaActive = false;   // true mentre un update e' in corso
 static uint32_t lastDraw  = 0;
@@ -119,6 +122,26 @@ static void drawStatus() {
 // ============================ setup / loop ============================
 void setup() {
   Serial.begin(115200);
+
+  // Scritture su Serial mai bloccanti. Su C3 e S3 la Serial dell'USB non e'
+  // una UART ma la CDC del chip: se il PC ha riconosciuto la porta e nessuno
+  // la sta leggendo, il buffer si riempie e ogni print() aspetta un timeout
+  // interno. Finche' aspetta, loop() e' fermo - e con lui net_loop(), quindi
+  // web server e OTA. Un nodo alimentato da un caricatore non se ne accorge
+  // (senza pin dati la porta non viene mai riconosciuta e le scritture si
+  // buttano da sole), ma basta collegarlo a un PC perche' cominci a bloccarsi.
+  //
+  // Qui le stampe periodiche sono solo quelle del watchdog WiFi, ogni 30 s
+  // mentre la rete e' giu': cioe' proprio quando il codice di riconnessione
+  // deve poter girare. Sta in questo STARTER anche perche' ogni progetto che
+  // nasce copiandolo se lo porta dietro - EnvNode_C3 aveva ereditato la
+  // mancanza da qui.
+  //
+  // Il guardia serve perche' con "USB CDC On Boot: Disabled" la Serial torna
+  // a essere una UART, che questo metodo non ce l'ha e non ne ha bisogno.
+#if ARDUINO_USB_CDC_ON_BOOT
+  Serial.setTxTimeoutMs(0);
+#endif
 
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, HIGH);   // LED spento (attivo LOW)

@@ -55,7 +55,13 @@ static constexpr uint32_t DRAW_PERIOD_MS   = 500;    // ~2Hz: e' testo, non serv
 Adafruit_SSD1306 oled(OLED_W, OLED_H, &Wire, OLED_RST);
 DHT              dht(PIN_DHT, DHT11);
 
-static const char* FW_VERSION = "v2";
+// Da incrementare a ogni firmware caricato sul nodo: la dashboard lo mostra,
+// ed e' l'unico modo per sapere da remoto quale versione sta davvero girando.
+//   v3  2026-08-22  Serial.setTxTimeoutMs(0): senza, con la porta USB
+//                   riconosciuta dal PC ma nessuno che legge, le print()
+//                   bloccavano loop() e con lui web server, OTA e campionamento
+//   v2  ...
+static const char* FW_VERSION = "v3";
 
 static bool     otaActive = false;   // true mentre un update e' in corso
 static uint32_t lastDraw  = 0;
@@ -358,6 +364,18 @@ static void onOtaProgress(int percent, const char* what) {
 // ============================ setup / loop ============================
 void setup() {
   Serial.begin(115200);
+
+  // Scritture su Serial mai bloccanti. Su questa board Serial e' la USB CDC
+  // nativa del C3, non una UART: se il PC ha riconosciuto la porta ma nessuno
+  // la sta leggendo, il buffer si riempie e ogni printf aspetta il timeout,
+  // fermando loop() - quindi web server, OTA e campionamento. Questo sketch
+  // stampa una riga a OGNI campione, quindi e' particolarmente esposto.
+  // Finora non e' successo niente probabilmente solo perche' il nodo sta su
+  // un alimentatore e non su una porta USB di un PC: senza i pin dati la
+  // porta non viene mai riconosciuta e le scritture si buttano via da sole.
+  // E' una salvezza per fortuna, non per costruzione. Stessa riga, e stesso
+  // motivo, di MeteoHub_S3 e MeteoNode_C3.
+  Serial.setTxTimeoutMs(0);
 
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, HIGH);        // LED spento (attivo LOW)
