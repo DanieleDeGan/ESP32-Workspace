@@ -461,6 +461,43 @@ I tre vincoli, e come sono stati risolti:
 Il partitore della batteria invece conviene lasciarlo fisso: 2x1 MΩ sono ~1,7 µA,
 non valgono la complicazione di commutarli.
 
+**OTA "pull": il nodo che si aggiorna da solo.** Va fatto *insieme* al deep
+sleep, non dopo, perché è il deep sleep a renderlo necessario: un nodo che
+dorme è irraggiungibile per il 99% del tempo, quindi non gli si può più
+**spingere** un firmware come si fa oggi con `/update`. Deve essere lui a
+chiedere, al risveglio. Le due cose condividono anche la logica del risveglio,
+quindi conviene scriverle insieme.
+
+Meccanica, tutta già nel core ESP32 (classe `HTTPUpdate`): il nodo scarica un
+manifest di poche centinaia di byte con versione e URL del `.bin`, lo confronta
+con la propria, e se serve scarica e riavvia. `HTTPUpdate` sa anche mandare la
+versione corrente in un header e ricevere un **304 Not Modified**, che rende il
+controllo di routine quasi gratuito.
+
+- **Dove sta il firmware: sull'hub.** `MeteoHub_S3` è sempre alimentato, ha la
+  microSD e già serve una web UI: è il punto di distribuzione naturale. Si
+  carica il `.bin` una volta lì e i nodi se lo prendono quando si svegliano.
+  Niente NAS, niente servizi esterni. GitHub Releases vorrebbe HTTPS, quindi
+  certificati e più flash: su una LAN fidata non ripaga.
+- **Frequenza**: una volta al giorno, a un'ora fissa. Non a ogni risveglio — la
+  radio accesa è la voce di consumo dominante, e un controllo inutile costa più
+  dell'aggiornamento.
+- **Mai aggiornare sotto soglia di batteria.** Un brownout a metà scrittura
+  trasforma un nodo in giardino in un oggetto da recuperare col cacciavite.
+  **Finché il partitore su D1/GPIO3 non è cablato il nodo non sa quanta
+  batteria ha**, quindi non può prendere questa decisione: è un motivo in più
+  per saldarlo prima di mettere i nodi a dormire.
+- **Rollback.** Il caso da cui proteggersi non è il download fallito — quello è
+  già gestito, il firmware nuovo semplicemente non viene attivato. È il caso
+  cattivo: firmware che si installa, parte, e **non si connette al WiFi**. Vivo
+  ma irraggiungibile, e nessun OTA lo salva più. Contromisura: contatore al
+  boot, se dopo N tentativi la rete non c'è si torna alla partizione
+  precedente.
+- **Serve uno schema di versione confrontabile.** Oggi `FW_VERSION` è la
+  stringa `"v2"`: va bene per un umano che legge la pagina, ma un confronto
+  automatico direbbe che `"v10"` è minore di `"v9"`. Serve un intero monotono o
+  una data tipo `2026082201`.
+
 **Sicurezza delle celle**:
 
 - **verificare la polarità del JST col tester** prima di collegarlo ai pad B+/B−
