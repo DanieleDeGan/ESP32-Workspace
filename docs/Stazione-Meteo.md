@@ -1,8 +1,23 @@
 # Stazione meteo e-ink — piano di lavoro
 
-Stato al **2026-08-21**. Progetto in corso: niente ancora compilato, niente
-ancora provato su hardware, niente committato. Il pannello e-ink e' arrivato il
-2026-08-21.
+Stato al **2026-08-22**. Il pannello e-ink è arrivato il 2026-08-21 e
+`projects/MeteoHub_S3/` — bring-up del solo pannello — è committato e
+**funzionante su hardware**. Il primo sensore è stato saldato e cablato al nodo
+il 2026-08-22: `projects/MeteoNode_C3/` per ora contiene **solo il bring-up del
+sensore, con pagina web e OTA** — provato su hardware e funzionante — ma
+niente ESP-NOW, né batteria, né deep sleep.
+
+**OTA — usare la pagina `/update`, non `arduino-cli upload -p <ip>`.** Provate
+entrambe il 2026-08-22 su `EnvNode_C3`: la POST multipart del `.bin` su
+`/update` (campo del form `update`, basic-auth) ha funzionato, 1,2 MB in 29 s,
+`HTTP 200 OK`, nodo ripartito e regolare. La strada `arduino-cli` invece
+supera l'autenticazione e poi muore con `No response from device`: nel
+protocollo ArduinoOTA è la **scheda** a ricollegarsi al PC per scaricare il
+firmware, quindi serve una connessione in ingresso che il firewall di Windows
+blocca. Da confermare, ma la pagina web risolve senza toccare il firewall.
+Su `MeteoNode_C3` la stessa `arduino-cli` falliva ancora prima, in
+autenticazione — quello resta inspiegato, e lì il `.bin` non è mai stato
+caricato per davvero.
 
 ## Obiettivo
 
@@ -25,7 +40,7 @@ nodi C3 (AHT20+BMP280, a batteria)  --ESP-NOW-->  hub S3 Sense
 | WeAct e-ink 4.2" 400×300 **bianco/nero** | 1 | arrivato il 2026-08-21 |
 | XIAO ESP32-C3 (nodi sensore) | ≥ 2 | disponibili |
 | XIAO ESP32-S3 Sense (hub) | 1 | disponibile — **la stessa che servirebbe a `projects/Timelapse_XIAO/`** |
-| AHT20 + BMP280 (modulo combinato I2C) | ≥ 2 | **da confermare se già in casa** |
+| AHT20 + BMP280 (modulo combinato I2C) | ≥ 2 | in casa; il primo **saldato e cablato** al nodo il 2026-08-22 |
 | 18650 3,7 V 3000 mAh nominali, con JST SM-2 | — | arrivate il 2026-08-19 |
 | Connettori JST SM-2 maschio/femmina | — | disponibili |
 
@@ -232,24 +247,103 @@ di Adafruit GFX bastano.
 Legge AHT20+BMP280 e manda un DATA ESP-NOW. Serve solo a validare sensore e
 collegamento prima di aggiungere batteria e sleep.
 
+**Fatto il 2026-08-22 — bring-up del sensore, con web UI.** Come per l'hub,
+prima il bring-up e poi il resto: `MeteoNode_C3.ino` oggi accende il sensore,
+legge il chip ID del BMP280, stampa le misure ogni 2 s e offre i comandi
+`s`/`r`/`p` (scan I2C, power-cycle, spegni-accendi) **sia da seriale sia da
+una pagina web** (`net_ota.*` + `web_ui.*` ripresi da `EnvNode_C3`), perche' a
+batteria la Serial non c'e' e il test sarebbe cieco. Niente ESP-NOW, niente
+deep sleep, partitore batteria non ancora cablato (`BATTERY_ADC_ENABLED 0`).
+Serve a distinguere una saldatura fredda da un errore di firmware **prima**
+che ci sia firmware da sbagliare.
+
+**Provato su hardware il 2026-08-22**, tutto verificato: AHT20 a 0x38, BMP280
+a **0x77** (non 0x76: il fallback nel codice serve), chip ID 0x58 quindi
+BMP280 vero e non un BME280 travestito; misure plausibili e stabili
+(~28 °C, ~50 %RH, ~1011 hPa) e coerenti con `EnvNode_C3` interrogato in
+parallelo; alimentazione da GPIO confermata dalla pagina web (spegnendo, le
+letture si congelano); WiFi a −39/−48 dBm sul **canale 6**, che e' gia' il
+canale di default di `EspNowLink` — comodo, ma da fissare nel router come
+dice la Fase 4.
+
+**Aggiunto lo stesso giorno (firmware `v2`), provato su hardware a batteria**:
+
+- **Previsione dal trend barometrico a 3 ore** (`forecast.h`, header-only e
+  puro come `comfort.h`): pressione riportata al livello del mare, trend
+  classificato con le soglie convenzionali (0,5 / 1,6 / 3,5 / 6,0 hPa) e
+  isteresi per non far sfarfallare l'etichetta, testo di previsione che
+  combina trend e valore assoluto. Finché non ci sono tre ore di storico dice
+  "raccolgo dati" invece di inventare.
+- **Intervallo di misurazione impostabile da pagina** (2–3600 s, default 60),
+  persistito in NVS. La prima lettura si fa subito all'avvio e non dopo un
+  intervallo, o con l'intervallo a un'ora il nodo sembrerebbe rotto per
+  un'ora dopo ogni riavvio.
+- **Storico 24 h in RAM e tre grafici SVG** disegnati a mano nella pagina,
+  senza librerie esterne. Griglia fissa da 2 minuti, 720 slot, ~4,3 kB; ogni
+  slot è la media delle misure cadute nella finestra, gli slot senza dati
+  restano buchi visibili nella linea invece di essere interpolati.
+  `/api/storico` è servito **a blocchi**, non come una String unica da 10 kB.
+  **Differenza da `EnvNode_C3` da tenere a mente**: là i grafici vengono dai
+  CSV sulla microSD, qui non c'è microSD e lo storico si azzera a ogni
+  riavvio. I dati storici veri li terrà l'hub, quando ci sarà l'ESP-NOW.
+- **Altitudine impostabile e calibrabile**: si inserisce la pressione al
+  livello del mare letta da un bollettino e il firmware ricava la quota dalla
+  pressione che sta misurando. Serve solo a rendere il numero confrontabile
+  coi bollettini — il trend, e quindi la previsione, non dipende
+  dall'altitudine. Default 40 m per Trieste: **è una stima, va calibrata**.
+  Il partitore della batteria non è ancora cablato.
+
+Due cose imparate, che valgono per tutto il repo:
+
+- **`Serial.setTxTimeoutMs(0)` e' obbligatorio sulle board con USB nativa**
+  (XIAO C3/S3). `Serial` non e' una UART: e' la CDC, e senza un host che
+  svuoti il buffer le `print()` BLOCCANO fino a un timeout interno,
+  fermando `loop()` — quindi web server, OTA e letture. Il sintomo non
+  somiglia alla causa: da rete la pagina moriva dopo ogni comando che stampa
+  molte righe, mentre col monitor seriale collegato le stesse operazioni
+  erano istantanee. **Vale anche per `Timelapse_XIAO`, `XIAO_S3_Camera` e
+  `MeteoHub_S3`**, che stanno accesi per giorni senza cavo: da verificare.
+- **La scansione I2C non va nell'init** ma solo su richiesta, e `Wire`
+  vuole `setTimeOut(10)` (il default e' 50 ms per indirizzo vuoto).
+  Init misurato: 251 ms.
+
 - `value[0]` = °C, `value[1]` = %RH, `value[2]` = hPa — i tre float di
   `link_message_t` bastano esatti. `battery_mv` valorizzato.
 - Valutare un `link_node_type_t` nuovo **in coda** all'enum (aggiungere in fondo
   è retrocompatibile), oppure riusare `LINK_NODE_SENSOR_TEMPERATURE`.
-- **Pin (XIAO ESP32-C3)**: I2C SDA = D4/GPIO6, SCL = D5/GPIO7. Partitore
-  batteria su **D1/GPIO3**, mai su GPIO2/8/9 (pin di strapping) e mai su ADC2
-  (inutilizzabile con il WiFi acceso): 2×1 MΩ + 100 nF.
+- **Pin (XIAO ESP32-C3)** — cablaggio reale, saldato il 2026-08-22:
+
+  | Filo del modulo | Pin | GPIO |
+  |---|---|---|
+  | SCL | D2 | 4 |
+  | VCC (**commutato**, vedi Fase 4) | D3 | 5 |
+  | SDA | D4 | 6 |
+  | GND | GND | — |
+
+  SCL sta su **D2 e non sul D5/GPIO7 di default**: sull'ESP32-C3 l'I2C passa
+  dalla GPIO matrix, quindi i pin si scelgono dove conviene e `Wire.begin()` li
+  vuole espliciti. D2/GPIO4 non è di strapping (lo sono GPIO2/8/9) ed è
+  RTC-capable come serve alla Fase 4. Resta libero D5/GPIO7. Il VCC **non** va
+  al pad 5V: è alimentato solo dalla USB e a batteria è morto.
+- Partitore batteria su **D1/GPIO3**, tenuto libero apposta; mai su GPIO2/8/9
+  (strapping) e mai su ADC2 (inutilizzabile con il WiFi acceso): 2×1 MΩ + 100 nF.
 - **Collegare l'antenna esterna** del C3. Senza, da fuori attraverso un muro non
   arriva niente.
 - **Dissaldare il LED di alimentazione** del modulo sensore se ce l'ha: 2 mA
   sempre accesi svuotano la 18650 in tre settimane.
-- Compilazione — **vuole** `--libraries libraries`, a differenza di
-  `EnvNode_C3`, perché usa `EspNowLink`:
+- Compilazione. Finché è solo il bring-up è self-contained, **niente**
+  `--libraries`; quando arriverà l'ESP-NOW lo vorrà, a differenza di
+  `EnvNode_C3`, perché userà `EspNowLink`:
   ```
-  arduino-cli compile --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=min_spiffs" --libraries libraries projects/MeteoNode_C3
+  arduino-cli compile --fqbn "esp32:esp32:XIAO_ESP32C3:PartitionScheme=min_spiffs" projects/MeteoNode_C3
   ```
-- Librerie esterne: **Adafruit AHTX0** + **Adafruit BMP280** (+ Adafruit Unified
-  Sensor).
+  **Attenzione al CDC**: la board è `XIAO_ESP32C3`, non `esp32c3` generica, e
+  come sulla XIAO S3 ha `CDCOnBoot` già Enabled di default — nel FQBN
+  `CDCOnBoot=cdc` significherebbe *Disabled*. Qui non va messo nulla.
+- Librerie esterne: **Adafruit AHTX0** + **Adafruit BMP280 Library** (+ Adafruit
+  Unified Sensor, Adafruit BusIO). Installate il 2026-08-22.
+- **Se il chip ID esce 0x60** il modulo monta un BME280, non un BMP280: ha anche
+  l'umidità e vuole la libreria Adafruit BME280. Il bring-up lo dice a schermo.
 
 ### Fase 2 — hub `projects/MeteoHub_S3/`, pannello e-ink
 
@@ -338,29 +432,31 @@ l'AP e tutti devono usare quello (`Link_InitEx` con il canale dell'AP, non
 `Link_Init`). **Fissare il canale 2,4 GHz nel router**, altrimenti un giorno
 cambia da solo e i nodi diventano muti.
 
-**Alimentare il sensore da un GPIO** (proposta, da decidere quando si cabla il
-nodo — il filo di alimentazione va a un pin invece che al 3V3 fisso). L'LDO
-della basetta piu' l'eventuale LED piu' il riposo dei sensori stanno sulle
-decine di µA, cioe' lo stesso ordine dei ~43 µA di deep sleep della XIAO:
-spegnere il modulo fra una lettura e l'altra puo' quasi dimezzare il consumo a
-riposo. AHT20 + BMP280 assorbono qualche centinaio di µA con picchi sotto i
-2 mA, quindi un GPIO basta e non serve un MOSFET. Tre vincoli che vanno decisi
-prima di saldare:
+**Alimentare il sensore da un GPIO** — **deciso e saldato il 2026-08-22: VCC su
+D3/GPIO5**, non al 3V3 fisso. L'LDO della basetta piu' l'eventuale LED piu' il
+riposo dei sensori stanno sulle decine di µA, cioe' lo stesso ordine dei ~43 µA
+di deep sleep della XIAO: spegnere il modulo fra una lettura e l'altra puo'
+quasi dimezzare il consumo a riposo. AHT20 + BMP280 assorbono qualche centinaio
+di µA con picchi sotto i 2 mA, quindi un GPIO basta e non serve un MOSFET.
+I tre vincoli, e come sono stati risolti:
 
 - **il pin dev'essere RTC-capable** (sul C3 sono GPIO0-5), altrimenti
   `gpio_hold_en()` + `gpio_deep_sleep_hold_en()` non lo possono tenere basso
-  durante il sonno e i GPIO tornano flottanti. Suggeriti **D2/GPIO4** o
-  **D3/GPIO5** — non D1/GPIO3, riservato al partitore della batteria;
+  durante il sonno e i GPIO tornano flottanti. Scelto **D3/GPIO5** — non
+  D1/GPIO3, riservato al partitore della batteria;
 - **prima di dormire, SDA e SCL vanno messi a ingresso senza pull-up interno**:
   i pull-up dell'I2C stanno sulla basetta e si spengono con lei, quindi un pin
   dell'ESP32 che resta alto spinge corrente nei piedini di un chip non
   alimentato e, attraverso i diodi di protezione, ne alimenta parzialmente il
   VDD. Il sensore resta "mezzo acceso", consuma e non si resetta pulito. Da
-  fuori sembra solo che il deep sleep consumi piu' del previsto;
+  fuori sembra solo che il deep sleep consumi piu' del previsto. Il bring-up
+  di Fase 1 lo fa gia' cosi' in `sensorPower(false)`;
 - **il sensore va reinizializzato ad ogni risveglio**, non solo al primo boot:
   accensione, ~100 ms di attesa (l'AHT20 lo chiede da datasheet), `Wire.begin()`,
   lettura. Se non e' scritto cosi' fin dall'inizio, il giorno che si aggiunge il
-  deep sleep sembrera' che il sensore si sia rotto.
+  deep sleep sembrera' che il sensore si sia rotto. Nel bring-up e' gia' la
+  coppia `sensorPower(true)` + `sensorsBegin()`, esercitata dal comando `r`:
+  quando arrivera' il deep sleep basta agganciarla al risveglio.
 
 Il partitore della batteria invece conviene lasciarlo fisso: 2x1 MΩ sono ~1,7 µA,
 non valgono la complicazione di commutarli.
@@ -569,7 +665,8 @@ di funzionare.
 
 ## Domande aperte
 
-1. **Gli AHT20+BMP280 sono già in casa?** Determina se la Fase 1 parte subito.
+1. ~~**Gli AHT20+BMP280 sono già in casa?**~~ Sì: il primo è saldato e cablato
+   dal 2026-08-22, la Fase 1 è partita dal bring-up del sensore.
 2. Quanti nodi in totale, ogni quanto trasmettono, che autonomia si vuole.
 3. Dove viene montato l'hub, e se gli si attacca un AHT20/BMP280 sull'I2C per
    fare **anche** da sensore interno, risparmiando un nodo. In quel caso il
