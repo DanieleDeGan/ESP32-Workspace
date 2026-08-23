@@ -36,6 +36,7 @@ divisione per chip o duplicherebbe le librerie o le lascerebbe comunque fuori.
 | Progetto | Scheda | Cos'è |
 |---|---|---|
 | `projects/EnvNode_C3/` | ESP32-C3 Supermini | nodo ambientale in funzione: DHT11 + log su microSD + dashboard web con grafici + OTA, e hub ESP-NOW dei nodi a batteria |
+| `projects/MeteoNode_C3/` | XIAO ESP32-C3 (e ESP32 "classico") | nodo meteo a batteria: AHT20 + BMP280, previsione dal trend barometrico, pagina con grafici SVG, nodo ESP-NOW e **deep sleep** fra una misura e l'altra |
 | `projects/Timelapse_XIAO/` | Seeed XIAO ESP32-S3 **Sense** | camera timelapse: scatto a intervallo su microSD per giorno, galleria web con riproduzione, NTP + OTA |
 
 ## Le librerie condivise (`libraries/`)

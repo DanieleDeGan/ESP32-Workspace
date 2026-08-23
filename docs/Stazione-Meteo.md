@@ -657,6 +657,44 @@ giornaliera), `rtc_time.*`, `net_ota.*` (variante con `net_server()` condiviso),
 
 ### Fase 4 — deep sleep e batteria sui nodi
 
+**Stato al 2026-08-23 sera — il ciclo di sonno FUNZIONA su hardware, a
+batteria** (`MeteoNode_C3` `v9`). Fatto:
+
+- ~~MAC dell'hub + canale nella RTC memory, e DATA diretto al risveglio~~ —
+  fatto, ed è servito `Link_Node_ResumeWithHub()` nella libreria condivisa. Il
+  fallback su HELLO resta, per la prima volta e per quando l'hub cambia.
+- Finestra di veglia di 5 minuti ad ogni accensione vera (WiFi + OTA): senza,
+  un nodo che dorme non si può più aggiornare né spegnere da remoto.
+- Uscita di sicurezza dopo cinque risvegli senza consegna, che riaccende tutto.
+- Contatori dei risvegli in **NVS** e non in RTC memory, che il power-cycle
+  cancella — cioè proprio l'operazione con cui si recupera il nodo.
+
+**La cosa che il piano non aveva previsto, ed è costata la serata**: il `seq` di
+`EspNowLink` vive in RAM, quindi ogni risveglio ripartiva da zero e l'hub —
+che scarta i DATA con `seq` uguale all'ultimo visto — ne accettava **uno** e
+buttava tutti gli altri. Diciannove risvegli, diciannove invii confermati dal
+nodo, uno solo arrivato. Risolto con `Link_Node_SetSeq()`/`GetSeq()` e il seq
+conservato in RTC memory. Le trappole complete stanno in `CLAUDE.md`, sezione
+"Deep sleep".
+
+**Ancora da fare su questa fase**:
+
+- **`gpio_hold_en(D3/GPIO5)` + `gpio_deep_sleep_hold_en()` NON sono ancora nel
+  codice.** Il pin è stato scelto RTC-capable apposta (vedi sotto) ma la
+  chiamata manca: durante il sonno torna flottante, quindi il sensore resta
+  parzialmente alimentato e si perde buona parte del risparmio che giustifica
+  tutto il resto. Non è un guasto funzionale — il nodo dorme, si sveglia e
+  trasmette — ed è per questo che è passato inosservato: **si vede solo
+  misurando la corrente, non guardando i dati**.
+- **Il partitore della batteria non è cablato** (`BATTERY_ADC_ENABLED 0`, D1 /
+  GPIO3 libero): niente cutoff di sottotensione e `battery_mv` resta 0. Finché
+  è così, un nodo a batteria va guardato a vista.
+- **L'autonomia non è mai stata misurata.** La stima di 6-12 mesi qui sotto vale
+  con il GPIO tenuto basso e a intervallo di 5 minuti; il nodo lasciato acceso
+  la notte del 2026-08-23 girava a **60 s** e senza `gpio_hold_en()`.
+- Spostare `forecast.h` sull'hub: la RAM del nodo si azzera ad ogni risveglio,
+  quindi lo storico a 3 ore per il trend non può stare su di lui.
+
 Sveglia ogni ~5 min, legge, manda, si riaddormenta. Con ~44 µA dormendo e ~0,5 s
 di radio a risveglio l'ordine di grandezza è **6–12 mesi** su una 18650 reale.
 
