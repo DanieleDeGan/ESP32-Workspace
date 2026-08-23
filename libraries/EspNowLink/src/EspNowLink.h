@@ -177,9 +177,52 @@ bool Link_Node_SendData(link_message_t *msg);
  *  breve). */
 void Link_Hub_Poll(void);
 
-/** Mentre true, un HELLO in broadcast da un MAC sconosciuto viene accettato
- *  automaticamente come nuovo peer. Mentre false, viene ignorato. */
+/**
+ * Mentre true, un MAC sconosciuto viene accettato automaticamente come nuovo
+ * peer in DUE casi; mentre false, entrambi vengono ignorati.
+ *
+ *  - HELLO in broadcast: il nodo non si crede associato e cerca un hub. E' il
+ *    caso normale della prima accensione.
+ *  - DATA in unicast: il nodo si crede gia' associato e sta parlando proprio a
+ *    noi, ma il registro peer (che vive solo in RAM) l'ha perso a un riavvio
+ *    dell'hub. Senza questo secondo caso il nodo resterebbe invisibile per
+ *    sempre - non manda piu' HELLO - e in modo SILENZIOSO da entrambe le
+ *    parti, perche' l'ACK di ESP-NOW e' di livello radio: il nodo continua a
+ *    contare i propri invii come riusciti mentre l'hub non vede niente.
+ *
+ * Finche' il registro peer non viene persistito, tenere quindi una finestra di
+ * pairing aperta per qualche minuto ad ogni avvio dell'hub e' il modo per far
+ * rientrare i nodi gia' noti senza intervento.
+ */
 void Link_Hub_SetPairingMode(bool enable);
+
+/**
+ * Aggiunge un peer gia' noto SENZA passare dalla finestra di pairing e senza
+ * mandargli un WELCOME. Serve a chi tiene una propria persistenza del registro
+ * (che qui vive solo in RAM) e vuole ripristinarlo all'avvio: un nodo riletto
+ * da NVS e' gia' associato dal proprio punto di vista, quindi non va
+ * risvegliato con un WELCOME che non ha chiesto.
+ *
+ * Il peer riparte senza dati (hasData=false): valori e contatori NON vanno
+ * persistiti, o dopo un riavvio l'hub mostrerebbe come "attuale" una lettura
+ * vecchia di giorni — esattamente il guasto che il rilevamento del nodo muto
+ * serve a evitare. Meglio un "in attesa del primo DATA" onesto.
+ *
+ * Ritorna false se il ruolo non e' hub, se il registro e' pieno o se quel MAC
+ * c'e' gia'.
+ */
+bool Link_Hub_AddPeer(const uint8_t mac[6], link_node_type_t type, const char *name);
+
+/**
+ * Dimentica un peer: lo toglie dal registro e dal driver ESP-NOW. Da usare
+ * quando una scheda viene sostituita — l'identita' di un nodo e' il suo MAC,
+ * quindi la scheda vecchia resterebbe per sempre in elenco come nodo muto.
+ *
+ * ATTENZIONE: se il nodo e' ancora vivo e si crede associato non manda piu'
+ * HELLO, quindi per riprenderlo servira' una finestra di pairing aperta (o un
+ * suo riavvio). Ritorna false se quel MAC non era nel registro.
+ */
+bool Link_Hub_ForgetPeer(const uint8_t mac[6]);
 
 /** Numero di nodi attualmente associati. */
 int Link_Hub_GetPeerCount(void);

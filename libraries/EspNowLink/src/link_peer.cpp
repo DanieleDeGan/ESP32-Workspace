@@ -98,6 +98,23 @@ void LinkPeer::onReceive(const uint8_t *data, size_t len, bool broadcast)
         return;   // scarta traffico non nostro (altro protocollo/versione sullo stesso canale)
     }
     lastSeenMs = millis();
+
+    // Nome e tipo si aggiornano ad OGNI messaggio, non solo al primo: sono
+    // anagrafica del mittente e viaggiano in tutti i pacchetti. Senza questo,
+    // un peer conserva per sempre l'identita' con cui e' stato scoperto, e
+    // basta riprogrammare un nodo cambiandogli nome perche' l'hub continui a
+    // mostrare quello vecchio - con i valori nuovi, che e' il modo peggiore
+    // di sbagliare. Trovato sul serio il 2026-08-23: una scheda che aveva
+    // addosso Link_Node_Demo si e' associata come "TempTest", poi e' stata
+    // riprogrammata come nodo meteo, e l'hub ha continuato a chiamarla
+    // TempTest mostrando temperatura, umidita' e pressione vere.
+    //
+    // Il tipo conta anche di piu' del nome: la UI ci sceglie le unita' di
+    // misura, quindi un tipo vecchio significa numeri etichettati male.
+    nodeType = (link_node_type_t)msg.node_type;
+    strncpy(name, msg.name, LINK_NAME_LEN - 1);
+    name[LINK_NAME_LEN - 1] = '\0';
+
     if (msg.msg_type == LINK_MSG_DATA) {
         lastData = msg;
         hasData = true;

@@ -28,39 +28,108 @@ static int s_peer_count = 0;
 static volatile bool s_pairing_mode = false;
 static portMUX_TYPE s_registry_mux = portMUX_INITIALIZER_UNLOCKED;
 
-static void hub_on_new_peer(const esp_now_recv_info_t *info, const uint8_t *data, int len, void *arg)
+// Cestino dei peer dimenticati: NON si fa delete subito (vedi
+// Link_Hub_ForgetPeer), si libera al giro dopo da Link_Hub_Poll().
+static LinkPeer *s_trash[ESPNOW_LINK_MAX_PEERS] = {nullptr};
+static int s_trash_count = 0;
+
+/**
+ * Inserimento nel registro, unico punto per tutte le strade che portano a un
+ * peer nuovo: la scoperta radio (hub_on_new_peer, che gira nel task del driver
+ * WiFi) e il ripristino da una persistenza applicativa (Link_Hub_AddPeer, che
+ * gira in loop()). Tenerlo uno solo evita che le due divergano.
+ *
+ * queue_welcome=false serve proprio al ripristino: un nodo riletto da NVS e'
+ * gia' associato dal suo punto di vista, mandargli un WELCOME non richiesto
+ * sarebbe traffico inutile all'avvio dell'hub, per ogni nodo.
+ */
+static LinkPeer *hub_insert_peer(const uint8_t mac[6], link_node_type_t type,
+                                 const char *name, bool queue_welcome,
+                                 const link_message_t *first_data)
 {
-    bool broadcast = memcmp(info->des_addr, ESP_NOW.BROADCAST_ADDR, 6) == 0;
-    if (!broadcast || !s_pairing_mode) {
-        return;   // fuori dalla finestra di pairing: ignora mittenti sconosciuti
-    }
-
-    link_message_t msg;
-    if (!link_parse_message(data, len, &msg) || msg.msg_type != LINK_MSG_HELLO) {
-        return;
-    }
-
     portENTER_CRITICAL(&s_registry_mux);
     bool full = (s_peer_count >= ESPNOW_LINK_MAX_PEERS);
+    bool duplicato = false;
+    for (int i = 0; i < s_peer_count && !duplicato; i++) {
+        if (s_peers[i] != nullptr && memcmp(s_peers[i]->addr(), mac, 6) == 0) {
+            duplicato = true;
+        }
+    }
     portEXIT_CRITICAL(&s_registry_mux);
-    if (full) {
-        return;
+    if (full || duplicato) {
+        return nullptr;
     }
 
-    LinkPeer *peer = new LinkPeer(info->src_addr, g_link_channel);
+    LinkPeer *peer = new LinkPeer(mac, g_link_channel);
     if (!peer->addPeer()) {
         delete peer;
-        return;
+        return nullptr;
     }
-    peer->nodeType = (link_node_type_t)msg.node_type;
-    strncpy(peer->name, msg.name, LINK_NAME_LEN - 1);
-    peer->name[LINK_NAME_LEN - 1] = '\0';
+    peer->nodeType = type;
+    if (name) {
+        strncpy(peer->name, name, LINK_NAME_LEN - 1);
+        peer->name[LINK_NAME_LEN - 1] = '\0';
+    }
     peer->lastSeenMs = millis();
-    peer->welcomePending = true;
+    peer->welcomePending = queue_welcome;
+
+    // Il messaggio che ha fatto scoprire il nodo va conservato qui:
+    // onReceive() non e' stato chiamato per quel pacchetto (il peer non
+    // esisteva ancora), quindi senza queste righe la prima lettura andrebbe
+    // persa e l'hub mostrerebbe un nodo "senza dati" fino alla successiva.
+    if (first_data != nullptr) {
+        peer->lastData = *first_data;
+        peer->hasData = true;
+    }
 
     portENTER_CRITICAL(&s_registry_mux);
     s_peers[s_peer_count++] = peer;
     portEXIT_CRITICAL(&s_registry_mux);
+    return peer;
+}
+
+static void hub_on_new_peer(const esp_now_recv_info_t *info, const uint8_t *data, int len, void *arg)
+{
+    if (!s_pairing_mode) {
+        return;   // fuori dalla finestra di pairing: ignora mittenti sconosciuti
+    }
+
+    const bool broadcast = memcmp(info->des_addr, ESP_NOW.BROADCAST_ADDR, 6) == 0;
+
+    link_message_t msg;
+    if (!link_parse_message(data, len, &msg)) {
+        return;
+    }
+
+    // Due modi di conoscere un nodo nuovo, e servono entrambi:
+    //
+    //  - HELLO in broadcast: il nodo NON si crede associato e sta cercando un
+    //    hub. E' il caso normale della prima accensione.
+    //
+    //  - DATA in unicast: il nodo si crede gia' associato e sta parlando
+    //    proprio a noi, ma noi non lo conosciamo piu' - il registro peer vive
+    //    solo in RAM, quindi ogni riavvio dell'hub lo perde. Senza questo
+    //    ramo il nodo resterebbe invisibile per sempre: non manda piu' HELLO
+    //    (si crede associato) e i suoi DATA verrebbero scartati qui.
+    //
+    //    E' un guasto SILENZIOSO DA ENTRAMBE LE PARTI, che e' il motivo per
+    //    cui vale la pena gestirlo: l'ACK di ESP-NOW e' di livello radio e
+    //    arriva comunque, quindi il nodo conta i pacchetti come consegnati e
+    //    la sua pagina dice che va tutto bene, mentre l'hub non mostra nulla.
+    //    Verificato su hardware il 2026-08-23 fra EnvNode_C3 e MeteoNode_C3:
+    //    quindici DATA "riusciti" e zero nodi visti dall'hub.
+    const bool hello = broadcast  && msg.msg_type == LINK_MSG_HELLO;
+    const bool orfano = !broadcast && msg.msg_type == LINK_MSG_DATA;
+    if (!hello && !orfano) {
+        return;
+    }
+
+    LinkPeer *peer = hub_insert_peer(info->src_addr, (link_node_type_t)msg.node_type,
+                                     msg.name, /*queue_welcome=*/true,
+                                     orfano ? &msg : nullptr);
+    if (peer == nullptr) {
+        return;   // registro pieno, o gia' presente
+    }
 
     link_notify_app(info->src_addr, &msg);
 }
@@ -70,8 +139,85 @@ void link_hub_start(void)
     ESP_NOW.onNewPeer(hub_on_new_peer, nullptr);
 }
 
+bool Link_Hub_AddPeer(const uint8_t mac[6], link_node_type_t type, const char *name)
+{
+    if (mac == nullptr || g_link_self_type != LINK_NODE_HUB) {
+        return false;
+    }
+    return hub_insert_peer(mac, type, name, /*queue_welcome=*/false, nullptr) != nullptr;
+}
+
+bool Link_Hub_ForgetPeer(const uint8_t mac[6])
+{
+    if (mac == nullptr) {
+        return false;
+    }
+
+    LinkPeer *vittima = nullptr;
+    portENTER_CRITICAL(&s_registry_mux);
+    for (int i = 0; i < s_peer_count; i++) {
+        if (s_peers[i] != nullptr && memcmp(s_peers[i]->addr(), mac, 6) == 0) {
+            vittima = s_peers[i];
+            // Compatta l'array: il registro non ha buchi, cosi' chi lo scorre
+            // per indice non deve saltare i nullptr.
+            for (int j = i; j < s_peer_count - 1; j++) {
+                s_peers[j] = s_peers[j + 1];
+            }
+            s_peers[--s_peer_count] = nullptr;
+            break;
+        }
+    }
+    portEXIT_CRITICAL(&s_registry_mux);
+
+    if (vittima == nullptr) {
+        return false;
+    }
+
+    // Prima si deregistra dal core, POI si butta via. Si passa da
+    // ESP_NOW.removePeer() e non da peer->remove(), che e' protetta: e' il
+    // punto d'ingresso pubblico (dichiarato friend dalla classe peer).
+    // L'effetto e' quello che serve: azzera anche lo slot nell'array di
+    // dispatch di ESP_NOW, quindi da qui in poi nessun pacchetto puo' piu'
+    // arrivare a questo oggetto.
+    ESP_NOW.removePeer(*vittima);
+
+    // Il delete pero' NON si fa adesso: questa funzione gira in loop(), mentre
+    // il dispatch dei pacchetti gira sul task del driver WiFi, e potrebbe
+    // essere gia' dentro onReceive() di questo peer proprio in questo istante.
+    // La finestra e' minuscola ma reale, e una use-after-free su una scheda
+    // che sta accesa per settimane si manifesterebbe come un riavvio
+    // inspiegabile mesi dopo. Si accoda al cestino e si libera al giro
+    // successivo di Link_Hub_Poll(), quando la callback ha certamente finito.
+    portENTER_CRITICAL(&s_registry_mux);
+    if (s_trash_count < ESPNOW_LINK_MAX_PEERS) {
+        s_trash[s_trash_count++] = vittima;
+        vittima = nullptr;
+    }
+    portEXIT_CRITICAL(&s_registry_mux);
+
+    // Cestino pieno (non dovrebbe mai: si svuota ad ogni loop): meglio
+    // perdere un centinaio di byte che rischiare la use-after-free.
+    (void)vittima;
+    return true;
+}
+
 void Link_Hub_Poll(void)
 {
+    // Cestino di Link_Hub_ForgetPeer(): i peer rimossi al giro precedente si
+    // liberano adesso, quando nessuna callback puo' piu' averli in mano.
+    portENTER_CRITICAL(&s_registry_mux);
+    LinkPeer *daButtare[ESPNOW_LINK_MAX_PEERS];
+    const int nButtare = s_trash_count;
+    for (int i = 0; i < nButtare; i++) {
+        daButtare[i] = s_trash[i];
+        s_trash[i] = nullptr;
+    }
+    s_trash_count = 0;
+    portEXIT_CRITICAL(&s_registry_mux);
+    for (int i = 0; i < nButtare; i++) {
+        delete daButtare[i];
+    }
+
     portENTER_CRITICAL(&s_registry_mux);
     for (int i = 0; i < s_peer_count; i++) {
         LinkPeer *peer = s_peers[i];
