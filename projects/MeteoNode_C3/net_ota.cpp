@@ -188,16 +188,49 @@ static constexpr uint32_t WIFI_REBOOT_MS    = 15UL * 60000;   // giu' da 15 min 
 static uint32_t s_lastConnectedMs = 0;
 static uint32_t s_lastRetryMs     = 0;
 
+// Contatori dell'assenza dell'AP (vedi net_ota.h). Stanno qui perche' qui vive
+// il watchdog: e' lo stesso passaggio di stato a incrementarli e a decidere il
+// riavvio, e tenerli altrove vorrebbe dire osservare la connessione due volte
+// con due idee diverse di quando e' caduta.
+static bool     s_wasConnected  = false;
+static uint32_t s_wifiDrops     = 0;
+static uint32_t s_wifiDownMaxMs = 0;
+
+uint32_t net_wifi_drops()      { return s_wifiDrops; }
+uint32_t net_wifi_down_max_s() { return s_wifiDownMaxMs / 1000; }
+uint32_t net_wifi_down_now_s() {
+  if (WiFi.status() == WL_CONNECTED) return 0;
+  return (millis() - s_lastConnectedMs) / 1000;
+}
+
 static void wifiWatchdog() {
   if (s_updateInProgress) return;   // non toccare il WiFi mentre scrive la partizione
 
   uint32_t now = millis();
   if (WiFi.status() == WL_CONNECTED) {
+    // Chiudere la finestra PRIMA di azzerare il riferimento: dopo
+    // s_lastConnectedMs = now la durata dell'assenza non e' piu' ricavabile, e
+    // down_max resterebbe a zero proprio nei casi che interessano.
+    if (!s_wasConnected) {
+      const uint32_t down = now - s_lastConnectedMs;
+      if (down > s_wifiDownMaxMs) s_wifiDownMaxMs = down;
+      s_wasConnected = true;
+      Serial.printf("[WiFi] Riconnesso dopo %lu s.\n", (unsigned long)(down / 1000));
+    }
     s_lastConnectedMs = now;
     return;
   }
 
+  if (s_wasConnected) {            // appena caduto: si conta una volta sola
+    s_wasConnected = false;
+    s_wifiDrops++;
+  }
+
   uint32_t down = now - s_lastConnectedMs;
+  // Aggiornato anche mentre l'AP e' ancora giu', non solo al rientro: se il
+  // watchdog arriva a riavviare la scheda il rientro non avviene mai, e senza
+  // questo la caduta piu' lunga - l'unica che conta - non verrebbe registrata.
+  if (down > s_wifiDownMaxMs) s_wifiDownMaxMs = down;
   if (down > WIFI_REBOOT_MS) {
     Serial.println("[WiFi] Giu' da troppo tempo, riavvio la scheda.");
     delay(100);
@@ -225,6 +258,7 @@ static void wifiWatchdog() {
 void net_begin() {
   wifiConnectBlocking(15000);
   s_lastConnectedMs = millis();   // riferimento iniziale per il watchdog, connesso o no
+  s_wasConnected    = net_isConnected();   // se non e' mai salito, non e' una "caduta"
 
   // --- 1) ArduinoOTA: upload da Arduino IDE (porta di rete) ---
   ArduinoOTA.setHostname(OTA_HOSTNAME);

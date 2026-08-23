@@ -135,6 +135,14 @@ void app_cmd_toggle_power();
 
 const char* app_fw_version();
 
+// Perche' la scheda e' ripartita l'ultima volta ("SW", "PANIC", "BROWNOUT",
+// ...) e quanti boot ha contato in tutta la sua vita (in NVS, sopravvive ai
+// riavvii). Sono l'unico modo di vedere da remoto che un riavvio c'e' stato:
+// reads, errors e power_cycles qui sopra ripartono tutti da zero, quindi un
+// nodo appena ripartito e un nodo che sta leggendo male si somigliano molto.
+const char* app_reset_reason();
+uint32_t    app_boot_count();
+
 // Da quanti secondi risale l'ultima lettura. Con l'intervallo configurabile
 // fino a un'ora, un numero senza eta' sarebbe ambiguo: la pagina deve poter
 // dire "27,8 gradi, letti 43 minuti fa" e non far credere che sia di adesso.

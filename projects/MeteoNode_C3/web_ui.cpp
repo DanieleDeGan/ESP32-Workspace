@@ -160,10 +160,12 @@ svg{width:100%;height:110px;display:block;overflow:visible}
 <tr><td>Orario</td><td id="ora">&mdash;</td></tr>
 <tr><td>Indirizzo IP</td><td id="ip">&mdash;</td></tr>
 <tr><td>Segnale WiFi</td><td id="rs">&mdash;</td></tr>
+<tr><td>Cadute WiFi dal boot</td><td id="wd">&mdash;</td></tr>
 <tr><td>Canale (anche ESP-NOW)</td><td id="ch">&mdash;</td></tr>
 <tr><td>ESP-NOW</td><td id="en">&mdash;</td></tr>
 <tr><td>DATA inviati / falliti</td><td id="ent">&mdash;</td></tr>
 <tr><td>Acceso da</td><td id="up">&mdash;</td></tr>
+<tr><td>Boot totali &mdash; causa ultimo</td><td id="bt">&mdash;</td></tr>
 <tr><td>RAM libera</td><td id="hp">&mdash;</td></tr>
 </table></div>
 
@@ -307,6 +309,14 @@ function aggiorna(){
     si('ora', d.ora+' <span style="color:var(--dim)">('+d.ora_fonte+')</span>');
     si('ip', d.ip);
     si('rs', d.rssi+' dBm', d.rssi<-80?'warn':'');
+    // L'AP che cade non ferma l'ESP-NOW (a quello serve il canale, non
+    // l'associazione), quindi i dati continuano ad arrivare all'hub mentre da
+    // qui il nodo e' irraggiungibile. Se l'assenza supera i 15 minuti il
+    // watchdog di net_ota riavvia la scheda: 'GIU DA' che cresce e' quel conto
+    // alla rovescia, ed e' l'unico preavviso che esiste.
+    var wd = d.wifi_drops + (d.wifi_down_max_s ? ' &middot; max '+durata(d.wifi_down_max_s) : '');
+    if(d.wifi_down_now_s) wd += ' &middot; GI&Ugrave; DA '+durata(d.wifi_down_now_s);
+    si('wd', wd, d.wifi_down_now_s ? 'ko' : (d.wifi_drops ? 'warn' : ''));
     si('ch', d.canale);
     // Il canale ESP-NOW deve combaciare con quello dell'AP: se diverge, il
     // pairing non parte e da fuori sembra un problema di portata.
@@ -315,6 +325,11 @@ function aggiorna(){
     else                      si('en','associato a '+d.espnow_hub+' (canale '+d.espnow_canale+')','ok');
     si('ent', d.espnow_inviati+' / '+d.espnow_falliti, d.espnow_falliti?'warn':'');
     si('up', durata(d.uptime));
+    // Un riavvio non si vede dai contatori qui sopra, che ripartono da zero:
+    // e' questa riga a dirlo. SW resta neutro perche' e' voluto (OTA riuscito
+    // o watchdog WiFi); PANIC, BROWNOUT e i watchdog interni sono guasti.
+    si('bt', d.boot_count+' &middot; '+d.reset_reason,
+       ['PANIC','BROWNOUT','WDT','WDT_INT','WDT_TASK'].indexOf(d.reset_reason)>=0 ? 'ko' : '');
     si('hp', Math.round(d.heap/1024)+' kB');
 
     // I campi non si riscrivono se l'utente li sta modificando, o gli si
@@ -402,7 +417,7 @@ static void handleStato() {
   rtctime_format(rtctime_now(), "%Y-%m-%d %H:%M:%S", ora, sizeof(ora));
 
   String j;
-  j.reserve(1050);
+  j.reserve(1200);
   j += F("{\"fw\":\"");          j += app_fw_version();      j += F("\"");
   j += F(",\"powered\":");       j += s.powered ? F("true") : F("false");
   j += F(",\"aht_ok\":");        j += s.aht_ok ? F("true") : F("false");
@@ -428,6 +443,8 @@ static void handleStato() {
   j += F(",\"reads\":");         j += s.reads;
   j += F(",\"errors\":");        j += s.read_errors;
   j += F(",\"power_cycles\":");  j += s.power_cycles;
+  j += F(",\"boot_count\":");    j += app_boot_count();
+  j += F(",\"reset_reason\":\""); j += app_reset_reason();  j += F("\"");
   j += F(",\"intervallo_s\":");  j += s.intervallo_s;
   j += F(",\"altitudine_m\":");  j += String(s.altitudine_m, 1);
   j += F(",\"eta_lettura\":");   j += app_eta_ultima_lettura_s();
@@ -436,6 +453,9 @@ static void handleStato() {
   j += F(",\"ip\":\"");          j += net_ip();              j += F("\"");
   j += F(",\"rssi\":");          j += net_rssi();
   j += F(",\"canale\":");        j += net_channel();
+  j += F(",\"wifi_drops\":");    j += net_wifi_drops();
+  j += F(",\"wifi_down_max_s\":"); j += net_wifi_down_max_s();
+  j += F(",\"wifi_down_now_s\":"); j += net_wifi_down_now_s();
   j += F(",\"espnow_ok\":");     j += s.espnow_ok ? F("true") : F("false");
   j += F(",\"espnow_paired\":"); j += s.espnow_paired ? F("true") : F("false");
   j += F(",\"espnow_canale\":"); j += s.espnow_channel;

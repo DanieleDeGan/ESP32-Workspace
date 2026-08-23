@@ -76,6 +76,7 @@
 
 #include <Wire.h>
 #include <Preferences.h>
+#include <esp_system.h>   // esp_reset_reason(): perche' la scheda e' ripartita
 #include <Adafruit_AHTX0.h>
 #include <Adafruit_BMP280.h>
 
@@ -87,6 +88,11 @@
 
 // Da incrementare a ogni firmware caricato: la pagina lo mostra, ed e' l'unico
 // modo per sapere da remoto quale versione sta davvero girando.
+//   v5  2026-08-23  diagnostica del riavvio: causa dell'ultimo boot,
+//                   contatore dei boot in NVS e contatori delle cadute WiFi,
+//                   tutti in /api/stato. Senza, un riavvio era invisibile da
+//                   remoto: i contatori in RAM ripartono da zero e da fuori
+//                   sembra solo che il nodo abbia "letto poco"
 //   v4  2026-08-23  stesso sketch anche su ESP32 "classico" (DOIT DevKit
 //                   v1): pin, nome nodo e guardia della Serial scelti a
 //                   compile-time dal tipo di chip
@@ -96,7 +102,7 @@
 //   v2  2026-08-22  storico 24 h in RAM + grafici, previsione dal trend
 //                   barometrico a 3 ore, intervallo e altitudine da pagina web
 //   v1  2026-08-22  bring-up del sensore, web UI, OTA
-static const char FW_VERSION[] = "v4";
+static const char FW_VERSION[] = "v5";
 
 // Nome con cui il nodo si presenta all'hub. Massimo 16 caratteri (troncato
 // da EspNowLink): due nodi con lo stesso nome sarebbero indistinguibili
@@ -184,6 +190,13 @@ static uint32_t s_reads       = 0;
 static uint32_t s_readErrors  = 0;
 static uint32_t s_powerCycles = 0;
 static uint32_t s_lastReadMs  = 0;
+
+// Diagnostica del boot. Tutti gli altri contatori vivono in RAM e ripartono da
+// zero ad ogni riavvio: e' proprio quello che rende un riavvio invisibile da
+// remoto, perche' da fuori si vede solo un nodo che "ha letto poco". Queste due
+// cose dicono invece che un riavvio c'e' stato, e perche'.
+static esp_reset_reason_t s_resetReason = ESP_RST_UNKNOWN;
+static uint32_t           s_bootCount   = 0;
 
 // Ultima lettura valida, quella che la pagina web mostra fra un campione e il
 // successivo. Tenuta a parte dalle variabili locali di readAndPrint() apposta:
@@ -764,6 +777,53 @@ bool app_hist_at(uint16_t back, float* tempC, float* humPct, float* pressHpa) {
 
 const char* app_fw_version() { return FW_VERSION; }
 
+// ---------------------------------------------------------------------------
+// Diagnostica del boot
+// ---------------------------------------------------------------------------
+// Il contatore va in NVS perche' e' l'unica cosa che deve sopravvivere al
+// riavvio che sta contando.
+//
+// Una scrittura per boot e' accettabile finche' i boot sono rari - una manciata
+// al giorno anche in una giornata storta. Con il deep sleep NON lo sarebbe piu':
+// un risveglio al minuto farebbe 1440 scritture al giorno sulla stessa chiave,
+// che e' esattamente il modo di consumare la NVS che il resto del repo evita
+// con cura. Per questo i risvegli sono esclusi dal conteggio - e non e' solo
+// prudenza, e' anche la lettura giusta del numero: un risveglio programmato non
+// e' un riavvio, e' lo stesso boot che continua.
+static void bootDiagBegin() {
+  s_resetReason = esp_reset_reason();
+  if (s_resetReason == ESP_RST_DEEPSLEEP) return;
+
+  Preferences p;
+  if (p.begin("meteonode", false)) {
+    s_bootCount = p.getULong("boot_n", 0) + 1;
+    p.putULong("boot_n", s_bootCount);
+    p.end();
+  }
+}
+
+// La causa in chiaro. Le tre che contano davvero qui: SW e' ESP.restart(),
+// cioe' un OTA riuscito oppure il watchdog WiFi di net_ota; PANIC e' un crash
+// del firmware; BROWNOUT e' l'alimentazione scesa sotto soglia - il sospetto
+// numero uno quando il nodo passera' a batteria.
+const char* app_reset_reason() {
+  switch (s_resetReason) {
+    case ESP_RST_POWERON:   return "POWERON";
+    case ESP_RST_EXT:       return "EXT";
+    case ESP_RST_SW:        return "SW";
+    case ESP_RST_PANIC:     return "PANIC";
+    case ESP_RST_INT_WDT:   return "WDT_INT";
+    case ESP_RST_TASK_WDT:  return "WDT_TASK";
+    case ESP_RST_WDT:       return "WDT";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT";
+    case ESP_RST_SDIO:      return "SDIO";
+    default:                return "UNKNOWN";
+  }
+}
+
+uint32_t app_boot_count() { return s_bootCount; }
+
 uint32_t app_eta_ultima_lettura_s() {
   if (!s_hasReading) return 0;
   return (millis() - s_lastGoodMs) / 1000UL;
@@ -898,6 +958,12 @@ void setup() {
   Serial.println(F("MeteoNode_C3 - bring-up sensore AHT20+BMP280"));
   Serial.println(F("============================================"));
   Serial.printf("firmware: %s\n", FW_VERSION);
+
+  // Presto, e prima di qualunque altra cosa che possa a sua volta riavviare:
+  // se il boot precedente e' finito male, questa e' l'unica riga che lo dice.
+  bootDiagBegin();
+  Serial.printf("boot n. %lu, causa dell'ultimo riavvio: %s\n",
+                (unsigned long)s_bootCount, app_reset_reason());
   Serial.printf("pin: VCC=D3/GPIO%u (commutato)  SDA=D4/GPIO%u  SCL=D2/GPIO%u\n",
                 PIN_SENSOR_PWR, PIN_SDA, PIN_SCL);
 
