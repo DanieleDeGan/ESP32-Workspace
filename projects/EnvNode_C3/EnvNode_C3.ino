@@ -58,6 +58,8 @@ DHT              dht(PIN_DHT, DHT11);
 
 // Da incrementare a ogni firmware caricato sul nodo: la dashboard lo mostra,
 // ed e' l'unico modo per sapere da remoto quale versione sta davvero girando.
+//   v9  2026-08-23  log dei nodi remoti su microSD, un CSV al giorno per
+//                   nodo in /nodi/<NOME>/, con elenco e download da /nodi
 //   v8  2026-08-23  EspNowLink: nome e tipo del peer aggiornati ad ogni
 //                   messaggio, non solo al primo. Un nodo riprogrammato
 //                   con un nome nuovo restava in elenco con quello vecchio
@@ -79,7 +81,7 @@ DHT              dht(PIN_DHT, DHT11);
 //                   riconosciuta dal PC ma nessuno che legge, le print()
 //                   bloccavano loop() e con lui web server, OTA e campionamento
 //   v2  ...
-static const char* FW_VERSION = "v8";
+static const char* FW_VERSION = "v9";
 
 static bool     otaActive = false;   // true mentre un update e' in corso
 static uint32_t lastDraw  = 0;
@@ -355,6 +357,25 @@ static void drawCurrentPage() {
 }
 
 // ---------------------------------------------------------------------
+//  Un DATA nuovo da un nodo remoto -> riga sul CSV di quel nodo.
+//  Chiamata da remote_loop(), quindi nel contesto di loop(): la scrittura
+//  su SD qui e' lecita. remote_nodes non conosce sd_logger di proposito
+//  (vedi la nota su remote_on_data): l'incollatura sta qui, nel .ino.
+// ---------------------------------------------------------------------
+static void onRemoteData(const RemoteNode* n) {
+  if (n == nullptr) return;
+
+  char mac[18];
+  snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+           n->mac[0], n->mac[1], n->mac[2], n->mac[3], n->mac[4], n->mac[5]);
+
+  // Si logga anche senza orologio sincronizzato: la colonna fonte_ora dice
+  // quanto fidarsi del timestamp, esattamente come per il log locale.
+  sd_log_remote(n->nome, mac, n->ultimoTs, rtctime_source(),
+                n->seq, n->value, n->batteria_mv);
+}
+
+// ---------------------------------------------------------------------
 //  Feedback a schermo durante un update OTA (chiamata da net_ota).
 //  percent = 0..100, oppure -1 = sconosciuto (upload web).
 // ---------------------------------------------------------------------
@@ -443,6 +464,7 @@ void setup() {
   // la nota sul canale in remote_nodes.h). Se il WiFi non fosse ancora
   // connesso qui non e' un problema: i peer sono registrati sul "canale
   // corrente" e seguono l'AP da soli quando la connessione arriva.
+  remote_on_data(onRemoteData);
   remote_begin(settings_get().nodeName);
 
   s_pageStartMs = millis();

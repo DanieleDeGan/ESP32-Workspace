@@ -1163,6 +1163,9 @@ SD e niente disegno: `web_ui` legge da qui, come già fa con gli altri moduli.
 - `remote_forget()` (pulsante "Dimentica") toglie il nodo da libreria, RAM e
   NVS: serve quando si sostituisce una scheda, o il MAC vecchio resterebbe in
   elenco per sempre come nodo muto;
+- **niente dipendenza da `sd_logger`**: il modulo espone `remote_on_data()`, e
+  il `.ino` ci aggancia `sd_log_remote()`. È scritto per essere copiato su
+  `MeteoHub_S3`, che avrà uno storage diverso;
 - **la soglia di "muto" è osservata, non configurata**: si misura l'intervallo
   fra un DATA e il successivo (media mobile; delta a cavallo di un riavvio del
   nodo, o più lunghi di 6 h, non entrano nella media) e si dichiara muto dopo

@@ -34,6 +34,9 @@
 //    GET  /api/nodi             stato dei nodi remoti in JSON
 //    POST /api/pairing?on=1|0[&s=secondi]   apre/chiude la finestra di
 //                               associazione (vedi remote_nodes.h)
+//    POST /api/nodi/dimentica?mac=...       toglie un nodo da registro e NVS
+//    GET  /api/nodi/giorni?nodo=<nome>      registri su SD di quel nodo
+//    GET  /api/nodi/scarica?nodo=&d=        CSV grezzo di un giorno
 //
 //  Tutte dietro la stessa basic-auth di /update (net_webAuthOk()).
 //  /update resta di net_ota.cpp, invariata.

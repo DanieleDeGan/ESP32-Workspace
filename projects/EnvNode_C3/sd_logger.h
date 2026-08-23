@@ -84,6 +84,48 @@ bool sd_delete_day(const char* isoDate);
 File sd_open_day(const char* isoDate);
 
 // ---------------------------------------------------------------------
+//  Log dei nodi remoti (ESP-NOW) — /nodi/<NOME>/YYYY-MM-DD.csv
+// ---------------------------------------------------------------------
+//  Cartella separata da /logs e NON una sottocartella di quella: dentro
+//  /logs c'e' una scansione (sd_list_days) che si aspetta solo file, e
+//  infilarci delle directory vorrebbe dire dover ricordare per sempre di
+//  filtrarle. I due log restano anche concettualmente distinti: /logs e'
+//  quello che questa scheda misura, /nodi e' quello che le viene raccontato.
+//
+//  Una cartella per nodo, con il NOME (sanificato) e non il MAC: sulla card
+//  la si deve poter leggere. Il MAC sta comunque in una colonna di ogni
+//  riga, cosi' se un nodo viene rinominato le righe vecchie restano
+//  attribuibili — l'identita' vera e' il MAC, il nome puo' cambiare.
+//
+//  Colonne: ts_iso,ts_unix,fonte_ora,mac,seq,temp_c,hum_pct,press_hpa,batt_mv
+//  Un valore non finito (sensore del nodo che non ha risposto) diventa un
+//  campo VUOTO, non uno zero: nel grafico dev'essere un buco, non una
+//  misura. `seq` c'e' apposta perche' i salti si vedano: su una tratta
+//  radio il pacchetto perso e' un dato, non un incidente da nascondere.
+// ---------------------------------------------------------------------
+
+#define SD_NODI_DIR "/nodi"
+
+// Sanifica un nome nodo per usarlo come cartella: tiene solo [A-Za-z0-9_-],
+// scarta il resto, tronca a 16 caratteri. false se non ne resta niente di
+// utilizzabile. Da usare SEMPRE su un nome che arriva dalla radio o da una
+// query string, prima di comporci un path.
+bool sd_node_dir_name(const char* nodeName, char* out, size_t outCap);
+
+// Accoda una riga al CSV giornaliero del nodo (crea cartelle e intestazione
+// al bisogno). `value` sono i tre float del protocollo, NAN dove manca.
+// false = SD non montata, nome inutilizzabile o scrittura fallita.
+bool sd_log_remote(const char* nodeName, const char* mac, time_t ts,
+                   const char* timeSource, uint32_t seq,
+                   const float value[3], uint16_t batteryMv);
+
+// Come sd_list_days(), ma per un nodo remoto.
+int sd_list_remote_days(const char* nodeName, sd_date_cb_t cb, void* arg, int maxItems);
+
+// Come sd_open_day(), ma per un nodo remoto (download del CSV grezzo).
+File sd_open_remote_day(const char* nodeName, const char* isoDate);
+
+// ---------------------------------------------------------------------
 //  Dashboard personalizzata su SD (/www/dashboard.html): se presente,
 //  web_ui.cpp la serve al posto di quella incorporata nel firmware. La
 //  pagina di upload/ripristino (web_ui.cpp) resta pero' SEMPRE quella in

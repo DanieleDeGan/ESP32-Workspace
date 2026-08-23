@@ -481,10 +481,19 @@ partizione) e +1,1 KB di RAM globale.
 - **Compilare ora vuole `--libraries libraries`**, che per `EnvNode_C3` prima
   non serviva.
 
-**Da fare qui, quando si torna sopra**: log su SD dei valori remoti (in
-`/logs/<nodo>/AAAA-MM-GG.csv` separato, per non rompere la dashboard che legge
-il CSV attuale), spostamento di `forecast.h` dal nodo all'hub, e la persistenza
-dei peer in NVS.
+**Fatto anche il log su SD dei valori remoti** (`v9`), in
+`/nodi/<NOME>/AAAA-MM-GG.csv` — cartella separata da `/logs`, che ha una
+scansione che si aspetta solo file, e che resta "quello che questa scheda
+misura" contro "quello che le viene raccontato". Colonne
+`ts_iso,ts_unix,fonte_ora,mac,seq,temp_c,hum_pct,press_hpa,batt_mv`: il MAC in
+ogni riga perché il nome di un nodo può cambiare mentre il MAC no, `seq` perché
+i pacchetti persi si vedano, e campo **vuoto** invece di zero per un valore che
+il nodo non ha potuto misurare. Elenco e download da `/nodi`, caricati solo su
+richiesta per non scansionare la card ad ogni polling.
+
+**Da fare qui, quando si torna sopra**: spostamento di `forecast.h` dal nodo
+all'hub, e i grafici dei nodi remoti nella dashboard (oggi c'è il download del
+CSV, non ancora una curva).
 
 ### Fase 1 bis — invio ESP-NOW dal nodo (fatto il 2026-08-23, `v3`)
 

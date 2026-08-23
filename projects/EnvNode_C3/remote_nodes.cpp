@@ -71,6 +71,7 @@ static bool       s_pairing = false;
 // diversi da quelli salvati): remote_loop() la raccoglie e riscrive la NVS una
 // volta sola, invece di farlo dentro il ciclo sui peer.
 static bool       s_dirty   = false;
+static remote_data_cb_t s_dataCb = nullptr;
 static uint32_t   s_pairingFineMs = 0;
 
 // ---------------------------------------------------------------------
@@ -239,6 +240,11 @@ static void aggiornaDaLibreria() {
     // mostrata in pagina.
     r->ultimoMs = lastSeenMs;
     r->ultimoTs = rtctime_now() - (time_t)((millis() - lastSeenMs) / 1000);
+
+    // In fondo, quando il record e' completo: chi ascolta (il .ino, che ci
+    // aggancia il log su SD) deve vedere il dato gia' assestato. Siamo nel
+    // contesto di loop(), quindi una scrittura su card qui e' lecita.
+    if (s_dataCb) s_dataCb(r);
   }
 }
 
@@ -269,6 +275,8 @@ bool remote_begin(const char* selfName) {
 }
 
 bool remote_ready() { return s_ready; }
+
+void remote_on_data(remote_data_cb_t cb) { s_dataCb = cb; }
 
 void remote_loop() {
   if (!s_ready) return;

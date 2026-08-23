@@ -90,6 +90,17 @@ bool remote_ready();
 // tranne per l'invio di un WELCOME durante una finestra di pairing.
 void remote_loop();
 
+// Notifica di un DATA NUOVO (seq cambiata), invocata da remote_loop() e
+// quindi nel contesto di loop(): puo' fare lavoro lento, per esempio una
+// scrittura su microSD. Il puntatore vale solo per la durata della chiamata.
+//
+// E' una callback e non una chiamata diretta a sd_logger di proposito:
+// questo modulo e' scritto per essere copiato su MeteoHub_S3, che avra' un
+// modulo di storage diverso. Legarlo qui alla SD di EnvNode_C3 vorrebbe dire
+// doverlo scucire al momento del trapianto.
+typedef void (*remote_data_cb_t)(const RemoteNode* nodo);
+void remote_on_data(remote_data_cb_t cb);
+
 // ---------------------------------------------------------------------
 //  Pairing: finestra a tempo, non un interruttore
 // ---------------------------------------------------------------------

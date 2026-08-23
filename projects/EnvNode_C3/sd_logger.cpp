@@ -245,6 +245,117 @@ bool sd_delete_dashboard() {
 }
 
 // ---------------------------------------------------------------------
+//  Log dei nodi remoti (vedi la nota in sd_logger.h)
+// ---------------------------------------------------------------------
+#define NODI_HEADER "ts_iso,ts_unix,fonte_ora,mac,seq,temp_c,hum_pct,press_hpa,batt_mv"
+
+bool sd_node_dir_name(const char* nodeName, char* out, size_t outCap) {
+  if (nodeName == nullptr || out == nullptr || outCap < 2) return false;
+
+  size_t n = 0;
+  const size_t maxLen = (outCap - 1 < 16) ? (outCap - 1) : 16;
+  for (const char* p = nodeName; *p && n < maxLen; p++) {
+    const char c = *p;
+    // Lista bianca, non lista nera: qualunque altro carattere sparisce. Un
+    // nome arriva dalla radio o da una query string, quindi ".." e "/" non
+    // devono nemmeno poter esistere in un path composto qui sotto.
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+        (c >= '0' && c <= '9') || c == '_' || c == '-') {
+      out[n++] = c;
+    }
+  }
+  out[n] = '\0';
+  return n > 0;
+}
+
+// Un campo vuoto invece di uno zero quando il valore non c'e': nel grafico
+// dev'essere un buco, non una misura che nessuno ha fatto.
+static void appendCsvFloat(File& f, float v, int decimali) {
+  if (isnan(v) || isinf(v)) return;
+  f.print(v, decimali);
+}
+
+bool sd_log_remote(const char* nodeName, const char* mac, time_t ts,
+                   const char* timeSource, uint32_t seq,
+                   const float value[3], uint16_t batteryMv) {
+  if (!s_mounted || value == nullptr) return false;
+
+  char dir[20];
+  if (!sd_node_dir_name(nodeName, dir, sizeof(dir))) return false;
+
+  char isoDate[11], isoDateTime[20];
+  struct tm local;
+  localtime_r(&ts, &local);
+  strftime(isoDate, sizeof(isoDate), "%Y-%m-%d", &local);
+  strftime(isoDateTime, sizeof(isoDateTime), "%Y-%m-%dT%H:%M:%S", &local);
+
+  char path[64];
+  snprintf(path, sizeof(path), "%s/%s", SD_NODI_DIR, dir);
+  if (!SD.exists(SD_NODI_DIR)) SD.mkdir(SD_NODI_DIR);
+  if (!SD.exists(path)) SD.mkdir(path);
+  snprintf(path, sizeof(path), "%s/%s/%s.csv", SD_NODI_DIR, dir, isoDate);
+
+  const bool isNew = !SD.exists(path);
+  File f = SD.open(path, FILE_APPEND);
+  if (!f) {
+    strlcpy(s_lastError, "scrittura CSV nodo fallita", sizeof(s_lastError));
+    return false;
+  }
+  if (isNew) f.println(NODI_HEADER);
+
+  f.printf("%s,%lu,%s,%s,%lu,", isoDateTime, (unsigned long)ts,
+           timeSource ? timeSource : "", mac ? mac : "", (unsigned long)seq);
+  appendCsvFloat(f, value[0], 2); f.print(',');
+  appendCsvFloat(f, value[1], 2); f.print(',');
+  appendCsvFloat(f, value[2], 2); f.print(',');
+  if (batteryMv) f.print(batteryMv);   // 0 = non misurata: campo vuoto
+  f.println();
+  f.close();
+  return true;
+}
+
+int sd_list_remote_days(const char* nodeName, sd_date_cb_t cb, void* arg, int maxItems) {
+  if (!s_mounted || !cb) return 0;
+
+  char dir[20];
+  if (!sd_node_dir_name(nodeName, dir, sizeof(dir))) return 0;
+
+  char path[48];
+  snprintf(path, sizeof(path), "%s/%s", SD_NODI_DIR, dir);
+
+  File d = SD.open(path);
+  if (!d) return 0;
+
+  int count = 0;
+  for (File f = d.openNextFile(); f; f = d.openNextFile()) {
+    if (!f.isDirectory()) {
+      String name = f.name();
+      const int slash = name.lastIndexOf('/');
+      if (slash >= 0) name = name.substring(slash + 1);
+      if (name.endsWith(".csv")) {
+        cb(name.substring(0, name.length() - 4).c_str(), f.size(), arg);
+        count++;
+        if (maxItems > 0 && count >= maxItems) { f.close(); break; }
+      }
+    }
+    f.close();
+  }
+  d.close();
+  return count;
+}
+
+File sd_open_remote_day(const char* nodeName, const char* isoDate) {
+  char dir[20];
+  if (!s_mounted || !sd_name_is_safe(isoDate) || !sd_node_dir_name(nodeName, dir, sizeof(dir))) {
+    return File();
+  }
+  char path[64];
+  snprintf(path, sizeof(path), "%s/%s/%s.csv", SD_NODI_DIR, dir, isoDate);
+  if (!SD.exists(path)) return File();
+  return SD.open(path, FILE_READ);
+}
+
+// ---------------------------------------------------------------------
 //  Elenco giorni disponibili
 // ---------------------------------------------------------------------
 int sd_list_days(sd_date_cb_t cb, void* arg, int maxItems) {

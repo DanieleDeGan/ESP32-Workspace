@@ -723,6 +723,9 @@ static const char NODI_PAGE[] PROGMEM = R"HTML(
  .muted{color:#8a8a8a;font-size:.8rem;line-height:1.6;margin:.2rem 0}
  .warn{color:#f0a020}
  button.dim{background:#3a2020;border:1px solid #5a2a2a;color:#e0888a;font-size:.75rem;padding:.35rem .6rem;margin-top:.6rem}
+ button.reg{background:#1f2a38;border:1px solid #2e3f55;color:#8ab4e8;font-size:.75rem;padding:.35rem .6rem;margin:.6rem .5rem 0 0}
+ .giorni{margin-top:.5rem;font-size:.78rem;line-height:1.9}
+ .giorni a{margin-right:.7rem;white-space:nowrap}
  a{color:#3987e5}
  code{color:#9aa}
 </style></head><body><div class="wrap">
@@ -742,6 +745,11 @@ static const char NODI_PAGE[] PROGMEM = R"HTML(
 <p class="muted"><a href="/">&larr; dashboard</a></p>
 <script>
 const E=document.getElementById.bind(document);
+// Il nome del nodo arriva dalla radio: nel DOM va come testo, mai come
+// markup. Sedici caratteri scelti da chiunque sia a tiro d'antenna non sono
+// un posto dove fidarsi.
+function esc(x){return String(x==null?'':x).replace(/[&<>"]/g,
+ c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function dur(s){if(s<60)return s+' s';if(s<3600)return Math.round(s/60)+' min';return (s/3600).toFixed(1)+' h';}
 // null = valore non finito lato nodo (sensore che non ha risposto): si
 // mostra come tale invece di stampare uno zero che sembrerebbe una misura.
@@ -765,19 +773,34 @@ function render(d){
   :'ESP-NOW non attivo';
  if(!d.nodi.length){E('lista').innerHTML='<div class="card"><p class="muted">Nessun nodo associato. Apri il pairing, poi accendi (o riavvia) il nodo.</p></div>';return;}
  E('lista').innerHTML=d.nodi.map(n=>`<div class="card">
-  <h3><span class="dot ${n.online?'ok':'ko'}"></span>${n.nome||'(senza nome)'}
-   <span class="muted">${n.tipo_nome}</span></h3>
+  <h3><span class="dot ${n.online?'ok':'ko'}"></span>${esc(n.nome||'(senza nome)')}
+   <span class="muted">${esc(n.tipo_nome)}</span></h3>
   <div class="vals">${vals(n)}</div>
   ${stato(n)}
   <p class="muted">cadenza osservata: ${n.intervallo_s?dur(n.intervallo_s):'in apprendimento'}
    &middot; batteria: ${n.batteria_mv?(n.batteria_mv/1000).toFixed(2)+' V':'non misurata'}</p>
   <p class="muted">pacchetti ${n.pacchetti} &middot; persi ${n.persi} &middot; riavvii ${n.riavvii}
    &middot; seq ${n.seq} &middot; <code>${n.mac}</code></p>
+  <button class="reg" data-nodo="${esc(n.nome)}" data-box="g-${n.mac.replace(/:/g,'')}">Registri su SD</button>
   <button class="dim" data-mac="${n.mac}">Dimentica questo nodo</button>
+  <div class="giorni" id="g-${n.mac.replace(/:/g,'')}"></div>
   </div>`).join('');
+ // I registri si caricano SOLO su richiesta: elencare i file della SD e' una
+ // scansione della card, e farla ad ogni giro di polling (2 s) toglierebbe
+ // tempo a campionamento, scrittura e OTA su un WebServer che e' sincrono.
+ document.querySelectorAll('button.reg').forEach(b=>
+   b.onclick=()=>registri(b.dataset.nodo, E(b.dataset.box)));
  // I pulsanti si ricreano ad ogni render, quindi il gestore si riaggancia qui
  // invece di una volta sola all'avvio.
  document.querySelectorAll('button.dim').forEach(b=>b.onclick=()=>dimentica(b.dataset.mac));
+}
+function registri(nodo, box){
+ box.textContent='lettura della card...';
+ fetch('/api/nodi/giorni?nodo='+encodeURIComponent(nodo)).then(r=>r.json()).then(g=>{
+  if(!g.length){box.textContent='nessun registro ancora (il primo file nasce al prossimo DATA)';return;}
+  box.innerHTML = g.slice().reverse().map(d =>
+    '<a href="/api/nodi/scarica?nodo='+encodeURIComponent(nodo)+'&d='+d+'">'+d+'</a>').join('');
+ }).catch(()=>{box.textContent='errore di lettura';});
 }
 function dimentica(mac){
  if(!confirm('Dimenticare il nodo '+mac+'? Viene tolto dal registro e dalla memoria '
@@ -874,6 +897,40 @@ static void handleApiNodi() {
   net_server().send(200, "application/json", json);
 }
 
+// GET /api/nodi/giorni?nodo=<nome>   elenco dei CSV di quel nodo su SD
+static void handleApiNodiGiorni() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+  if (!srv.hasArg("nodo")) { srv.send(400, "text/plain", "manca il parametro nodo"); return; }
+
+  String json = "[";
+  sd_list_remote_days(srv.arg("nodo").c_str(), appendDayCb, &json, 400);
+  json += ']';
+  srv.send(200, "application/json", json);
+}
+
+// GET /api/nodi/scarica?nodo=<nome>&d=YYYY-MM-DD   CSV grezzo
+static void handleApiNodiScarica() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+  if (!srv.hasArg("nodo") || !srv.hasArg("d")) {
+    srv.send(400, "text/plain", "servono i parametri nodo e d");
+    return;
+  }
+
+  // sd_open_remote_day() valida sia la data sia il nome (che diventa un
+  // pezzo di path): qui non si compone niente a mano.
+  File f = sd_open_remote_day(srv.arg("nodo").c_str(), srv.arg("d").c_str());
+  if (!f) { srv.send(404, "text/plain", "file inesistente"); return; }
+
+  char disp[80];
+  snprintf(disp, sizeof(disp), "attachment; filename=\"%s_%s.csv\"",
+           srv.arg("nodo").c_str(), srv.arg("d").c_str());
+  srv.sendHeader("Content-Disposition", disp);
+  srv.streamFile(f, "text/csv");
+  f.close();
+}
+
 // POST /api/nodi/dimentica?mac=AA:BB:CC:DD:EE:FF
 // Toglie il nodo dal registro (libreria + RAM + NVS). Serve quando una scheda
 // viene sostituita: l'identita' di un nodo e' il suo MAC, quindi quella
@@ -966,4 +1023,6 @@ void web_ui_begin() {
   srv.on("/api/nodi", HTTP_GET, handleApiNodi);
   srv.on("/api/pairing", HTTP_POST, handleApiPairing);
   srv.on("/api/nodi/dimentica", HTTP_POST, handleApiNodiDimentica);
+  srv.on("/api/nodi/giorni", HTTP_GET, handleApiNodiGiorni);
+  srv.on("/api/nodi/scarica", HTTP_GET, handleApiNodiScarica);
 }

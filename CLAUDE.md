@@ -574,6 +574,27 @@ la RAM ad ogni risveglio, quindi il suo storico **non può** stare su di lui.
   motivo per cui l'ESP-NOW funziona senza toccare il router. Conseguenza: **i
   nodi devono stare sul canale dell'AP**, e `/api/nodi` lo riporta apposta,
   perché un nodo che dorme senza WiFi dovrà impostarlo esplicitamente.
+- **I valori dei nodi remoti si loggano su SD** in `/nodi/<NOME>/AAAA-MM-GG.csv`
+  (colonne `ts_iso,ts_unix,fonte_ora,mac,seq,temp_c,hum_pct,press_hpa,batt_mv`),
+  con elenco e download da `/nodi` (`/api/nodi/giorni`, `/api/nodi/scarica`).
+  - **Cartella separata da `/logs`, non una sottocartella**: dentro `/logs` c'è
+    una scansione che si aspetta solo file. E i due log sono anche
+    concettualmente diversi — `/logs` è quello che questa scheda *misura*,
+    `/nodi` è quello che le viene *raccontato*.
+  - **Cartella per nome, MAC in colonna.** Sulla card i nomi si devono poter
+    leggere; ma il nome può cambiare (basta riprogrammare un nodo) mentre
+    l'identità vera è il MAC, quindi ogni riga se lo porta dietro e le righe
+    vecchie restano attribuibili anche dopo una rinomina.
+  - **Un valore non finito diventa un campo vuoto, non uno zero**: nel grafico
+    dev'essere un buco, non una misura che nessuno ha fatto. `seq` c'è apposta
+    perché i salti si vedano: su una tratta radio il pacchetto perso è un dato.
+  - **L'elenco dei registri si carica solo su richiesta** (pulsante "Registri su
+    SD"), mai durante il polling: elencare i file è una scansione della card, e
+    farla ogni 2 s toglierebbe tempo a campionamento, scrittura e OTA.
+  - `remote_nodes` **non** conosce `sd_logger`: espone `remote_on_data()` e
+    l'incollatura sta nel `.ino`. È il modulo che verrà copiato su
+    `MeteoHub_S3`, che avrà uno storage diverso, e legarlo qui alla SD di
+    `EnvNode_C3` vorrebbe dire doverlo scucire al trapianto.
 - **Pairing a finestra, non interruttore**, e **si riapre da sola per 5 minuti
   ad ogni avvio**, per i nodi non ancora in elenco.
 - **Il registro è persistito in NVS** (namespace `envnodi`, un blob solo), e si
