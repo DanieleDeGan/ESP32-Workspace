@@ -58,6 +58,10 @@ DHT              dht(PIN_DHT, DHT11);
 
 // Da incrementare a ogni firmware caricato sul nodo: la dashboard lo mostra,
 // ed e' l'unico modo per sapere da remoto quale versione sta davvero girando.
+//   v10 2026-08-23  non registra piu' un campione finche' l'orario non e'
+//                   sincronizzato (al massimo 5 minuti, poi lo registra
+//                   comunque): prima ogni riavvio lasciava nel CSV una riga
+//                   con l'ora di compilazione, identica ad ogni boot
 //   v9  2026-08-23  log dei nodi remoti su microSD, un CSV al giorno per
 //                   nodo in /nodi/<NOME>/, con elenco e download da /nodi
 //   v8  2026-08-23  EspNowLink: nome e tipo del peer aggiornati ad ogni
@@ -81,7 +85,7 @@ DHT              dht(PIN_DHT, DHT11);
 //                   riconosciuta dal PC ma nessuno che legge, le print()
 //                   bloccavano loop() e con lui web server, OTA e campionamento
 //   v2  ...
-static const char* FW_VERSION = "v9";
+static const char* FW_VERSION = "v10";
 
 static bool     otaActive = false;   // true mentre un update e' in corso
 static uint32_t lastDraw  = 0;
@@ -144,6 +148,30 @@ const char* app_fw_version() { return FW_VERSION; }
 //  board AMOLED non c'e' un lock di rendering da tenere breve, il loop()
 //  semplicemente aspetta.
 // ---------------------------------------------------------------------
+// Quanto si aspetta il primo sync NTP prima di rassegnarsi e registrare
+// comunque con l'orario stimato.
+static constexpr uint32_t ORARIO_GRAZIA_MS = 5UL * 60000;
+
+// L'orario e' abbastanza attendibile da poterci datare un dato?
+//
+// Prima del primo sync NTP l'orologio riporta l'ora di compilazione (vedi
+// rtc_time.h), che e' la STESSA ad ogni riavvio: un dato marcato li' finisce
+// nel CSV con un timestamp gia' usato. Nel grafico e' una colonna verticale
+// invece di un punto, le righe non sono piu' ordinabili nel tempo, e i
+// min/max vengono attribuiti a un istante in cui nessuno ha misurato niente -
+// il 2026-08-23 il minimo della giornata risultava letto alle 10:48:06, che
+// era l'ora in cui quel firmware era stato compilato. Nel CSV di quel giorno
+// ci sono dieci righe con quel timestamp: una per riavvio.
+//
+// La finestra di grazia esiste perche' rinunciare del tutto sarebbe un guasto
+// peggiore del timestamp impreciso: senza rete la scheda smetterebbe di
+// registrare per sempre. Passati cinque minuti si registra lo stesso, e a
+// dire quanto fidarsi resta la colonna fonte_ora - che in quel caso vale
+// STIMA, ed e' esattamente il motivo per cui quella colonna esiste.
+static bool orario_registrabile() {
+  return rtctime_isSynced() || millis() >= ORARIO_GRAZIA_MS;
+}
+
 static void take_sample() {
   float t = dht.readTemperature();
   float h = dht.readHumidity();
@@ -151,6 +179,14 @@ static void take_sample() {
   if (isnan(t) || isnan(h)) {
     s_dhtErrors++;
     Serial.println("[DHT11] lettura fallita (cablaggio/pin/alimentazione?)");
+    return;
+  }
+
+  // Un campione che non si sa datare non si registra: ne' su SD, ne' come
+  // min/max. Il sensore si legge lo stesso (cosi' il DHT resta sollecitato
+  // come sempre), ma il dato si butta.
+  if (!orario_registrabile()) {
+    Serial.println("[campione] orario non ancora sincronizzato: non registrato");
     return;
   }
 
@@ -369,8 +405,15 @@ static void onRemoteData(const RemoteNode* n) {
   snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X",
            n->mac[0], n->mac[1], n->mac[2], n->mac[3], n->mac[4], n->mac[5]);
 
-  // Si logga anche senza orologio sincronizzato: la colonna fonte_ora dice
-  // quanto fidarsi del timestamp, esattamente come per il log locale.
+  // Stessa regola del log locale (vedi orario_registrabile()): un DATA che
+  // arriva prima del primo sync NTP verrebbe datato con l'ora di
+  // compilazione, uguale ad ogni riavvio dell'hub. Qui pesa anche di piu' che
+  // sul log locale, perche' il CSV di un nodo remoto e' l'UNICO posto dove
+  // quella lettura esiste: il nodo non se la tiene. Ma una riga che si
+  // spaccia per un istante sbagliato non e' un dato salvato, e' un dato
+  // falsificato - e il pacchetto perso si vede gia' dal salto di seq.
+  if (!orario_registrabile()) return;
+
   sd_log_remote(n->nome, mac, n->ultimoTs, rtctime_source(),
                 n->seq, n->value, n->batteria_mv);
 }
