@@ -187,6 +187,65 @@ su qualunque ESP32: per un C3 usa `esp32:esp32:esp32c3:CDCOnBoot=cdc`. **Senza
 USB si vede solo il log di boot della ROM, non lo sketch — errore facile da
 scambiare per "lo sketch non parte".
 
+**Sulla XIAO ESP32-C3 quel flag è però invertito**, esattamente come sulla
+XIAO S3 e al contrario del C3 generico qui sopra. Lo dice `arduino-cli board
+details --fqbn esp32:esp32:XIAO_ESP32C3`: `CDCOnBoot=default` → *Enabled* (ed è
+il default della board), `CDCOnBoot=cdc` → *Disabled*. `projects/MeteoNode_C3/`
+si compila quindi **senza** quel flag:
+
+```
+arduino-cli compile --fqbn "esp32:esp32:XIAO_ESP32C3:PartitionScheme=min_spiffs" --libraries libraries projects/MeteoNode_C3
+```
+
+Aggiungerlo "per avere la Serial sull'USB" ottiene l'opposto: la `Serial`
+finisce su UART0 e sull'USB resta solo il log della ROM. Trovato il 2026-08-23
+mentre si cercava di leggere i log di un deep sleep — e per un pezzo è sembrato
+che lo sketch non partisse affatto.
+
+
+### Deep sleep — tre trappole trovate su hardware
+
+Implementato per la prima volta il 2026-08-23 su `projects/MeteoNode_C3/`
+(`v9`): il nodo si sveglia a timer, misura, manda un DATA ESP-NOW e torna a
+dormire, senza mai accendere il WiFi. Le tre cose che sono costate una serata:
+
+**1. Il `seq` di `EspNowLink` deve attraversare il sonno.** È la peggiore, e ha
+una sezione sua più sotto (vedi `EspNowLink`): il contatore vive in RAM, quindi
+ogni risveglio ripartiva da `seq=0` e l'hub — che scarta un DATA con `seq`
+uguale all'ultimo visto — ne accettava **uno** e ignorava tutti i successivi.
+
+**2. Con il cavo USB attaccato il deep sleep non si può osservare.** Al
+risveglio la porta CDC si riconnette e l'enumerazione dell'host resetta il
+chip: nel log di boot si legge `rst:0x15 (USB_UART_CHIP_RESET)` invece di
+`rst:0x5 (DSLEEP)`. Il nodo non completa mai un vero risveglio, riparte dal
+percorso normale, e i tempi che si misurano sono quelli della veglia, non del
+sonno. **Lo strumento con cui vorresti guardare il deep sleep è la cosa che te
+lo impedisce** — stessa forma del monitor seriale in `setTxTimeoutMs(0)` qui
+sopra. Per i log durante il sonno serve UART0 su un adattatore, non l'USB
+nativo.
+
+**3. Un alimentatore con auto-spegnimento taglia la corrente mentre il nodo
+dorme.** Power bank e caricatori multipli si spengono sotto una soglia di
+carico (50-100 mA); un C3 in deep sleep sta a decine di µA. Il nodo non si
+risveglia più e sembra un firmware rotto — sul caricatore si vede l'uscita che
+smette di segnare mentre le altre continuano. Rimedio da laboratorio: un carico
+fittizio (è bastato un hub USB con un LED sempre acceso); rimedio vero: la
+batteria sui pin BAT, che è comunque la destinazione del progetto.
+
+**Come si distingue "non esegue codice" da "esegue e sbaglia"**: tenere
+un'uscita di sicurezza che dopo N risvegli senza consegna riaccende WiFi e OTA
+e riporta il nodo raggiungibile. Se non scatta mai, il codice non sta girando —
+e si smette di cercare il guasto nella radio. E tenere i contatori dei risvegli
+in **NVS, non in RTC memory**: la RTC memory la cancella il power-cycle, cioè
+proprio l'operazione con cui si recupera un nodo che non torna, quindi la prova
+sparisce esattamente quando serve. È stato il contatore `risvegli=19,
+consegnati=19` a spostare il sospetto dal nodo all'hub.
+
+**Ordine di spegnimento prima di dormire** (preso da uno sketch già validato su
+hardware, non inventato qui): `esp_now_deinit()` → `esp_wifi_stop()` →
+`esp_wifi_deinit()` → `delay(100)` → `esp_sleep_enable_timer_wakeup()` →
+`esp_deep_sleep_start()`.
+
 ### `Update.abort()` nel caso `UPLOAD_FILE_ABORTED` — obbligatorio
 
 In `net_ota.cpp` il gestore dell'upload deve chiamare `Update.abort()` quando
@@ -398,6 +457,30 @@ corrente"). Conseguenza da non dimenticare: la radio è una sola, quindi **anche
 l'hub va inizializzato sul canale di quell'AP** (`Link_InitEx(LINK_NODE_HUB,
 "Hub", canale_AP)`), altrimenti i due non si sentono. Se il router cambia canale
 da solo, il nodo lo segue al riavvio e l'hub no.
+
+**Il `seq` è anche un filtro anti-doppioni, e con un nodo che dorme diventa una
+trappola.** L'hub scarta un DATA il cui `seq` è **uguale** all'ultimo visto
+(`remote_nodes.cpp`: `if (r->hasData && dato.seq == r->seq) continue;`). Il
+contatore però vive in RAM dentro `link_node.cpp`, quindi un nodo che si
+risveglia da deep sleep riparte da zero ad ogni ciclo: il primo DATA passa
+(zero è diverso dall'ultimo seq della veglia) e **tutti i successivi vengono
+buttati come doppioni**. Per questo esistono `Link_Node_SetSeq()` /
+`Link_Node_GetSeq()`: il nodo conserva il seq in RTC memory e lo rimette dopo
+ogni risveglio.
+
+Il guasto è **silenzioso da entrambe le parti**, come quello del registro peer
+qui sopra e per lo stesso motivo: l'ACK di ESP-NOW è di livello radio e arriva
+comunque, quindi il nodo conta i propri invii come riusciti mentre l'hub non
+mostra niente. Misurato il 2026-08-23: **19 risvegli, 19 invii confermati dal
+nodo, uno solo visto dall'hub**. Si è cercato il guasto nel timer, nella radio,
+nell'alimentazione e nell'USB; era una riga di deduplica.
+
+**`Link_Node_ResumeWithHub(mac)`** serve allo stesso scenario: un nodo che si
+sveglia non sa più di essere associato e rifarebbe il pairing (un HELLO ogni
+2 s, più l'attesa che l'hub accodi il WELCOME dal suo `loop()`), che su un nodo
+sveglio pochi secondi per volta è la parte più lunga e più incerta del ciclo,
+tutta a radio accesa. Conservando il MAC dell'hub si registra il peer e si passa
+dritti al DATA.
 
 **Limite noto**: l'unicast ESP-NOW tra un hub ESP32-S3 e un nodo ESP32
 "classico" (Xtensa D0WD) è risultato inaffidabile/lento ad associarsi su
