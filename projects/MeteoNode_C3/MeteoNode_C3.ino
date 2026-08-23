@@ -77,6 +77,10 @@
 #include <Wire.h>
 #include <Preferences.h>
 #include <esp_system.h>   // esp_reset_reason(): perche' la scheda e' ripartita
+#include <esp_sleep.h>    // deep sleep fra una misura e l'altra
+#include <WiFi.h>         // idem: la radio si spegne da qui prima del sonno
+#include <esp_wifi.h>     // esp_wifi_stop()/deinit() prima di dormire, vedi vaiADormire()
+#include <esp_now.h>      // esp_now_deinit(): idem, va smontato prima del sonno
 #include <Adafruit_AHTX0.h>
 #include <Adafruit_BMP280.h>
 
@@ -88,6 +92,18 @@
 
 // Da incrementare a ogni firmware caricato: la pagina lo mostra, ed e' l'unico
 // modo per sapere da remoto quale versione sta davvero girando.
+//   v9  2026-08-23  porta il seq ESP-NOW attraverso il sonno. Senza, ogni
+//                   risveglio ripartiva da seq=0 e l'hub scartava i DATA
+//                   come doppioni: 19 risvegli, 19 invii confermati dal
+//                   nodo, UNO solo visto dall'hub
+//   v8  2026-08-23  ferma la radio prima di dormire: senza, il nodo faceva
+//                   UN solo risveglio e poi non si svegliava piu'
+//   v7  2026-08-23  il risveglio riprende con l'hub gia' noto invece di
+//                   rifare il pairing, e dopo cinque risvegli muti di fila
+//                   il nodo smette di dormire e torna raggiungibile
+//   v6  2026-08-23  deep sleep fra una misura e l'altra (spento di
+//                   default, si accende dalla pagina). Al risveglio niente
+//                   WiFi ne' web: solo sensore, ESP-NOW e via
 //   v5  2026-08-23  diagnostica del riavvio: causa dell'ultimo boot,
 //                   contatore dei boot in NVS e contatori delle cadute WiFi,
 //                   tutti in /api/stato. Senza, un riavvio era invisibile da
@@ -102,7 +118,7 @@
 //   v2  2026-08-22  storico 24 h in RAM + grafici, previsione dal trend
 //                   barometrico a 3 ore, intervallo e altitudine da pagina web
 //   v1  2026-08-22  bring-up del sensore, web UI, OTA
-static const char FW_VERSION[] = "v5";
+static const char FW_VERSION[] = "v9";
 
 // Nome con cui il nodo si presenta all'hub. Massimo 16 caratteri (troncato
 // da EspNowLink): due nodi con lo stesso nome sarebbero indistinguibili
@@ -198,6 +214,97 @@ static uint32_t s_lastReadMs  = 0;
 static esp_reset_reason_t s_resetReason = ESP_RST_UNKNOWN;
 static uint32_t           s_bootCount   = 0;
 
+// ---------------------------------------------------------------------------
+// Deep sleep: lo stato che deve attraversare il sonno
+// ---------------------------------------------------------------------------
+// La RAM normale si azzera ad ogni risveglio, la RTC memory no (la perde solo
+// chi toglie corrente). Ci va il minimo indispensabile: i contatori che la
+// pagina mostra - altrimenti ripartirebbero da zero ogni pochi minuti e non
+// direbbero piu' niente - e due cose senza le quali ogni risveglio dovrebbe
+// riaccendere il WiFi, che e' proprio cio' che il deep sleep serve a evitare:
+//
+//  - il CANALE ESP-NOW, imparato dall'AP mentre il nodo era sveglio. Senza, al
+//    risveglio si potrebbe solo tirare a indovinare col canale fisso della
+//    libreria: se il router ne usasse un altro il nodo diventerebbe muto in
+//    silenzio (vedi la nota in hub_link.h).
+//  - il fatto che l'orario fosse GIA' sincronizzato. L'RTC interno continua a
+//    contare durante il sonno, quindi l'ora resta buona; ma rtctime_isSynced()
+//    vive in RAM, e senza questo flag ogni risveglio riseminerebbe l'orologio
+//    da build-time - buttando via l'ora vera per rimetterci quella di
+//    compilazione, cioe' esattamente il difetto appena corretto sull'hub.
+static const uint32_t RTC_MAGIC = 0x5A11EE06;
+RTC_DATA_ATTR static uint32_t s_rtcMagic   = 0;
+RTC_DATA_ATTR static uint32_t s_rtcReads   = 0;
+RTC_DATA_ATTR static uint32_t s_rtcErrors  = 0;
+RTC_DATA_ATTR static uint32_t s_rtcSent    = 0;
+RTC_DATA_ATTR static uint32_t s_rtcFail    = 0;
+RTC_DATA_ATTR static uint8_t  s_rtcChannel = 0;
+RTC_DATA_ATTR static bool     s_rtcTimeOk  = false;
+
+// Il MAC dell'hub, imparato dal WELCOME la prima volta. Averlo qui e' cio' che
+// permette di saltare il pairing ad ogni risveglio: due secondi buoni fra un
+// HELLO e il successivo, piu' l'attesa del WELCOME, erano la parte piu' lunga e
+// piu' incerta del ciclo - tutta a radio accesa.
+RTC_DATA_ATTR static uint8_t  s_rtcHubMac[6] = {0};
+RTC_DATA_ATTR static bool     s_rtcHubMacOk  = false;
+
+// Il contatore di sequenza ESP-NOW. Deve attraversare il sonno, altrimenti
+// ogni risveglio manda seq=0 e l'hub - che scarta i DATA con seq uguale
+// all'ultimo visto - ne accetta uno e ignora tutti i successivi. Il guasto e'
+// silenzioso da entrambe le parti: il nodo conta i propri invii come riusciti
+// (l'ACK di ESP-NOW e' di livello radio e arriva comunque) e l'hub non mostra
+// niente. Costato una serata il 2026-08-23, con 19 risvegli perfetti che
+// sembravano un deep sleep rotto.
+RTC_DATA_ATTR static uint32_t s_rtcSeq = 0;
+
+// Quanti risvegli ci sono stati e quanti hanno davvero consegnato. Senza questi
+// due numeri un nodo che non si sveglia e uno che si sveglia senza farsi
+// sentire sono indistinguibili: da fuori sono tutti e due semplicemente muti.
+//
+// Stanno in NVS e NON in RTC memory, che invece sarebbe il posto naturale: la
+// RTC memory la cancella il power-cycle, cioe' proprio l'operazione con cui si
+// riprende un nodo che non torna piu'. La prova sparirebbe esattamente quando
+// serve. Successo davvero il 2026-08-23: dopo aver staccato la corrente per
+// recuperare il nodo, "risvegli" diceva 0 e non c'era modo di sapere se si
+// fosse mai svegliato.
+//
+// Si scrive con parsimonia - un risveglio su NVS_OGNI, piu' sempre il primo
+// fallimento di una serie - perche' scrivere ad ogni risveglio sarebbe una
+// scrittura ogni pochi minuti sulla stessa chiave, per anni.
+static uint32_t s_wakeTot = 0;
+static uint32_t s_wakeOk  = 0;
+static const uint32_t NVS_OGNI = 10;
+
+// Fallimenti di fila: serve solo entro una sessione di sonno, quindi la RTC
+// memory basta e avanza.
+RTC_DATA_ATTR static uint32_t s_rtcFailRun = 0;
+
+// Dopo quanti risvegli muti di fila il nodo rinuncia a dormire e torna sveglio
+// con WiFi e OTA. E' la rete di sicurezza che mancava al primo tentativo:
+// senza, un nodo che si sveglia ma non riesce a farsi sentire resta
+// irraggiungibile finche' qualcuno non gli toglie corrente di persona.
+static const uint32_t RISVEGLI_MUTI_MAX = 5;
+
+// Acceso dalla pagina e persistito in NVS. Di default SPENTO: un firmware
+// nuovo si comporta come prima finche' non glielo si chiede esplicitamente.
+static bool     s_sleepOn = false;
+
+// Quanto resta sveglio dopo un'accensione vera prima di cominciare a dormire.
+// E' LA VIA DI RIENTRO: un nodo che dorme non risponde all'OTA, quindi deve
+// esistere un modo sicuro per riprenderlo, e togliere e rimettere corrente e'
+// l'unico che funziona sempre. In questa finestra la pagina risponde, e da li'
+// si spegne il sonno.
+static const uint32_t VEGLIA_MS = 5UL * 60000;
+
+// Quanto si aspetta il WELCOME dell'hub al risveglio prima di rinunciare e
+// tornare a dormire. Senza tetto, un hub spento terrebbe il nodo sveglio a
+// consumare finche' la batteria non finisce.
+static const uint32_t PAIRING_MS = 4000;
+
+// Ultimo segno di vita di un OTA: non si va a dormire mentre sta scrivendo la
+// partizione, o l'aggiornamento muore a meta'.
+static uint32_t s_otaLastMs = 0;
+
 // Ultima lettura valida, quella che la pagina web mostra fra un campione e il
 // successivo. Tenuta a parte dalle variabili locali di readAndPrint() apposta:
 // la web UI puo' chiedere lo stato in qualunque istante, anche mentre il
@@ -248,6 +355,9 @@ static void settingsLoad() {
   if (!p.begin("meteonode", true)) return;
   s_intervalloS = p.getULong("intervallo", INTERVALLO_DEFAULT_S);
   s_altitudineM = p.getFloat("altitudine", ALTITUDINE_DEFAULT_M);
+  s_sleepOn     = p.getBool("sleep", false);
+  s_wakeTot     = p.getULong("w_tot", 0);
+  s_wakeOk      = p.getULong("w_ok", 0);
   p.end();
 
   if (s_intervalloS < INTERVALLO_MIN_S || s_intervalloS > INTERVALLO_MAX_S) {
@@ -824,6 +934,25 @@ const char* app_reset_reason() {
 
 uint32_t app_boot_count() { return s_bootCount; }
 
+bool     app_sleep_enabled() { return s_sleepOn; }
+uint32_t app_wake_count()    { return s_wakeTot; }
+uint32_t app_wake_ok_count() { return s_wakeOk; }
+
+// Interruttore del deep sleep. A differenza degli altri comandi questo NON si
+// accoda: e' la via di fuga, e deve avere effetto prima che la finestra di
+// veglia scada. Una putBool in NVS costa pochi millisecondi, non il quasi
+// secondo di una scansione I2C, quindi non c'e' il rischio che la nota in
+// web_ui.h descrive (richieste che si accavallano finche' una va in timeout).
+void app_cmd_toggle_sleep() {
+  s_sleepOn = !s_sleepOn;
+  Preferences p;
+  if (p.begin("meteonode", false)) {
+    p.putBool("sleep", s_sleepOn);
+    p.end();
+  }
+  Serial.printf("[sleep] ora e' %s\n", s_sleepOn ? "acceso" : "spento");
+}
+
 uint32_t app_eta_ultima_lettura_s() {
   if (!s_hasReading) return 0;
   return (millis() - s_lastGoodMs) / 1000UL;
@@ -915,6 +1044,7 @@ static void handleSerial() {
 // OTA: eco del progresso sulla Serial
 // ---------------------------------------------------------------------------
 static void onOtaProgress(int percent, const char* what) {
+  s_otaLastMs = millis();   // vedi la guardia in loop(): non dormire adesso
   static int last = -1;
   if (percent == last) return;
   last = percent;
@@ -925,6 +1055,171 @@ static void onOtaProgress(int percent, const char* what) {
 // ---------------------------------------------------------------------------
 // setup / loop
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Deep sleep
+// ---------------------------------------------------------------------------
+// Il ciclo e': sveglia -> misura -> un pacchetto ESP-NOW -> dormi. Al risveglio
+// NON si accende il WiFi: ESP-NOW non ha bisogno di essere associati a un
+// access point, gli basta stare sul canale giusto - ed e' il canale che il
+// nodo si e' salvato in RTC memory mentre era sveglio. Riaccendere il WiFi
+// costerebbe qualche secondo di radio a piena potenza ad ogni risveglio, cioe'
+// piu' corrente di tutto il resto del ciclo messo insieme.
+//
+// Il prezzo: mentre dorme il nodo NON risponde - niente pagina, niente OTA. Si
+// riprende togliendo e rimettendo corrente, che apre la finestra di veglia di
+// VEGLIA_MS in cui si puo' spegnere il sonno dalla pagina.
+static void vaiADormire() {
+  // Salvato ORA, perche' dopo esp_deep_sleep_start() non si torna qui.
+  s_rtcMagic  = RTC_MAGIC;
+  s_rtcReads  = s_reads;
+  s_rtcErrors = s_readErrors;
+  s_rtcSent   = s_rtcSent + hub_sent_ok();
+  s_rtcFail   = s_rtcFail + hub_sent_fail();
+  if (hub_channel() != 0) s_rtcChannel = hub_channel();
+  if (rtctime_isSynced()) s_rtcTimeOk  = true;
+
+  s_rtcSeq = hub_seq_get();   // la sequenza deve proseguire dopo il sonno
+
+  uint8_t mac[6];
+  if (hub_hub_mac_bytes(mac)) {   // da qui in poi i risvegli saltano il pairing
+    memcpy(s_rtcHubMac, mac, 6);
+    s_rtcHubMacOk = true;
+  }
+
+  const uint32_t secondi = s_intervalloS;
+  Serial.printf("[sleep] dormo %lu s (risvegli: %lu, consegnati: %lu, canale %u)\n",
+                (unsigned long)secondi, (unsigned long)s_wakeTot,
+                (unsigned long)s_wakeOk, (unsigned)s_rtcChannel);
+  Serial.flush();   // con la CDC il log si butta se nessuno legge: qui si aspetta
+
+  sensorPower(false);   // giu' il VDD del sensore prima di spegnere tutto
+
+  // La radio va SMONTATA esplicitamente, non lasciata accesa a
+  // esp_deep_sleep_start(), e in tre passi: deinit di ESP-NOW, stop del WiFi,
+  // deinit del WiFi. Fermarlo e basta non era abbastanza.
+  //
+  // Il sintomo, osservato due volte di fila il 2026-08-23: il nodo faceva
+  // esattamente UN risveglio - misura giusta, DATA consegnato all'hub - e poi
+  // non si svegliava mai piu'. Non un problema di radio ne' di pairing: il
+  // DATA arrivava. Semplicemente il secondo timer non ripartiva.
+  //
+  // Come si riconosce che il nodo NON esegue piu' codice, invece di eseguirlo
+  // male: c'e' un'uscita di sicurezza che dopo cinque risvegli senza consegna
+  // lo riporta sveglio e raggiungibile. Non e' mai scattata. Un nodo che non
+  // torna nemmeno quando e' programmato per tornare non sta sbagliando
+  // qualcosa - non sta girando.
+  //
+  // Differenza fra il primo sonno e i successivi: il primo parte da loop(),
+  // con lo stack WiFi portato su da net_begin() e una connessione vera; i
+  // successivi partono dal percorso di risveglio, dove il WiFi e' stato
+  // acceso solo da ESP_NOW.begin(). Fermarlo prima di dormire mette i due
+  // casi nello stesso stato, che e' comunque la sequenza corretta: la
+  // documentazione ESP-IDF chiede esp_wifi_stop() prima del deep sleep.
+  // Questa e' la sequenza di uno sketch di prova gia' validato su hardware
+  // (Documents/Arduino/SistemaTemperaturaTrasmittenteRicevente/
+  // TrasmettitoreDirect), che dorme e si risveglia in modo affidabile da mesi.
+  // Vale piu' di qualunque ragionamento: lo stesso chip, lo stesso ESP-NOW,
+  // lo stesso deep sleep a timer, e funziona.
+  esp_now_deinit();
+  esp_wifi_stop();
+  esp_wifi_deinit();
+  delay(100);
+
+  esp_sleep_enable_timer_wakeup((uint64_t)secondi * 1000000ULL);
+  esp_deep_sleep_start();
+}
+
+// Percorso corto del risveglio: solo cio' che serve a produrre un dato e
+// consegnarlo. Non ritorna mai - finisce dentro vaiADormire().
+static void cicloRisveglio() {
+  s_reads      = s_rtcReads;      // i contatori proseguono da prima del sonno
+  s_readErrors = s_rtcErrors;
+
+  settingsLoad();                 // carica anche s_wakeTot / s_wakeOk da NVS
+  s_wakeTot++;
+
+  rtctime_begin(TZ_POSIX);
+  // NON riseminare da build-time se l'ora era gia' buona: l'RTC ha continuato
+  // a contare durante il sonno, e riseminare qui butterebbe via l'ora vera per
+  // rimetterci quella di compilazione.
+  if (!s_rtcTimeOk) rtctime_seedFromBuild();
+
+  sensorsBegin();
+
+  // Prima strada: riprendere con l'hub che gia' conosciamo, senza HELLO ne'
+  // attesa del WELCOME. Si passa dritti al DATA.
+  bool pronto = false;
+  if (s_rtcHubMacOk) {
+    pronto = hub_resume(NODE_NAME, s_rtcChannel, s_rtcHubMac);
+  }
+
+  // Seconda strada: il pairing classico. Serve la primissima volta, e ogni
+  // volta che la ripresa non va (hub sostituito, canale cambiato). L'hub
+  // risponde col WELCOME anche a finestra di pairing CHIUSA, perche'
+  // LinkPeer::onReceive() gestisce apposta il peer noto che ha perso il
+  // proprio stato - senza quello, un nodo che dorme non rientrerebbe mai.
+  if (!pronto) {
+    hub_begin_ex(NODE_NAME, s_rtcChannel);
+    const uint32_t t0 = millis();
+    while (!hub_paired() && millis() - t0 < PAIRING_MS) {
+      hub_loop();
+      delay(10);
+    }
+  }
+
+  // La sequenza riprende da dove era rimasta prima di dormire: se ripartisse
+  // da zero l'hub scarterebbe questo DATA come doppione del precedente.
+  hub_seq_set(s_rtcSeq);
+
+  readAndPrint();   // legge, aggiorna lo stato e trasmette il DATA
+
+  // Ha consegnato davvero? E' l'unica domanda che conta, e la risposta va
+  // messa da parte: alla prossima veglia sara' l'unico modo di sapere cosa
+  // e' successo stanotte.
+  const bool consegnato = (hub_sent_ok() > 0);
+  const bool primoKO    = (!consegnato && s_rtcFailRun == 0);
+  if (consegnato) {
+    s_wakeOk++;
+    s_rtcFailRun = 0;
+  } else {
+    s_rtcFailRun++;
+    Serial.printf("[sleep] risveglio muto (%lu di fila)\n", (unsigned long)s_rtcFailRun);
+  }
+
+  // Scrittura parsimoniosa, ma il PRIMO fallimento di una serie si salva
+  // sempre: e' l'unico che dice che qualcosa ha smesso di funzionare, e
+  // aspettare il decimo risveglio per registrarlo vorrebbe dire perderlo se
+  // nel frattempo qualcuno stacca la corrente.
+  if (primoKO || (s_wakeTot % NVS_OGNI) == 0) {
+    Preferences p;
+    if (p.begin("meteonode", false)) {
+      p.putULong("w_tot", s_wakeTot);
+      p.putULong("w_ok",  s_wakeOk);
+      p.end();
+    }
+  }
+
+  // Troppi risvegli muti di fila: continuare a dormire vorrebbe dire restare
+  // irraggiungibili proprio mentre qualcosa non va. Meglio smettere,
+  // riaccendere tutto e farsi trovare - azzerando il magic, cosi' il boot che
+  // segue prende la strada normale con WiFi, pagina e OTA.
+  if (s_rtcFailRun >= RISVEGLI_MUTI_MAX) {
+    Serial.println(F("[sleep] troppi risvegli senza consegna: torno sveglio."));
+    Preferences p;                 // i contatori devono sopravvivere al restart
+    if (p.begin("meteonode", false)) {
+      p.putULong("w_tot", s_wakeTot);
+      p.putULong("w_ok",  s_wakeOk);
+      p.end();
+    }
+    s_rtcFailRun = 0;
+    s_rtcMagic   = 0;
+    delay(50);
+    ESP.restart();
+  }
+
+  vaiADormire();
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -951,6 +1246,14 @@ void setup() {
   Serial.setTxTimeoutMs(0);
 #endif
 
+  // Prima di ogni altra cosa: la causa del boot decide quale strada prendere.
+  // Al risveglio non si paga nemmeno l'attesa del monitor qui sotto - tre
+  // secondi sono piu' di quanto duri tutto il ciclo di un risveglio.
+  bootDiagBegin();
+  if (s_resetReason == ESP_RST_DEEPSLEEP && s_rtcMagic == RTC_MAGIC) {
+    cicloRisveglio();   // non ritorna: finisce in deep sleep
+  }
+
   const uint32_t t0 = millis();
   while (!Serial && millis() - t0 < 3000) delay(10);   // CDC: aspetta il monitor
 
@@ -959,9 +1262,6 @@ void setup() {
   Serial.println(F("============================================"));
   Serial.printf("firmware: %s\n", FW_VERSION);
 
-  // Presto, e prima di qualunque altra cosa che possa a sua volta riavviare:
-  // se il boot precedente e' finito male, questa e' l'unica riga che lo dice.
-  bootDiagBegin();
   Serial.printf("boot n. %lu, causa dell'ultimo riavvio: %s\n",
                 (unsigned long)s_bootCount, app_reset_reason());
   Serial.printf("pin: VCC=D3/GPIO%u (commutato)  SDA=D4/GPIO%u  SCL=D2/GPIO%u\n",
@@ -1033,5 +1333,18 @@ void loop() {
       // vedere il momento in cui il contatto tiene.
       sensorsRestart(F("nessun chip al boot, riprovo"));
     }
+  }
+
+  // Finestra di veglia finita: da qui in poi il nodo vive a risvegli.
+  //
+  // Mai mentre un OTA sta scrivendo la partizione: addormentarsi li' in mezzo
+  // lascerebbe l'aggiornamento a meta' e il firmware vecchio al suo posto -
+  // con il nodo che torna a dormire, cioe' fuori portata per altri cinque
+  // minuti. Trenta secondi dall'ultimo segno di vita bastano: onOtaProgress()
+  // viene chiamata di continuo durante l'upload.
+  if (s_sleepOn && millis() >= VEGLIA_MS &&
+      (s_otaLastMs == 0 || millis() - s_otaLastMs > 30000)) {
+    Serial.println(F("[sleep] finestra di veglia finita, passo ai risvegli."));
+    vaiADormire();
   }
 }

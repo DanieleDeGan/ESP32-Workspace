@@ -45,6 +45,30 @@
 // gia' fa senza sensore.
 bool hub_begin(const char* node_name);
 
+// Variante per il risveglio da deep sleep: li' non c'e' nessun AP a cui
+// chiedere il canale, quindi glielo si passa - quello che il nodo ha imparato
+// mentre era sveglio e connesso, tenuto in RTC memory. Con canale 0 si
+// comporta esattamente come hub_begin().
+bool hub_begin_ex(const char* node_name, uint8_t canale);
+
+// Risveglio da deep sleep: init sul canale dato E ripresa immediata con un hub
+// gia' noto, senza rifare HELLO/WELCOME (vedi Link_Node_ResumeWithHub). E' la
+// differenza fra un risveglio da un secondo e uno da parecchi, tutti a radio
+// accesa. Torna false se la ripresa non riesce: in quel caso si e' comunque
+// inizializzati, e basta chiamare hub_loop() per ricadere sul pairing normale.
+bool hub_resume(const char* node_name, uint8_t canale, const uint8_t hub_mac[6]);
+
+// MAC dell'hub in binario, da conservare per il risveglio successivo.
+// false finche' non lo si conosce.
+bool hub_hub_mac_bytes(uint8_t out[6]);
+
+// Contatore di sequenza, da portare a mano attraverso il deep sleep: vive in
+// RAM e l'hub scarta un DATA con seq uguale all'ultimo visto. Vedi la nota su
+// Link_Node_SetSeq() in EspNowLink.h - e' il difetto che ha fatto sembrare
+// rotto il deep sleep quando invece funzionava.
+void     hub_seq_set(uint32_t seq);
+uint32_t hub_seq_get(void);
+
 // Da chiamare a ogni giro di loop(): manda gli HELLO in broadcast finche'
 // non associato. Non blocca.
 void hub_loop();

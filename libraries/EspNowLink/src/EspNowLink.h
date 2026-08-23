@@ -157,6 +157,48 @@ void Link_Node_Poll(void);
 bool Link_Node_IsPaired(void);
 
 /**
+ * Riprende a parlare con un hub gia' noto, saltando del tutto HELLO/WELCOME.
+ *
+ * Serve a un nodo che si risveglia da deep sleep: la RAM e' persa, quindi si
+ * crede non associato e ricomincerebbe da capo il pairing - due secondi buoni
+ * fra un HELLO e il successivo (LINK_HELLO_INTERVAL_MS), piu' il tempo che
+ * l'hub impiega ad accodare e spedire il WELCOME dal suo loop(). Su un nodo
+ * che sta sveglio pochi secondi per volta quella e' la parte piu' lunga e piu'
+ * incerta del ciclo, ed e' tempo di radio accesa, cioe' batteria.
+ *
+ * Il MAC dell'hub e' un dato che il nodo ha gia': lo ha imparato dal WELCOME
+ * la prima volta e puo' conservarlo lui (RTC memory, NVS). Con questa
+ * chiamata registra il peer e passa direttamente ai DATA in unicast; l'hub li
+ * accetta perche' a sua volta tiene il registro dei nodi in NVS.
+ *
+ * Torna false se il MAC e' nullo, se si e' gia' associati, o se la
+ * registrazione del peer fallisce: in quel caso si ricade sul pairing normale
+ * chiamando Link_Node_Poll() come sempre.
+ */
+bool Link_Node_ResumeWithHub(const uint8_t mac[6]);
+
+/**
+ * Legge e reimposta il contatore di sequenza del nodo.
+ *
+ * Il seq vive in RAM, quindi un nodo che si risveglia da deep sleep
+ * ricomincerebbe da zero ad ogni ciclo. Non e' un dettaglio estetico: l'hub
+ * scarta un DATA il cui seq e' UGUALE all'ultimo visto (e' cosi' che ignora i
+ * doppioni), quindi un nodo che manda per sempre seq=0 viene sentito una volta
+ * sola e poi ignorato - mentre dalla sua parte tutto sembra a posto, perche'
+ * l'ACK di ESP-NOW e' di livello radio e arriva comunque.
+ *
+ * Il nodo deve percio' conservare il seq attraverso il sonno (RTC memory) e
+ * rimetterlo qui al risveglio, cosi' la sequenza resta crescente. Torna a zero
+ * solo quando si toglie corrente davvero, ed e' giusto: quello l'hub lo legge
+ * come "il nodo e' ripartito".
+ *
+ * Osservato su hardware il 2026-08-23: 19 risvegli, 19 invii confermati dal
+ * nodo, UNO solo visto dall'hub.
+ */
+void     Link_Node_SetSeq(uint32_t seq);
+uint32_t Link_Node_GetSeq(void);
+
+/**
  * Invia (unicast) un messaggio DATA all'hub associato. La funzione timbra
  * automaticamente protocol_version/msg_type=LINK_MSG_DATA/node_type/name/seq:
  * il chiamante deve riempire solo battery_mv/value[]. Attende la conferma di

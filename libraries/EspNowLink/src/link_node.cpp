@@ -76,6 +76,40 @@ bool Link_Node_IsPaired(void)
     return s_paired;
 }
 
+void Link_Node_SetSeq(uint32_t seq)
+{
+    s_seq = seq;
+}
+
+uint32_t Link_Node_GetSeq(void)
+{
+    return s_seq;
+}
+
+bool Link_Node_ResumeWithHub(const uint8_t mac[6])
+{
+    if (mac == nullptr || s_paired) {
+        return false;
+    }
+
+    LinkPeer *hub = new LinkPeer(mac, g_link_channel);
+    if (!hub->addPeer()) {
+        delete hub;
+        return false;
+    }
+
+    // Nessun WELCOME da aspettare: si dichiara l'associazione e si passa ai
+    // DATA.
+    //
+    // ATTENZIONE al seq: vive in RAM, quindi qui varrebbe zero ad ogni
+    // risveglio - e l'hub scarta un DATA con seq uguale all'ultimo visto.
+    // Chi si risveglia da deep sleep DEVE rimetterlo con Link_Node_SetSeq()
+    // dopo questa chiamata, o si fa sentire una volta sola e poi mai piu'.
+    s_hub_peer = hub;
+    s_paired = true;
+    return true;
+}
+
 bool Link_Node_SendData(link_message_t *msg)
 {
     if (!s_paired || s_hub_peer == nullptr || msg == nullptr) {

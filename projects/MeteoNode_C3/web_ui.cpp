@@ -166,6 +166,7 @@ svg{width:100%;height:110px;display:block;overflow:visible}
 <tr><td>DATA inviati / falliti</td><td id="ent">&mdash;</td></tr>
 <tr><td>Acceso da</td><td id="up">&mdash;</td></tr>
 <tr><td>Boot totali &mdash; causa ultimo</td><td id="bt">&mdash;</td></tr>
+<tr><td>Deep sleep</td><td id="ds">&mdash;</td></tr>
 <tr><td>RAM libera</td><td id="hp">&mdash;</td></tr>
 </table></div>
 
@@ -173,6 +174,7 @@ svg{width:100%;height:110px;display:block;overflow:visible}
 <button onclick="cmd('scan')">Scansione I2C</button>
 <button onclick="cmd('riavvia')">Power-cycle sensore</button>
 <button onclick="cmd('alimentazione')">Accendi / spegni</button>
+<button onclick="cmd('sleep')">Deep sleep on / off</button>
 <div id="msg">L'esito della scansione esce sul monitor seriale; qui si vede
 l'effetto sullo stato qui sopra.</div>
 <div style="margin-top:10px;font-size:13px">
@@ -328,6 +330,17 @@ function aggiorna(){
     // Un riavvio non si vede dai contatori qui sopra, che ripartono da zero:
     // e' questa riga a dirlo. SW resta neutro perche' e' voluto (OTA riuscito
     // o watchdog WiFi); PANIC, BROWNOUT e i watchdog interni sono guasti.
+    // Acceso = il nodo sparira' dalla rete a fine finestra. Segnalato come
+    // 'warn' e non come 'ok' apposta: e' uno stato in cui la pagina che stai
+    // guardando sta per smettere di rispondere.
+    // Risvegli e consegne SEPARATI: e' l'unico modo di distinguere un nodo che
+    // non si sveglia da uno che si sveglia senza riuscire a farsi sentire. Da
+    // fuori sono identici, tutti e due muti.
+    var ds = d.sleep ? 'acceso' : 'spento';
+    if (d.risvegli) {
+      ds += ' &middot; '+d.risvegli+' risvegli, '+d.risvegli_ok+' consegnati';
+    }
+    si('ds', ds, (d.risvegli && !d.risvegli_ok) ? 'ko' : (d.sleep ? 'warn' : ''));
     si('bt', d.boot_count+' &middot; '+d.reset_reason,
        ['PANIC','BROWNOUT','WDT','WDT_INT','WDT_TASK'].indexOf(d.reset_reason)>=0 ? 'ko' : '');
     si('hp', Math.round(d.heap/1024)+' kB');
@@ -444,6 +457,9 @@ static void handleStato() {
   j += F(",\"errors\":");        j += s.read_errors;
   j += F(",\"power_cycles\":");  j += s.power_cycles;
   j += F(",\"boot_count\":");    j += app_boot_count();
+  j += F(",\"sleep\":");         j += app_sleep_enabled() ? F("true") : F("false");
+  j += F(",\"risvegli\":");      j += app_wake_count();
+  j += F(",\"risvegli_ok\":");   j += app_wake_ok_count();
   j += F(",\"reset_reason\":\""); j += app_reset_reason();  j += F("\"");
   j += F(",\"intervallo_s\":");  j += s.intervallo_s;
   j += F(",\"altitudine_m\":");  j += String(s.altitudine_m, 1);
@@ -587,6 +603,14 @@ static void handleComando() {
     app_cmd_toggle_power();
     net_server().send(200, F("text/plain; charset=utf-8"),
                       F("accensione/spegnimento accodato: guarda la riga Alimentazione qui sopra"));
+  } else if (c == "sleep") {
+    // Eseguito subito, non accodato: vedi la nota su app_cmd_toggle_sleep().
+    app_cmd_toggle_sleep();
+    net_server().send(200, F("text/plain; charset=utf-8"),
+                      app_sleep_enabled()
+                        ? F("deep sleep ACCESO: a fine finestra di veglia il nodo smette di rispondere. "
+                            "Per riprenderlo, togli e rimetti corrente.")
+                        : F("deep sleep spento: il nodo resta sveglio e raggiungibile."));
   } else {
     net_server().send(400, F("text/plain; charset=utf-8"), F("comando sconosciuto"));
   }

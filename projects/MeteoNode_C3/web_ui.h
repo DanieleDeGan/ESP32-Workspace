@@ -143,6 +143,17 @@ const char* app_fw_version();
 const char* app_reset_reason();
 uint32_t    app_boot_count();
 
+// Deep sleep. Quando e' acceso il nodo, passata la finestra di veglia, vive a
+// risvegli: misura, manda un DATA all'hub e torna a dormire per l'intervallo
+// configurato. Mentre dorme NON risponde - niente pagina, niente OTA - quindi
+// l'unico modo sicuro di riprenderlo e' togliere e rimettere corrente, che
+// riapre la finestra di veglia. E' anche il motivo per cui l'interruttore sta
+// qui e non in un define: si deve poter spegnere da remoto.
+bool     app_sleep_enabled();
+uint32_t app_wake_count();      // risvegli da quando c'e' corrente
+uint32_t app_wake_ok_count();   // di questi, quanti hanno consegnato all'hub
+void     app_cmd_toggle_sleep();
+
 // Da quanti secondi risale l'ultima lettura. Con l'intervallo configurabile
 // fino a un'ora, un numero senza eta' sarebbe ambiguo: la pagina deve poter
 // dire "27,8 gradi, letti 43 minuti fa" e non far credere che sia di adesso.
