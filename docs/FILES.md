@@ -343,6 +343,15 @@ sconosciuti.
   (`Link_InitEx(LINK_NODE_HUB, "Hub", canale_AP)`), altrimenti i due non si
   sentono.
 - Ruolo nodo: `Link_Node_Poll()`, `Link_Node_IsPaired()`, `Link_Node_SendData()`.
+- Ruolo nodo, per chi **dorme**: `Link_Node_ResumeWithHub()` riprende con un hub
+  già noto saltando HELLO/WELCOME (il MAC se lo conserva il nodo in RTC memory),
+  e `Link_Node_SetSeq()`/`Link_Node_GetSeq()` portano il contatore di sequenza
+  attraverso il deep sleep. **Il secondo non è opzionale**: l'hub scarta un DATA
+  il cui `seq` è uguale all'ultimo visto, e un nodo che riparte da zero ad ogni
+  risveglio viene sentito una volta sola e poi ignorato per sempre — mentre dalla
+  sua parte tutto sembra a posto, perché l'ACK di ESP-NOW è di livello radio e
+  arriva comunque.
+
 - Ruolo hub: `Link_Hub_Poll()`, `Link_Hub_SetPairingMode()`,
   `Link_Hub_GetPeerCount()`, `Link_Hub_GetPeerInfo()`, `Link_Hub_SendCommand()`.
 - Chiamare le `Link_Node_*` dopo essersi inizializzati come hub (o viceversa)
@@ -986,6 +995,7 @@ riusarne i moduli (che sono già scritti per essere staccabili) in un nodo nuovo
 | Progetto | Scheda | Nato da |
 |---|---|---|
 | `EnvNode_C3` | ESP32-C3 Supermini | `starters/C3_OLED_OTA` |
+| `MeteoNode_C3` | XIAO ESP32-C3 (e ESP32 "classico") | moduli da `EnvNode_C3` |
 | `Timelapse_XIAO` | Seeed XIAO ESP32-S3 Sense | `starters/XIAO_S3_Camera` |
 
 ---
@@ -1208,6 +1218,74 @@ scalati sul `devicePixelRatio`.
   senza costo per il nodo. Se `comfort.h` cambia, va allineata anche qui.
 
 ---
+
+### `projects/MeteoNode_C3/` — nodo meteo a batteria
+
+**Ruolo**: nodo della stazione meteo. Legge **AHT20 + BMP280** su I2C, serve una
+pagina di stato con tre grafici SVG disegnati a mano, calcola la previsione dal
+trend barometrico a 3 ore, manda le misure all'hub via ESP-NOW e — da `v9` —
+dorme fra una misura e l'altra. Lo stesso sketch gira su **XIAO ESP32-C3** e su
+un **ESP32 "classico"** (DOIT DevKit v1), scelti con `#ifdef` sul tipo di chip.
+
+Compilazione (FQBN diverso per le due schede, e **senza** `CDCOnBoot=cdc` sulla
+XIAO C3, dove quel flag significa *Disabled* — vedi `CLAUDE.md`):
+
+```
+arduino-cli compile --fqbn "esp32:esp32:XIAO_ESP32C3:PartitionScheme=min_spiffs" --libraries libraries projects/MeteoNode_C3
+arduino-cli compile --fqbn "esp32:esp32:esp32doit-devkit-v1" --libraries libraries projects/MeteoNode_C3
+```
+
+#### `MeteoNode_C3.ino`
+
+Misura, previsione, comandi da seriale e da web, e il ciclo di deep sleep.
+Da conoscere:
+
+- `sensorPower(bool)` — il VDD del sensore passa da un GPIO (D3/GPIO5), così si
+  può fare un power-cycle vero del modulo quando smette di rispondere. È anche
+  la sequenza usata prima di dormire.
+- `bootDiagBegin()` / `app_reset_reason()` / `app_boot_count()` — perché la
+  scheda è ripartita e quante volte (il contatore è in NVS). Tutti gli altri
+  contatori vivono in RAM e ripartono da zero, quindi senza questi un riavvio è
+  invisibile da remoto.
+- `cicloRisveglio()` / `vaiADormire()` — il percorso corto del risveglio: niente
+  WiFi né web, solo sensore, ESP-NOW e via. Lo stato che deve attraversare il
+  sonno (canale, MAC dell'hub, **seq**, orario già sincronizzato) sta in
+  `RTC_DATA_ATTR`; i contatori dei risvegli stanno invece in **NVS**, perché la
+  RTC memory la cancella il power-cycle — cioè proprio l'operazione con cui si
+  recupera un nodo che non torna.
+- L'uscita di sicurezza dopo cinque risvegli senza consegna, che riaccende WiFi
+  e OTA. Vale anche come diagnosi: se non scatta, il nodo non sta girando.
+
+#### `forecast.h`
+
+Header-only e puro: trend barometrico a 3 ore con isteresi, e il testo della
+previsione. Nessuna dipendenza da hardware o rete, quindi si sposta di peso —
+ed è previsto che si sposti **sull'hub**, perché la RAM di un nodo che dorme si
+azzera ad ogni risveglio e lo storico non può stare su di lui.
+
+#### `hub_link.h` / `hub_link.cpp`
+
+Strato sottile sopra `libraries/EspNowLink`, gemello di quello del nodo camera.
+`hub_begin()` sceglie il canale (quello dell'AP se connessi, altrimenti il fisso
+della libreria); `hub_begin_ex()` accetta un canale esplicito e `hub_resume()`
+riprende con un hub già noto — servono entrambi al risveglio, dove non c'è
+nessun AP a cui chiedere. `hub_seq_set()`/`hub_seq_get()` portano il contatore
+di sequenza attraverso il sonno: **senza, l'hub scarta tutti i DATA come
+doppioni**.
+
+#### `rtc_time.h` / `.cpp`, `net_ota.h` / `.cpp`, `web_ui.h` / `.cpp`
+
+Copie dei moduli di `projects/EnvNode_C3/`, con lo stesso contratto: ordine
+obbligato dell'orario in `setup()`, watchdog di riconnessione WiFi, server
+condiviso via `net_server()`. In `web_ui` ci sono in più l'interruttore del deep
+sleep e i contatori dei risvegli (`risvegli` / `risvegli_ok`, separati apposta:
+è l'unico modo di distinguere un nodo che non si sveglia da uno che si sveglia
+senza farsi sentire).
+
+#### `secrets.h.example` → `secrets.h`
+
+Come negli altri progetti, gitignorato. `OTA_HOSTNAME` dipende dal chip, così
+le due schede che girano lo stesso sketch non si contendono lo stesso nome mDNS.
 
 ### `projects/Timelapse_XIAO/` — camera timelapse con galleria web
 

@@ -50,6 +50,13 @@ toccare) vedi `docs/FILES.md`. Per il pinout/hardware della board AMOLED vedi
 | `starters/XIAO_S3_Camera/hub_link.h/.cpp` | nodo ESP-NOW sopra `EspNowLink` (pairing, notifiche, comandi) |
 | `starters/XIAO_S3_Camera/secrets.h.example` | come per il C3: si copia in `secrets.h`, **gitignorato** |
 | `projects/EnvNode_C3/` | **progetto reale** (ESP32-C3): DHT11 + microSD SPI + dashboard web con grafici + orario NTP + OTA, e da `v4` anche **hub ESP-NOW** dei nodi a batteria — vedi sezione dedicata |
+| `projects/MeteoNode_C3/` | **progetto** (XIAO ESP32-C3, e lo stesso sketch anche su ESP32 "classico"): AHT20 + BMP280, previsione dal trend barometrico, storico 24 h in RAM, nodo ESP-NOW, e da `v9` **deep sleep** fra una misura e l'altra — vedi sezione dedicata |
+| `projects/MeteoNode_C3/MeteoNode_C3.ino` | misura, previsione, ciclo di sonno e risveglio — qui va la logica applicativa |
+| `projects/MeteoNode_C3/forecast.h` | trend barometrico a 3 ore con isteresi, header-only e puro |
+| `projects/MeteoNode_C3/hub_link.h/.cpp` | nodo ESP-NOW sopra `EspNowLink`: canale, ripresa dell'hub dopo il sonno, invio delle misure |
+| `projects/MeteoNode_C3/rtc_time.h/.cpp` | copia di quello di `EnvNode_C3`: stima da build-time, poi NTP |
+| `projects/MeteoNode_C3/net_ota.h/.cpp` | WiFi + ArduinoOTA + `/update`, con watchdog di riconnessione — di norma non si tocca |
+| `projects/MeteoNode_C3/web_ui.h/.cpp` | pagina di stato con grafici SVG, comandi e interruttore del deep sleep |
 | `projects/Timelapse_XIAO/` | **progetto** (XIAO ESP32-S3 Sense): camera timelapse a intervallo, archivio per giorno su microSD, galleria web con riproduzione, NTP + OTA — vedi sezione dedicata |
 | `projects/Timelapse_XIAO/Timelapse_XIAO.ino` | timer degli scatti, gestione dello spazio, impostazioni — qui va la logica applicativa |
 | `projects/Timelapse_XIAO/storage.h/.cpp` | microSD SPI organizzata per giorno: `/timelapse/<giorno>/<ora>.JPG` + CSV giornaliero |
@@ -626,6 +633,17 @@ SSD1306 + dashboard web con grafici + orario NTP + OTA. Moduli:
   `setup()`: `rtctime_begin(tz)` → `rtctime_seedFromBuild()` → (WiFi) →
   `rtctime_onWifiConnected()`, quest'ultima **a ogni riconnessione**, non solo
   la prima. Ogni riga del CSV porta la colonna `fonte_ora` (`NTP` o `STIMA`).
+- **Un dato che non si sa datare non si registra** (`orario_registrabile()`, da
+  `v10`): finché il primo sync NTP non è arrivato, il campione non va né su SD
+  né nei min/max. Prima del boot l'orologio riporta l'ora di **compilazione**,
+  che è identica ad ogni riavvio: nel CSV del 2026-08-23 sono rimaste dieci
+  righe con lo stesso identico timestamp `10:48:06`, una per riavvio, e il
+  minimo della giornata risultava misurato a un istante in cui nessuno aveva
+  letto niente. La finestra di grazia è di **5 minuti**: oltre, si registra
+  comunque con `fonte_ora=STIMA`, perché una scheda rimasta senza rete che
+  smette di loggare per sempre sarebbe un guasto peggiore di un timestamp
+  impreciso. Vale anche per i DATA dei nodi remoti, dove pesa di più: il CSV
+  dell'hub è l'unico posto dove quella lettura esiste.
 - **CSV**: `ts_iso,ts_unix,fonte_ora,temp_c,hum_pct`. Ogni scrittura
   apre/scrive/chiude: un distacco di corrente perde al più una riga.
 - **Contatori**: `sd_record_count_total()/today()` stanno in RAM e il totale va
@@ -724,6 +742,62 @@ la RAM ad ogni risveglio, quindi il suo storico **non può** stare su di lui.
   E i NaN arrivano davvero, perché un nodo che non riesce a leggere il sensore
   trasmette lo stesso.
 
+## `projects/MeteoNode_C3/` — nodo meteo a batteria (progetto reale)
+
+Nodo della stazione meteo: **AHT20 + BMP280** su I2C, pagina web con tre grafici
+SVG disegnati a mano, previsione dal trend barometrico a 3 ore (`forecast.h`),
+OTA, e da `v9` **deep sleep** fra una misura e l'altra. Lo stesso sketch gira su
+**XIAO ESP32-C3** e su un **ESP32 "classico"** (DOIT DevKit v1): pin, nome del
+nodo e guardia della `Serial` si scelgono a compile-time dal tipo di chip.
+
+**Vincoli e scelte da conoscere**:
+- **Pin (XIAO C3)**: SCL su **D2/GPIO4** (non il D5 di default), VCC del sensore
+  **commutato** su D3/GPIO5, SDA su D4/GPIO6; D1/GPIO3 lasciato libero per il
+  partitore della batteria, **non ancora cablato**. Il BMP280 risponde a
+  **0x77**, non a 0x76.
+- **Il VCC del sensore passa da un GPIO** apposta: permette un power-cycle vero
+  del modulo quando smette di rispondere (`sensorPower()`), ed è la stessa
+  sequenza che serve al deep sleep — si spegne il sensore prima di dormire.
+- **Niente microSD**: lo storico 24 h (720 slot da 2 min, ~4,3 kB) vive in RAM e
+  si azzera ad ogni riavvio. I grafici storici veri stanno sull'hub, che riceve
+  i DATA e li scrive su card — vedi `projects/EnvNode_C3/`.
+- **La pressione si trasmette GREZZA**, non riportata al livello del mare: la
+  correzione dipende dall'altitudine, che su questo nodo è ancora un default mai
+  calibrato. Trasmettendo il valore corretto si scriverebbe un errore
+  sistematico dentro lo storico dell'hub, per sempre; trasmettendo la misura,
+  l'hub può applicare la quota giusta il giorno che la si conosce. Il trend —
+  cioè la previsione — non cambia in nessuno dei due casi: è un offset costante.
+- **Si trasmette anche una lettura fallita**, con NAN sui canali mancanti: "sono
+  vivo ma il sensore non risponde" è un'informazione, il silenzio no — da fuori
+  sarebbe indistinguibile da un nodo morto, che è proprio ciò che l'hub sta
+  cercando di riconoscere.
+- **Diagnostica del riavvio** (da `v5`): `reset_reason` (`SW` = OTA o watchdog
+  WiFi, `PANIC`, `BROWNOUT`…), `boot_count` in NVS, e i contatori delle cadute
+  WiFi. Serve perché tutti gli altri contatori vivono in RAM e ripartono da
+  zero: da fuori un nodo appena riavviato e uno che legge male si somigliano
+  molto. Nata dopo tre riavvii inspiegati in quattro ore, ricostruiti solo dai
+  salti di `seq` nel log dell'hub.
+- **Deep sleep** (da `v9`), spento di default e acceso dalla pagina: il nodo si
+  sveglia a timer, misura, manda un DATA e ridorme **senza mai accendere il
+  WiFi** — a ESP-NOW basta il canale, non l'associazione all'AP. Canale e MAC
+  dell'hub stanno in RTC memory, così il risveglio non deve riaccendere la rete
+  per sapere dove parlare. Le trappole sono nella sezione "Deep sleep" più
+  sopra: leggerla **prima** di metterci le mani, a partire dal `seq`.
+  - **Finestra di veglia di 5 minuti ad ogni accensione vera**, con WiFi e OTA:
+    è la via di rientro, perché un nodo che dorme non risponde. Togliere e
+    rimettere corrente deve bastare a riprenderlo.
+  - **Uscita di sicurezza dopo cinque risvegli senza consegna**: riaccende tutto
+    e torna raggiungibile da solo. Vale anche come strumento di diagnosi — se
+    non scatta mai, il nodo non sta eseguendo codice, e si smette di cercare il
+    guasto nella radio.
+  - La durata del sonno **è l'intervallo di misura** già configurabile dalla
+    pagina: un parametro solo, già persistito, invece di due che possono andare
+    fuori sincrono.
+
+**Dove scrivere la logica**: nel `.ino` (misura, previsione, ciclo di sonno).
+`forecast.h`, `hub_link.*`, `rtc_time.*`, `net_ota.*`, `web_ui.*` sono
+boilerplate per compito.
+
 ## `projects/Timelapse_XIAO/` — camera timelapse con galleria web
 
 Cresciuto da `starters/XIAO_S3_Camera/`, stessa scheda, scatto comandato da un
@@ -768,6 +842,17 @@ timer -> scatto -> /timelapse/<AAAA-MM-GG>/<HHMMSS>.JPG  ->  galleria web
   di scattare; `APP_FULL_RING` elimina il **giorno più vecchio** — mai quello in
   corso, o con una card piccola si finirebbe a cancellare le foto di un'ora fa.
   La soglia è in MB liberi (`min_liberi`, default 200).
+- **Non si scatta finché l'orario non è sincronizzato** (`orario_registrabile()`,
+  da `v3`), con la stessa finestra di grazia di 5 minuti di `EnvNode_C3`. Qui
+  pesa più che altrove perché l'orario **è** il nome del file e la cartella che
+  lo contiene: prima del primo sync NTP le foto finirebbero in
+  `/timelapse/<giorno-di-build>/`, un giorno diverso da quello vero e già
+  passato — e con `APP_FULL_RING`, che elimina il giorno **più vecchio**, quella
+  cartella sarebbe la prima candidata alla cancellazione. Si perderebbero cioè
+  proprio le foto appena scattate, e lo si scoprirebbe solo a card piena. Non
+  c'è invece rischio di sovrascrittura: `sd_save_photo()` aggiunge già un
+  suffisso `_N` se il nome esiste. Gli slot saltati per questo motivo finiscono
+  in `s_skipped`, quindi la web UI li mostra.
 - **Il CSV giornaliero registra anche gli scatti falliti** (`esito` diverso da
   `ok`): in un timelapse il buco nella sequenza è proprio ciò che si vuole
   spiegare. Colonne: `ts_iso,boot_id,fonte_ora,sorgente,file,byte,esito`.
