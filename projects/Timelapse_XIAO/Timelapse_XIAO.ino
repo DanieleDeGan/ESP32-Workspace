@@ -60,8 +60,11 @@
 // quale firmware sta girando dopo un aggiornamento OTA.
 // Da incrementare a ogni firmware caricato: la web UI lo mostra, ed e' l'unico
 // modo per sapere da remoto quale versione sta davvero girando.
+//   v3  2026-08-23  non scatta finche' l'orario non e' sincronizzato (al
+//                   massimo 5 minuti): con l'ora di compilazione le foto
+//                   finivano nella cartella del giorno sbagliato
 //   v2  2026-08-22  Serial.setTxTimeoutMs(0), vedi la nota in setup()
-static const char* FW_VERSION = "v2";
+static const char* FW_VERSION = "v3";
 
 // Nome mostrato nella web UI.
 #define NODE_NAME "Timelapse"
@@ -262,6 +265,34 @@ static bool do_capture(const char* sorgente, char* day_out, size_t day_cap,
 // ---------------------------------------------------------------------
 //  Il timer del timelapse. Da chiamare spesso da loop().
 // ---------------------------------------------------------------------
+// Quanto si aspetta il primo sync NTP prima di scattare comunque con
+// l'orario stimato.
+static constexpr uint32_t ORARIO_GRAZIA_MS = 5UL * 60000;
+
+// L'orario e' abbastanza attendibile da poterci datare uno scatto?
+//
+// Stessa regola di EnvNode_C3, ma qui pesa di piu': in un timelapse l'orario
+// non e' una colonna in piu' del CSV, e' il NOME del file e la cartella che lo
+// contiene. Prima del primo sync NTP l'orologio riporta l'ora di compilazione
+// (vedi rtc_time.h), quindi le foto finirebbero in /timelapse/<giorno-di-
+// build>/ - un giorno diverso da quello vero, e per giunta gia' passato.
+//
+// Il guasto grosso non e' il nome sbagliato: e' che con la politica
+// APP_FULL_RING, che quando lo spazio finisce elimina il giorno PIU' VECCHIO,
+// quella cartella e' la prima candidata alla cancellazione. Si perderebbero
+// cioe' proprio le foto appena scattate, e lo si scoprirebbe solo quando la
+// card si riempie - settimane dopo, quando non c'e' piu' niente da salvare.
+//
+// Non c'e' invece rischio di sovrascrittura: sd_save_photo() aggiunge gia' un
+// suffisso _N quando il nome esiste.
+//
+// La finestra di grazia esiste per non fermare per sempre una scheda rimasta
+// senza rete: passati cinque minuti si scatta lo stesso, e a dire quanto
+// fidarsi resta la colonna fonte_ora del CSV.
+static bool orario_registrabile() {
+  return rtctime_isSynced() || millis() >= ORARIO_GRAZIA_MS;
+}
+
 static void timelapse_tick() {
   if (!s_enabled) return;
 
@@ -280,6 +311,13 @@ static void timelapse_tick() {
                                  // storto si riparte comunque dallo slot giusto
 
   if (!inWindow(now)) return;    // fuori dalla finestra oraria: niente scatto
+
+  // Contato come slot saltato, non ignorato in silenzio: la web UI mostra
+  // s_skipped, e un timelapse che non parte deve poterlo dire. La guardia sta
+  // QUI e non in cima alla funzione apposta - sopra si torna indietro ad ogni
+  // giro di loop(), e il contatore crescerebbe di migliaia invece che di uno
+  // slot per slot.
+  if (!orario_registrabile()) { s_skipped++; return; }
   if (!ensureSpace()) { s_skipped++; return; }
 
   do_capture("AUTO", nullptr, 0, nullptr, 0);
