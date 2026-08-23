@@ -29,6 +29,9 @@
      POST /api/elimina?d=...          {ok, errore}
      GET  /api/config                 configurazione
      POST /api/config?<campi>         {ok, errore}
+     GET  /api/nodi                   nodi ESP-NOW a batteria (da fw v4)
+     POST /api/pairing?on=1|0[&s=..]  finestra di associazione
+     POST /api/nodi/dimentica?mac=..  toglie un nodo da registro e NVS
 
    Nota sui fusi: i ts sono unix, resi nel fuso del BROWSER (come faceva
    la dashboard di default). Se il browser e' su un fuso diverso da
@@ -106,6 +109,13 @@ header{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin:.4rem 0 1
 .tile .sub{font-size:.73rem;color:var(--tx3);margin-top:.2rem}
 .tile canvas{width:100%;height:34px;display:block;margin-top:.5rem}
 .tile.t .big{color:var(--temp)} .tile.h .big{color:var(--hum)}
+.tile .nd{display:inline-block;width:7px;height:7px;border-radius:50%;
+  background:var(--tx3);margin-right:.4rem;vertical-align:middle}
+.tile .nd.on{background:var(--ok)} .tile .nd.off{background:var(--bad)}
+.tile.muto{border-color:var(--bad)}
+.tile button.mini{margin-top:.55rem;padding:.3rem .55rem;font-size:.7rem;
+  background:transparent;border:1px solid var(--line2);color:var(--tx3)}
+.tile button.mini:hover{border-color:var(--bad);color:var(--bad)}
 .delta{font-size:.72rem;margin-left:.4rem;color:var(--tx2);font-weight:500}
 .delta.up{color:var(--temp)} .delta.dn{color:var(--hum)} .delta.flat{color:var(--tx3)}
 
@@ -241,6 +251,20 @@ a:hover{text-decoration:underline}
       <div class="sub" id="sSys">&nbsp;</div>
     </div>
   </div>
+</section>
+
+<!-- ======================= NODI REMOTI =======================
+     Nodi a batteria che arrivano via ESP-NOW (firmware v4 in su). La card
+     si nasconde da sola se /api/nodi non risponde, cosi' questa stessa
+     dashboard resta buona anche su un nodo con firmware piu' vecchio. -->
+<section class="card" id="cardNodi" hidden>
+  <h2>Nodi remoti <span class="hint" id="hNodi"></span></h2>
+  <div class="tiles" id="tilesNodi"></div>
+  <div class="bar" style="margin-top:.75rem">
+    <button id="bPair">Apri associazione 5 min</button>
+    <button id="bPairOff">Chiudi</button>
+  </div>
+  <p class="msg" id="mNodi"></p>
 </section>
 
 <!-- ======================= GIORNO ======================= -->
@@ -993,7 +1017,102 @@ async function loadStato(){
   $('sNet').textContent = s.wifi ? ('RSSI '+s.rssi+' dBm') : 'in riconnessione';
   $('vUp').textContent = uptimeStr(s.uptime);
   $('sSys').textContent = 'heap '+Math.round(s.heap/1024)+' kB · errori DHT '+s.dht_errori;
+
+  /* /api/stato porta gia' i contatori dei nodi: se cambiano si rilegge
+     subito il dettaglio invece di aspettare il tick lento. Un nodo che
+     diventa muto e' proprio la cosa che non deve arrivare in ritardo. */
+  const sig = s.nodi+'/'+s.nodi_online+'/'+s.pairing;
+  if (ST.nodiSig !== undefined && ST.nodiSig !== sig) loadNodi();
+  ST.nodiSig = sig;
 }
+
+/* =====================================================================
+   /api/nodi - nodi ESP-NOW a batteria
+   ===================================================================== */
+/* Il nome del nodo arriva dalla radio, non da noi: va scritto nel DOM come
+   testo, mai come markup. Sedici caratteri scelti da chiunque sia a tiro
+   d'antenna non sono un posto dove fidarsi. */
+function esc(x){
+  return String(x==null?'':x).replace(/[&<>"]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+function silStr(sec){
+  if (sec < 90)   return sec+' s';
+  if (sec < 5400) return Math.round(sec/60)+' min';
+  return (sec/3600).toFixed(1).replace('.',',')+' h';
+}
+/* null = il nodo ha trasmesso ma quel sensore non ha risposto: si mostra il
+   buco invece di uno zero, che sembrerebbe una misura vera. */
+function nv(x, d){ return x==null ? '--' : x.toFixed(d).replace('.',','); }
+
+function nodeTile(n){
+  const v = n.valori || [null,null,null];
+  const meteo = (n.tipo == 2);
+  const big = !n.dati ? '<span class="u">in attesa</span>'
+            : meteo   ? nv(v[0],1)+'<span class="u">&deg;C</span>'
+                      : nv(v[0],2);
+  let sub;
+  if (!n.dati){
+    sub = 'associato, nessun dato ancora';
+  } else {
+    const parti = [];
+    if (meteo) parti.push(nv(v[1],0)+' % &middot; '+nv(v[2],1)+' hPa');
+    parti.push(n.online ? ('ultimo '+silStr(n.silenzio_s)+' fa')
+                        : ('<b style="color:var(--bad)">MUTO da '+silStr(n.silenzio_s)+'</b>'));
+    if (n.batteria_mv) parti.push(nv(n.batteria_mv/1000,2)+' V');
+    sub = parti.join(' &middot; ');
+  }
+  return '<div class="tile'+(n.dati && !n.online ? ' muto' : '')+'">'+
+           '<div class="lbl"><span class="nd '+(n.online?'on':'off')+'"></span>'+
+             esc(n.nome || '(senza nome)')+'</div>'+
+           '<div class="big num">'+big+'</div>'+
+           '<div class="sub">'+sub+'</div>'+
+           '<button class="mini" data-mac="'+esc(n.mac)+'">Dimentica</button>'+
+         '</div>';
+}
+
+async function loadNodi(){
+  let d;
+  try { d = await api('/api/nodi', {timeout:8000}); }
+  catch(e){ $('cardNodi').hidden = true; return; }
+  $('cardNodi').hidden = false;
+  $('hNodi').textContent = d.pairing
+    ? ('associazione aperta, ancora '+silStr(d.pairing_resta_s))
+    : ('canale '+d.canale);
+  $('tilesNodi').innerHTML = d.nodi.length
+    ? d.nodi.map(nodeTile).join('')
+    : '<div class="tile"><div class="lbl">Nessun nodo</div>'+
+      '<div class="sub">Apri l\'associazione, poi accendi o riavvia il nodo.</div></div>';
+  /* I pulsanti si ricreano ad ogni render, quindi il gestore si riaggancia
+     qui e non una volta sola all'avvio. */
+  $('tilesNodi').querySelectorAll('button.mini').forEach(b => {
+    b.onclick = () => dimenticaNodo(b.dataset.mac);
+  });
+}
+
+/* Dimenticare un nodo serve quando si sostituisce una scheda: l'identita' e'
+   il MAC, quindi quella vecchia resterebbe in elenco per sempre come nodo
+   muto, cioe' un allarme falso permanente. */
+async function dimenticaNodo(mac){
+  if (!confirm('Dimenticare il nodo '+mac+'? Viene tolto dal registro e dalla '+
+      "memoria permanente. Se e' ancora acceso e si crede associato non tornera' "+
+      'da solo: serve una finestra di associazione aperta, oppure un suo riavvio.')) return;
+  try {
+    await api('/api/nodi/dimentica?mac='+encodeURIComponent(mac), {method:'POST', timeout:8000});
+    setMsg($('mNodi'), 'Nodo '+mac+' dimenticato.', 'ok');
+  } catch(e){ setMsg($('mNodi'), 'Errore: '+e.message, 'err'); }
+  loadNodi();
+}
+
+async function pairing(on){
+  try {
+    await api('/api/pairing?on='+(on?'1&s=300':'0'), {method:'POST', timeout:8000});
+    setMsg($('mNodi'), on ? 'Associazione aperta per 5 minuti.' : 'Associazione chiusa.', 'ok');
+  } catch(e){ setMsg($('mNodi'), 'Errore: '+e.message, 'err'); }
+  loadNodi();
+}
+$('bPair').addEventListener('click', () => pairing(true));
+$('bPairOff').addEventListener('click', () => pairing(false));
 
 /* =====================================================================
    /api/config
@@ -1253,9 +1372,19 @@ mount($('cHistC'), drawHistComfort);
    martellerebbe il nodo ogni 5 s per giorni senza che nessuno la guardi.
    Al ritorno in primo piano si aggiorna subito, senza aspettare il tick. */
 let pollTimer = null;
+let nodiTick = 0;
+/* /api/nodi si rilegge un giro su tre (15 s), non ad ogni tick: il
+   WebServer del nodo e' sincrono, e raddoppiare le richieste per una lista
+   che cambia al massimo ogni minuto sarebbe tempo tolto a campionamento,
+   SD e OTA. Quando serve reagire subito ci pensa il controllo sui contatori
+   dentro loadStato(). */
+function pollTick(){
+  loadStato();
+  if (nodiTick++ % 3 === 0) loadNodi();
+}
 function startPolling(){
   if (pollTimer) return;
-  pollTimer = setInterval(loadStato, 5000);
+  pollTimer = setInterval(pollTick, 5000);
 }
 function stopPolling(){
   if (!pollTimer) return;
@@ -1263,11 +1392,12 @@ function stopPolling(){
 }
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopPolling();
-  else { loadStato(); startPolling(); }
+  else { loadStato(); loadNodi(); startPolling(); }
 });
 
 (async function boot(){
   await loadStato();
+  await loadNodi();
   try { await loadConfig(); } catch(e){ setMsg($('mCfg'),'Config non leggibile: '+e.message,'err'); }
   try { await loadDays(); } catch(e){ setMsg($('mDay'),'Elenco giorni non leggibile: '+e.message,'err'); }
   if (!document.hidden) startPolling();

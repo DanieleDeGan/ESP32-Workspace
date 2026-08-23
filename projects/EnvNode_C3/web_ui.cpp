@@ -4,6 +4,7 @@
 #include "sd_logger.h"
 #include "rtc_time.h"
 #include "comfort.h"
+#include "remote_nodes.h"
 #include <Middlewares.h>   // CorsMiddleware, bundled nella libreria WebServer del core
 
 // ---------------------------------------------------------------------
@@ -462,7 +463,7 @@ static void handleApiStato() {
   rtctime_format(rtctime_now(), "%Y-%m-%d %H:%M:%S", oraBuf, sizeof(oraBuf));
 
   String json;
-  json.reserve(620);
+  json.reserve(700);
   json += '{';
   json += "\"nodo\":";     appendJsonString(json, cfg.nodeName);       json += ',';
   json += "\"fw\":";       appendJsonString(json, app_fw_version());  json += ',';
@@ -515,6 +516,14 @@ static void handleApiStato() {
   json += "\"record_oggi\":"   + String(sd_record_count_today()) + ",";
   json += "\"record_totali\":" + String(sd_record_count_total()) + ",";
   json += "\"dht_errori\":"    + String(app_dht_errors()) + ",";
+
+  // Nodi ESP-NOW: qui solo i due contatori, cosi' una dashboard puo'
+  // mostrare "1 nodo muto" senza una seconda chiamata. Il dettaglio sta in
+  // /api/nodi.
+  json += "\"nodi\":"          + String(remote_count()) + ",";
+  json += "\"nodi_online\":"   + String(remote_count_online()) + ",";
+  json += "\"pairing\":"; json += (remote_pairing_active() ? "true" : "false"); json += ',';
+
   json += "\"uptime\":"        + String(millis() / 1000) + ",";
   json += "\"heap\":"          + String(ESP.getFreeHeap());
   json += '}';
@@ -688,6 +697,232 @@ static void handleApiConfigPost() {
 }
 
 // ---------------------------------------------------------------------
+//  Nodi ESP-NOW: pagina /nodi + /api/nodi + /api/pairing
+// ---------------------------------------------------------------------
+//  Pagina a se' stante, deliberatamente NON dentro la dashboard: quella
+//  vera sta sulla microSD (vedi /dashboard-upload) e va ricaricata a mano
+//  dopo ogni modifica, quindi una funzione nuova che vive solo in PROGMEM
+//  e' raggiungibile SEMPRE, anche con una dashboard personalizzata vecchia
+//  o rotta. Stessa logica di /dashboard-upload.
+// ---------------------------------------------------------------------
+static const char NODI_PAGE[] PROGMEM = R"HTML(
+<!doctype html><html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EnvNode-C3 &mdash; Nodi ESP-NOW</title><style>
+ body{font-family:system-ui,Arial,sans-serif;background:#111;color:#eee;margin:0;padding:1rem;display:flex;justify-content:center}
+ .wrap{max-width:820px;width:100%}
+ h1{font-size:1.05rem;margin:0 0 .8rem}
+ .card{background:#1c1c1c;border:1px solid #333;border-radius:12px;padding:1rem;margin-bottom:1rem}
+ .row{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center}
+ button{padding:.55rem .9rem;border:0;border-radius:8px;background:#3987e5;color:#fff;font-size:.9rem;cursor:pointer}
+ button.off{background:#444}
+ h3{margin:0;font-size:1rem;display:flex;align-items:center;gap:.5rem}
+ .dot{width:.6rem;height:.6rem;border-radius:50%;display:inline-block;flex:none}
+ .ok{background:#3fb950}.ko{background:#f85149}
+ .vals{font-size:1.3rem;margin:.6rem 0 .4rem}
+ .muted{color:#8a8a8a;font-size:.8rem;line-height:1.6;margin:.2rem 0}
+ .warn{color:#f0a020}
+ button.dim{background:#3a2020;border:1px solid #5a2a2a;color:#e0888a;font-size:.75rem;padding:.35rem .6rem;margin-top:.6rem}
+ a{color:#3987e5}
+ code{color:#9aa}
+</style></head><body><div class="wrap">
+<h1>Nodi ESP-NOW</h1>
+<div class="card">
+ <div class="row">
+  <button id="bp">Apri pairing 5 min</button>
+  <button id="bc" class="off">Chiudi</button>
+  <span class="muted" id="st"></span>
+ </div>
+ <p class="muted">Un nodo si associa solo mentre la finestra e' aperta. Il
+ registro dei nodi vive in RAM: dopo un riavvio di questa scheda la finestra
+ si riapre da sola per 5 minuti, cosi' i nodi gia' noti rientrano senza che
+ nessuno debba premere niente.</p>
+</div>
+<div id="lista"></div>
+<p class="muted"><a href="/">&larr; dashboard</a></p>
+<script>
+const E=document.getElementById.bind(document);
+function dur(s){if(s<60)return s+' s';if(s<3600)return Math.round(s/60)+' min';return (s/3600).toFixed(1)+' h';}
+// null = valore non finito lato nodo (sensore che non ha risposto): si
+// mostra come tale invece di stampare uno zero che sembrerebbe una misura.
+function num(x,d){return x===null?'--':x.toFixed(d);}
+function vals(n){
+ if(!n.dati)return '<span class="muted">associato, nessun DATA ancora</span>';
+ const v=n.valori;
+ // Le unita' si mostrano solo per i tipi di cui conosciamo il contratto dei
+ // tre float; per gli altri si stampano i numeri nudi invece di inventare.
+ if(n.tipo==2)return num(v[0],1)+' &deg;C &middot; '+num(v[1],1)+' % &middot; '+num(v[2],1)+' hPa';
+ return v.map(x=>num(x,2)).join(' &middot; ');
+}
+function stato(n){
+ if(!n.dati)return '<p class="muted">in attesa del primo DATA</p>';
+ return '<p class="muted">ultimo: '+n.ultimo+' &middot; silenzio '+dur(n.silenzio_s)+
+  (n.online?'':' <span class="warn">&mdash; MUTO (soglia '+dur(n.soglia_muto_s)+')</span>')+'</p>';
+}
+function render(d){
+ E('st').textContent=d.attivo
+  ?(d.pairing?('pairing aperto, ancora '+dur(d.pairing_resta_s)):'pairing chiuso')+' — canale '+d.canale
+  :'ESP-NOW non attivo';
+ if(!d.nodi.length){E('lista').innerHTML='<div class="card"><p class="muted">Nessun nodo associato. Apri il pairing, poi accendi (o riavvia) il nodo.</p></div>';return;}
+ E('lista').innerHTML=d.nodi.map(n=>`<div class="card">
+  <h3><span class="dot ${n.online?'ok':'ko'}"></span>${n.nome||'(senza nome)'}
+   <span class="muted">${n.tipo_nome}</span></h3>
+  <div class="vals">${vals(n)}</div>
+  ${stato(n)}
+  <p class="muted">cadenza osservata: ${n.intervallo_s?dur(n.intervallo_s):'in apprendimento'}
+   &middot; batteria: ${n.batteria_mv?(n.batteria_mv/1000).toFixed(2)+' V':'non misurata'}</p>
+  <p class="muted">pacchetti ${n.pacchetti} &middot; persi ${n.persi} &middot; riavvii ${n.riavvii}
+   &middot; seq ${n.seq} &middot; <code>${n.mac}</code></p>
+  <button class="dim" data-mac="${n.mac}">Dimentica questo nodo</button>
+  </div>`).join('');
+ // I pulsanti si ricreano ad ogni render, quindi il gestore si riaggancia qui
+ // invece di una volta sola all'avvio.
+ document.querySelectorAll('button.dim').forEach(b=>b.onclick=()=>dimentica(b.dataset.mac));
+}
+function dimentica(mac){
+ if(!confirm('Dimenticare il nodo '+mac+'? Viene tolto dal registro e dalla memoria '
+  +"permanente. Se e' ancora acceso e si crede associato non tornera' da solo: "
+  +'serve una finestra di associazione aperta, oppure un suo riavvio.')) return;
+ fetch('/api/nodi/dimentica?mac='+encodeURIComponent(mac),{method:'POST'})
+  .then(r=>r.text()).then(()=>tick()).catch(()=>{});
+}
+function tick(){fetch('/api/nodi').then(r=>r.json()).then(render).catch(()=>{});}
+E('bp').onclick=()=>fetch('/api/pairing?on=1&s=300',{method:'POST'}).then(tick);
+E('bc').onclick=()=>fetch('/api/pairing?on=0',{method:'POST'}).then(tick);
+tick();setInterval(tick,2000);
+</script></div></body></html>
+)HTML";
+
+// Un float non finito va emesso come null, MAI come numero: String(NAN, 2)
+// produce "nan", che non e' JSON valido e farebbe fallire il parse dell'INTERA
+// risposta nel browser — la pagina resterebbe vuota per colpa di un solo
+// sensore guasto su un solo nodo. E i NaN arrivano davvero: un nodo che non
+// riesce a leggere il proprio sensore trasmette lo stesso, con i valori a NAN.
+static void appendJsonFloat(String& out, float v, int decimali) {
+  if (isnan(v) || isinf(v)) { out += "null"; return; }
+  out += String(v, decimali);
+}
+
+static void appendJsonMac(String& out, const uint8_t mac[6]) {
+  char buf[18];
+  snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  appendJsonString(out, buf);
+}
+
+static void handleNodiPage() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  net_server().send_P(200, "text/html", NODI_PAGE);
+}
+
+static void handleApiNodi() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+
+  const int n = remote_count();
+  String json;
+  json.reserve(160 + 340 * n);
+  json += '{';
+  json += "\"attivo\":";  json += (remote_ready() ? "true" : "false"); json += ',';
+  // Il canale non e' una proprieta' di ESP-NOW ma dell'AP a cui siamo
+  // connessi (vedi remote_nodes.h): si legge da qui perche' un nodo che
+  // dorme, senza WiFi, dovra' impostarlo esplicitamente.
+  json += "\"canale\":" + String(net_channel()) + ",";
+  json += "\"pairing\":"; json += (remote_pairing_active() ? "true" : "false"); json += ',';
+  json += "\"pairing_resta_s\":" + String(remote_pairing_remaining_s()) + ",";
+  json += "\"nodi\":[";
+
+  bool primo = true;
+  for (int i = 0; i < n; i++) {
+    RemoteNode r;
+    if (!remote_get(i, &r)) continue;
+    if (!primo) json += ',';
+    primo = false;
+
+    json += '{';
+    json += "\"mac\":";       appendJsonMac(json, r.mac);                     json += ',';
+    json += "\"nome\":";      appendJsonString(json, r.nome);                 json += ',';
+    json += "\"tipo\":" + String(r.tipo) + ",";
+    json += "\"tipo_nome\":"; appendJsonString(json, remote_tipo_nome(r.tipo)); json += ',';
+    json += "\"dati\":";      json += (r.hasData ? "true" : "false");         json += ',';
+
+    if (r.hasData) {
+      json += "\"valori\":[";
+      appendJsonFloat(json, r.value[0], 2); json += ',';
+      appendJsonFloat(json, r.value[1], 2); json += ',';
+      appendJsonFloat(json, r.value[2], 2);
+      json += "],";
+      char buf[24] = "--";
+      rtctime_format(r.ultimoTs, "%Y-%m-%d %H:%M:%S", buf, sizeof(buf));
+      json += "\"ultimo\":"; appendJsonString(json, buf); json += ',';
+    } else {
+      json += "\"valori\":null,\"ultimo\":null,";
+    }
+
+    json += "\"online\":"; json += (r.online ? "true" : "false"); json += ',';
+    json += "\"silenzio_s\":"    + String(r.silenzioS)   + ",";
+    json += "\"soglia_muto_s\":" + String(r.sogliaMutoS) + ",";
+    json += "\"intervallo_s\":"  + String(r.intervalloS) + ",";
+    json += "\"batteria_mv\":"   + String(r.batteria_mv) + ",";
+    json += "\"seq\":"           + String(r.seq)         + ",";
+    json += "\"pacchetti\":"     + String(r.pacchetti)   + ",";
+    json += "\"persi\":"         + String(r.persi)       + ",";
+    json += "\"riavvii\":"       + String(r.riavvii);
+    json += '}';
+  }
+
+  json += "]}";
+  net_server().send(200, "application/json", json);
+}
+
+// POST /api/nodi/dimentica?mac=AA:BB:CC:DD:EE:FF
+// Toglie il nodo dal registro (libreria + RAM + NVS). Serve quando una scheda
+// viene sostituita: l'identita' di un nodo e' il suo MAC, quindi quella
+// vecchia resterebbe in elenco per sempre come nodo muto, cioe' un allarme
+// falso permanente.
+static void handleApiNodiDimentica() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+
+  if (!srv.hasArg("mac")) { srv.send(400, "text/plain", "manca il parametro mac"); return; }
+
+  uint8_t mac[6];
+  if (!remote_parse_mac(srv.arg("mac").c_str(), mac)) {
+    srv.send(400, "text/plain", "MAC non valido");
+    return;
+  }
+  if (!remote_forget(mac)) {
+    srv.send(404, "text/plain", "nodo non trovato");
+    return;
+  }
+  srv.send(200, "application/json", "{\"ok\":true}");
+}
+
+// POST /api/pairing?on=1[&s=300] | ?on=0
+// Parametri in query string anche sulla POST, come /api/config e
+// /api/elimina: e' la convenzione gia' in uso in questo file.
+static void handleApiPairing() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+
+  if (!remote_ready()) {
+    srv.send(503, "text/plain", "ESP-NOW non attivo su questa scheda");
+    return;
+  }
+
+  const bool on = srv.hasArg("on") ? (srv.arg("on") == "1" || srv.arg("on") == "true") : true;
+  if (on) {
+    remote_pairing_open(srv.hasArg("s") ? (uint32_t)srv.arg("s").toInt() : 0);
+  } else {
+    remote_pairing_close();
+  }
+
+  String json = "{\"pairing\":";
+  json += (remote_pairing_active() ? "true" : "false");
+  json += ",\"pairing_resta_s\":" + String(remote_pairing_remaining_s()) + "}";
+  srv.send(200, "application/json", json);
+}
+
+// ---------------------------------------------------------------------
 // CORS permissivo sulle /api/*: serve per sviluppare una dashboard.html in
 // locale (aperta come file o da un dev server sul PC) e chiamare comunque
 // le API dell'IP della scheda in fetch() cross-origin. Non serve per l'uso
@@ -727,4 +962,8 @@ void web_ui_begin() {
   srv.on("/api/elimina", HTTP_POST, handleApiElimina);
   srv.on("/api/config", HTTP_GET, handleApiConfigGet);
   srv.on("/api/config", HTTP_POST, handleApiConfigPost);
+  srv.on("/nodi", HTTP_GET, handleNodiPage);
+  srv.on("/api/nodi", HTTP_GET, handleApiNodi);
+  srv.on("/api/pairing", HTTP_POST, handleApiPairing);
+  srv.on("/api/nodi/dimentica", HTTP_POST, handleApiNodiDimentica);
 }

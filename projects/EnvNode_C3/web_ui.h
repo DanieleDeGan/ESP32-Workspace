@@ -27,6 +27,13 @@
 //    POST /api/elimina?d=YYYY-MM-DD elimina il file di log di un giorno
 //    GET  /api/config           configurazione corrente in JSON
 //    POST /api/config           imposta parametri (query args)
+//    GET  /nodi                 pagina dei nodi ESP-NOW ricevuti (PROGMEM,
+//                               come /dashboard-upload: resta raggiungibile
+//                               anche con una dashboard personalizzata
+//                               vecchia o rotta sulla SD)
+//    GET  /api/nodi             stato dei nodi remoti in JSON
+//    POST /api/pairing?on=1|0[&s=secondi]   apre/chiude la finestra di
+//                               associazione (vedi remote_nodes.h)
 //
 //  Tutte dietro la stessa basic-auth di /update (net_webAuthOk()).
 //  /update resta di net_ota.cpp, invariata.

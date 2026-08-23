@@ -35,6 +35,7 @@
 #include "rtc_time.h"
 #include "sd_logger.h"
 #include "web_ui.h"
+#include "remote_nodes.h"
 
 // ============================ Hardware ============================
 static constexpr int     PIN_SDA   = 5;      // -> SDA dell'OLED
@@ -57,11 +58,28 @@ DHT              dht(PIN_DHT, DHT11);
 
 // Da incrementare a ogni firmware caricato sul nodo: la dashboard lo mostra,
 // ed e' l'unico modo per sapere da remoto quale versione sta davvero girando.
+//   v8  2026-08-23  EspNowLink: nome e tipo del peer aggiornati ad ogni
+//                   messaggio, non solo al primo. Un nodo riprogrammato
+//                   con un nome nuovo restava in elenco con quello vecchio
+//   v7  2026-08-23  registro dei nodi persistito in NVS (solo MAC/tipo/nome,
+//                   mai i valori) + pulsante "dimentica nodo": un nodo
+//                   sopravvive al riavvio dell'hub anche a pairing chiuso
+//   v6  2026-08-23  EspNowLink: l'hub adotta anche un DATA unicast da un
+//                   nodo sconosciuto mentre il pairing e' aperto. Senza,
+//                   dopo un riavvio dell'hub il nodo restava invisibile
+//                   per sempre, e in silenzio da entrambe le parti
+//   v5  2026-08-23  Update.abort() sull'upload interrotto: senza, il primo
+//                   upload caduto a meta' rendeva la scheda non piu'
+//                   aggiornabile via rete (vedi CLAUDE.md)
+//   v4  2026-08-23  hub ESP-NOW: riceve i DATA dei nodi a batteria, li
+//                   mostra su /nodi e /api/nodi e segnala i nodi muti
+//                   (vedi remote_nodes.*). Da qui in poi lo sketch usa
+//                   libraries/EspNowLink: compilare con --libraries libraries
 //   v3  2026-08-22  Serial.setTxTimeoutMs(0): senza, con la porta USB
 //                   riconosciuta dal PC ma nessuno che legge, le print()
 //                   bloccavano loop() e con lui web server, OTA e campionamento
 //   v2  ...
-static const char* FW_VERSION = "v3";
+static const char* FW_VERSION = "v8";
 
 static bool     otaActive = false;   // true mentre un update e' in corso
 static uint32_t lastDraw  = 0;
@@ -420,6 +438,13 @@ void setup() {
 
   web_ui_begin();
 
+  // ESP-NOW dopo net_begin(): la radio e' una sola e il canale lo detta
+  // l'AP, quindi si lascia decidere allo stack WiFi gia' configurato (vedi
+  // la nota sul canale in remote_nodes.h). Se il WiFi non fosse ancora
+  // connesso qui non e' un problema: i peer sono registrati sul "canale
+  // corrente" e seguono l'AP da soli quando la connessione arriva.
+  remote_begin(settings_get().nodeName);
+
   s_pageStartMs = millis();
 }
 
@@ -431,6 +456,8 @@ void loop() {
   bool nowConnected = net_isConnected();
   if (nowConnected && !wasConnected) rtctime_onWifiConnected();   // riconnesso: rilancia il sync NTP
   wasConnected = nowConnected;
+
+  remote_loop();              // nodi ESP-NOW: WELCOME, nuovi DATA, stato muto
 
   handleBootButton();
   updatePageRotation();
