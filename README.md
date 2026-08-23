@@ -35,7 +35,7 @@ divisione per chip o duplicherebbe le librerie o le lascerebbe comunque fuori.
 
 | Progetto | Scheda | Cos'è |
 |---|---|---|
-| `projects/EnvNode_C3/` | ESP32-C3 Supermini | nodo ambientale in funzione: DHT11 + log su microSD + dashboard web con grafici + OTA |
+| `projects/EnvNode_C3/` | ESP32-C3 Supermini | nodo ambientale in funzione: DHT11 + log su microSD + dashboard web con grafici + OTA, e hub ESP-NOW dei nodi a batteria |
 | `projects/Timelapse_XIAO/` | Seeed XIAO ESP32-S3 **Sense** | camera timelapse: scatto a intervallo su microSD per giorno, galleria web con riproduzione, NTP + OTA |
 
 ## Le librerie condivise (`libraries/`)
@@ -466,11 +466,17 @@ davvero:
   orario), servita dallo stesso `WebServer` dell'OTA;
 - **indice di comfort** a soglie configurabili (`comfort.h`): niente Heat Index
   o PMV, che pretenderebbero una precisione che il DHT11 non ha;
+- **hub ESP-NOW** (da `v4`): riceve i dati dei nodi a batteria della stazione
+  meteo, li mostra su `/nodi` e segnala quelli che hanno smesso di trasmettere.
+  Finche' `MeteoHub_S3` non e' pronto, e' questa la scheda che tiene lo storico
+  dei nodi che dormono — la loro RAM si azzera ad ogni risveglio;
 - **OTA** come sullo starter.
 
 Cablaggio: OLED su SDA=GPIO5/SCL=GPIO6, DHT11 su GPIO0, HW-125 su CS=GPIO1
 SCK=GPIO4 MISO=GPIO3 MOSI=GPIO7, tasto BOOT (GPIO9) per cambiare pagina OLED.
-Partition Scheme **Minimal SPIFFS**: serve la partizione OTA.
+Partition Scheme **Minimal SPIFFS**: serve la partizione OTA. Da `v4` la
+compilazione vuole `--libraries libraries` (usa `EspNowLink`), che prima non
+serviva.
 
 `secrets.h` vale la stessa regola degli starter: copia `secrets.h.example` e
 riempilo, il file vero non entra nel repo.

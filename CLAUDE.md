@@ -49,7 +49,7 @@ toccare) vedi `docs/FILES.md`. Per il pinout/hardware della board AMOLED vedi
 | `starters/XIAO_S3_Camera/web_ui.h/.cpp` | pagina di controllo + API HTTP (stream MJPEG, scatto, galleria) |
 | `starters/XIAO_S3_Camera/hub_link.h/.cpp` | nodo ESP-NOW sopra `EspNowLink` (pairing, notifiche, comandi) |
 | `starters/XIAO_S3_Camera/secrets.h.example` | come per il C3: si copia in `secrets.h`, **gitignorato** |
-| `projects/EnvNode_C3/` | **progetto reale** (ESP32-C3): DHT11 + microSD SPI + dashboard web con grafici + orario NTP + OTA — vedi sezione dedicata |
+| `projects/EnvNode_C3/` | **progetto reale** (ESP32-C3): DHT11 + microSD SPI + dashboard web con grafici + orario NTP + OTA, e da `v4` anche **hub ESP-NOW** dei nodi a batteria — vedi sezione dedicata |
 | `projects/Timelapse_XIAO/` | **progetto** (XIAO ESP32-S3 Sense): camera timelapse a intervallo, archivio per giorno su microSD, galleria web con riproduzione, NTP + OTA — vedi sezione dedicata |
 | `projects/Timelapse_XIAO/Timelapse_XIAO.ino` | timer degli scatti, gestione dello spazio, impostazioni — qui va la logica applicativa |
 | `projects/Timelapse_XIAO/storage.h/.cpp` | microSD SPI organizzata per giorno: `/timelapse/<giorno>/<ora>.JPG` + CSV giornaliero |
@@ -84,7 +84,8 @@ usa:
 **Il prefisso è la documentazione**: le cinque `AMOLED191_*` conoscono i pin
 della board AMOLED e fuori di lì non hanno senso; `EspNowLink` non dipende da
 nessun hardware specifico ed è inclusa da entrambi i lati del collegamento
-(hub S3, nodi C3/XIAO) — il protocollo deve essere identico su tutti. Una
+(hub S3 **o C3** — vedi `projects/EnvNode_C3/` —, nodi C3/XIAO) — il protocollo
+deve essere identico su tutti. Una
 libreria nuova che vale solo per una scheda prende il prefisso di quella
 scheda; una portabile prende un nome funzionale.
 
@@ -164,12 +165,14 @@ delle altre schede del repo, dove `CDCOnBoot=cdc` va aggiunto per avere la
 ### Sketch per ESP32-C3 (FQBN diverso)
 
 `starters/C3_OLED_OTA/` e `projects/EnvNode_C3/` sono per un chip diverso,
-quindi hanno un loro FQBN e **non** vogliono `--libraries libraries` (non usano
-le librerie della board AMOLED):
+quindi hanno un loro FQBN. Lo starter è self-contained e **non** vuole
+`--libraries libraries`; `EnvNode_C3` invece lo vuole **da `v4`** (2026-08-23),
+perché da lì fa anche da hub ESP-NOW e include `libraries/EspNowLink` — non le
+librerie della board AMOLED, che nessuno dei due usa:
 
 ```
 arduino-cli compile --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=min_spiffs" starters/C3_OLED_OTA
-arduino-cli compile --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=min_spiffs" projects/EnvNode_C3
+arduino-cli compile --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=min_spiffs" --libraries libraries projects/EnvNode_C3
 ```
 
 Equivalente Arduino IDE: Board **ESP32C3 Dev Module**, USB CDC On Boot
@@ -183,6 +186,36 @@ su qualunque ESP32: per un C3 usa `esp32:esp32:esp32c3:CDCOnBoot=cdc`. **Senza
 `CDCOnBoot=cdc` la `Serial` dello sketch finisce sui pin UART0** e sulla porta
 USB si vede solo il log di boot della ROM, non lo sketch — errore facile da
 scambiare per "lo sketch non parte".
+
+### `Update.abort()` nel caso `UPLOAD_FILE_ABORTED` — obbligatorio
+
+In `net_ota.cpp` il gestore dell'upload deve chiamare `Update.abort()` quando
+un caricamento si interrompe:
+
+```cpp
+case UPLOAD_FILE_ABORTED:
+  s_updateInProgress = false;
+  Update.abort();          // <-- senza questo la scheda non si aggiorna piu'
+  break;
+```
+
+Senza, l'oggetto `Update` resta "in corso" per sempre dopo il primo upload
+caduto a metà, e **ogni tentativo successivo fallisce in silenzio**:
+`Update.begin()` torna false, le `write()` non scrivono niente, `end()` dà
+errore e la pagina risponde `500 Aggiornamento fallito` anche con un `.bin`
+perfettamente valido. L'unico modo di uscirne è riavviare la scheda — cioè
+esattamente la cosa che via rete non si può fare.
+
+**Il sintomo non somiglia alla causa**: sembra un firmware corrotto o una
+partizione sbagliata, e si perde tempo a controllare quelle. Il segnale da
+riconoscere è che il trasferimento arriva **al 100%** e solo allora torna 500.
+
+Trovato sul serio il 2026-08-23 su `MeteoNode_C3`, dove un primo upload caduto
+a 512 KB aveva reso il nodo impossibile da aggiornare via rete (e spiega
+retroattivamente perché su quel nodo l'OTA non era mai riuscito). Corretto in
+`projects/EnvNode_C3/`, `projects/MeteoNode_C3/`, `starters/C3_OLED_OTA/` e
+`starters/XIAO_S3_Camera/`; `projects/Timelapse_XIAO/` ce l'aveva già —
+era la correzione fatta nella copia più recente e mai riportata indietro.
 
 ### `Serial.setTxTimeoutMs(0)` — obbligatorio su C3 e S3
 
@@ -323,6 +356,21 @@ in unicast; l'hub può mandare COMMAND allo stesso modo. Registro peer
 **solo in RAM** (nessuna persistenza SD/NVS in questo giro — scelta
 deliberata, non ancora implementata).
 
+**In pairing l'hub adotta anche un DATA unicast da un MAC sconosciuto**, non
+solo un HELLO in broadcast. Serve perché il registro peer vive in RAM: dopo un
+riavvio dell'hub il nodo **si crede ancora associato**, quindi non manda più
+HELLO, e i suoi DATA verrebbero scartati — resterebbe invisibile per sempre.
+Il guasto è **silenzioso da entrambe le parti**, ed è ciò che lo rende
+cattivo: l'ACK di ESP-NOW è di livello radio e arriva comunque, quindi il nodo
+continua a contare i propri invii come riusciti e la sua pagina dice che va
+tutto bene, mentre l'hub non mostra niente. Osservato su hardware il
+2026-08-23 fra `EnvNode_C3` e `MeteoNode_C3`: quindici DATA "consegnati", zero
+nodi visti. Il DATA che fa scoprire il nodo viene anche conservato come prima
+lettura, o andrebbe perso (`onReceive()` non è stato chiamato: il peer non
+esisteva ancora). Finché il registro non è persistito, **tenere una finestra
+di pairing aperta per qualche minuto ad ogni avvio dell'hub** è ciò che fa
+rientrare i nodi già noti senza intervento.
+
 **Scoperta bidirezionale**: `ESP_NOW.onNewPeer()` scatta per MAC *sorgente*
 sconosciuto, quindi non solo l'hub deve gestirlo per gli HELLO — anche il
 nodo deve gestirlo per il WELCOME dell'hub (sconosciuto finché non arriva).
@@ -356,9 +404,16 @@ da solo, il nodo lo segue al riavvio e l'hub no.
 hardware reale (broadcast sempre ok, WELCOME/unicast spesso perso), coerente
 con un'issue nota e irrisolta nell'ecosistema arduino-esp32
 ([espressif/arduino-esp32#10895](https://github.com/espressif/arduino-esp32/issues/10895)).
-Con nodi ESP32-C3 il pairing è immediato e affidabile. **Per nuovi nodi,
-preferire varianti recenti (S2/S3/C3/C6) rispetto all'ESP32 "classico"** per
-un pairing rapido e prevedibile.
+Con nodi ESP32-C3 il pairing è immediato e affidabile.
+
+**Aggiornamento del 2026-08-23 — il limite è dell'hub S3, non del chip
+classico.** Provato un nodo ESP32 "classico" (DOIT DevKit v1, Xtensa D0WD)
+contro un hub **ESP32-C3** (`projects/EnvNode_C3/`): pairing **immediato**,
+DATA unicast consegnati, zero pacchetti persi. Quindi la raccomandazione va
+letta al contrario di come era scritta: il problema sta nella combinazione con
+un **hub S3**, e un ESP32 classico è un nodo perfettamente valido se l'hub è un
+C3. Resta aperto se lo stesso valga per un hub S3 con le versioni attuali del
+core — quella prova non è stata rifatta.
 
 ## `starters/C3_OLED_OTA/` — ESP32-C3 Supermini + OLED + OTA
 
@@ -476,6 +531,7 @@ SSD1306 + dashboard web con grafici + orario NTP + OTA. Moduli:
 | `sd_logger.h/.cpp` | CSV con rotazione giornaliera in `/logs/YYYY-MM-DD.csv`, contatori in RAM+NVS |
 | `net_ota.h/.cpp` | gemello di quello del C3, variante "server condiviso": espone `net_server()` |
 | `web_ui.h/.cpp` | dashboard + API JSON registrate sul WebServer di `net_ota` |
+| `remote_nodes.h/.cpp` | **hub ESP-NOW**: riceve i DATA dei nodi a batteria, ne tiene lo stato in RAM e li dichiara "muti" (vedi sotto) |
 | `www/dashboard.html` | dashboard personalizzata, **non compilata**: sorgente della pagina da caricare su SD via `/dashboard-upload` |
 
 **Vincoli e scelte da conoscere**:
@@ -501,6 +557,68 @@ SSD1306 + dashboard web con grafici + orario NTP + OTA. Moduli:
 - **`web_ui` non deve** duplicare stato: legge `settings_get()`, `sd_logger.*`,
   `rtc_time.*`, `comfort_eval()` direttamente; i ganci `app_*()` implementati
   nel `.ino` coprono solo letture correnti e min/max dall'ultimo avvio.
+
+### Ruolo secondario: hub ESP-NOW dei nodi a batteria (da `v4`, 2026-08-23)
+
+`EnvNode_C3` è l'unica scheda di casa sempre accesa, con orologio NTP, microSD e
+web UI: finché non esiste `MeteoHub_S3` fa **anche** da hub per i nodi a
+batteria della stazione meteo (`remote_nodes.h/.cpp`, pagina `/nodi`, API
+`/api/nodi` e `/api/pairing`). Non è una comodità: un nodo in deep sleep perde
+la RAM ad ogni risveglio, quindi il suo storico **non può** stare su di lui.
+
+- **Canale: `ESPNOW_LINK_CHANNEL_CURRENT` (0), mai un numero esplicito.** Questa
+  scheda è connessa a un AP, quindi il canale lo impone il router; passare un
+  numero a `Link_InitEx()` chiamerebbe `esp_wifi_set_channel()` su una STA
+  connessa. Con lo 0 i peer sono registrati sul "canale corrente" e seguono
+  l'AP da soli — anche se il WiFi si connette *dopo* `remote_begin()`. È il
+  motivo per cui l'ESP-NOW funziona senza toccare il router. Conseguenza: **i
+  nodi devono stare sul canale dell'AP**, e `/api/nodi` lo riporta apposta,
+  perché un nodo che dorme senza WiFi dovrà impostarlo esplicitamente.
+- **Pairing a finestra, non interruttore**, e **si riapre da sola per 5 minuti
+  ad ogni avvio**, per i nodi non ancora in elenco.
+- **Il registro è persistito in NVS** (namespace `envnodi`, un blob solo), e si
+  salvano **soltanto MAC, tipo e nome**. Il MAC è l'identità vera: è bruciato
+  nel chip e sopravvive ai riflash. Al boot i nodi vengono rimessi nel driver
+  con `Link_Hub_AddPeer()`, quindi i loro DATA arrivano **anche a finestra di
+  pairing chiusa** — è ciò che rende affidabile un riavvio dell'hub.
+  - **I valori NON si persistono**, di proposito: dopo un riavvio l'hub
+    mostrerebbe come "attuale" una lettura vecchia di giorni, cioè esattamente
+    il guasto che il rilevamento del nodo muto serve a evitare. Un nodo
+    ripristinato riparte da "in attesa del primo DATA" (`pacchetti` a 0) e si
+    riempie al primo pacchetto vero. Nemmeno i contatori si salvano: sono "da
+    quando questa scheda è accesa", e persisterli vorrebbe dire scrivere in NVS
+    ad ogni pacchetto.
+  - Si scrive **solo quando il registro cambia** (nodo nuovo o dimenticato):
+    una manciata di scritture nella vita dell'hub.
+- **"Dimentica nodo"** (`POST /api/nodi/dimentica?mac=…`, pulsante su `/nodi` e
+  in dashboard) toglie il nodo da libreria, RAM e NVS. Serve perché l'identità
+  è il MAC: **sostituendo una scheda, quella vecchia resterebbe in elenco per
+  sempre come nodo muto**, cioè un allarme falso permanente. Attenzione al
+  rovescio: se il nodo dimenticato è ancora acceso e si crede associato non
+  manda più HELLO, quindi per riprenderlo serve una finestra di pairing aperta
+  (o un suo riavvio).
+- **"Nodo muto" con soglia osservata, non configurata**: il nodo decide la
+  propria cadenza dalla sua pagina, e duplicare quel valore qui sarebbe solo un
+  modo per andare fuori sincrono. Si misura l'intervallo fra un DATA e il
+  successivo (media mobile, delta assurdi scartati) e si dichiara muto dopo
+  ~2,5 intervalli. **Finché i nodi non hanno il partitore della batteria,
+  questa è l'unica diagnostica esistente**: `battery_mv` arriva 0.
+- `remote_nodes.cpp` **polla** `Link_Hub_GetPeerInfo()` da `loop()` invece di
+  registrare una `Link_OnMessage()`: la concorrenza col task del driver WiFi
+  sta già dentro `EspNowLink`, e così non ce n'è di nostra da sincronizzare.
+- **La pagina `/nodi` è in PROGMEM e volutamente separata dalla dashboard**:
+  quella vera sta sulla SD e va ricaricata a mano dopo ogni modifica, quindi
+  una funzione nuova che vive nel firmware resta raggiungibile comunque. Stessa
+  logica di `/dashboard-upload`. La dashboard personalizzata ha in più la card
+  "Nodi remoti" (`www/dashboard.html`, caricata sulla SD il 2026-08-23), che
+  rilegge `/api/nodi` **un giro su tre** — il WebServer è sincrono, e i
+  contatori `nodi`/`nodi_online`/`pairing` di `/api/stato` bastano a forzare
+  una rilettura immediata quando qualcosa cambia davvero.
+- **Un float non finito va emesso come `null`**: `String(NAN, 2)` produce
+  `"nan"`, che non è JSON valido e farebbe fallire il parse dell'*intera*
+  risposta — pagina vuota per colpa di un solo sensore guasto su un solo nodo.
+  E i NaN arrivano davvero, perché un nodo che non riesce a leggere il sensore
+  trasmette lo stesso.
 
 ## `projects/Timelapse_XIAO/` — camera timelapse con galleria web
 

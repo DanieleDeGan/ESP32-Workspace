@@ -1,5 +1,60 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-08-23 — il nodo è morto di notte, e cosa ne è seguito
+
+Il nodo lasciato a batteria la notte fra il 22 e il 23 è stato trovato spento:
+cella a **3,04 V** al multimetro, tutto di nuovo operativo con una carica. Non
+torna il conto — una 18650 anche solo da 1500 mAh reali, col C3 in WiFi,
+dovrebbe stare in piedi 25-35 ore, non una notte. Le ipotesi, in ordine di
+probabilità: **non è morta la cella ma la scheda** (3,04 V non è protezione
+intervenuta, che stacca a ~2,5 V, ma è coerente con l'LDO della XIAO che va in
+dropout e manda il C3 in brownout loop — se è così, la parte di 18650 sotto
+~3,3-3,4 V non è utilizzabile e va tolta dal calcolo dell'autonomia); oppure la
+cella non era carica davvero; oppure un consumo parassita (il LED del modulo
+sensore).
+
+**Il partitore della batteria non si può ancora cablare**: i componenti non ci
+sono. Conseguenze accettate, da non dimenticare:
+
+- il nodo **non torna a batteria** finché non c'è. Tutto lo sviluppo del deep
+  sleep si fa su USB, dove per giunta la Serial resta viva;
+- senza tensione di cella non c'è cutoff, quindi nemmeno protezione dalla
+  scarica profonda: la cella va ricaricata subito e non lasciata a 3,04 V;
+- **l'unica diagnostica che resta è "il nodo ha smesso di parlare"**, e per
+  questo il rilevamento del nodo muto è stato scritto subito, insieme alla
+  ricezione, invece che in un secondo giro;
+- non serve esattamente 2×1 MΩ: va bene qualunque coppia di resistenze uguali
+  fra ~100 kΩ e 1 MΩ (a 100 k sono ~16 µA, meno dei ~44 µA di deep sleep). Il
+  100 nF aiuta l'assestamento dell'ADC ma non è indispensabile.
+
+**Ordine di lavoro deciso** (conta, perché quando il nodo dorme si perde lo
+strumento con cui lo si debuggherebbe): ricezione sull'hub → invio dal nodo
+ancora sveglio e su USB → deep sleep per ultimo.
+
+**Fatto il 2026-08-23, e provato su hardware vero**: `EnvNode_C3` `v4` (hub
+ESP-NOW) e `MeteoNode_C3` `v3` (invio ESP-NOW). **La catena nodo → hub
+funziona.** Entrambi caricati via `/update` senza toccare nessun cavo. Vedi
+"EnvNode_C3 come hub provvisorio" e "Fase 1 bis" più sotto.
+
+Misure della prima prova, dall'hub:
+
+| | |
+|---|---|
+| associazione | **19 s** dal riavvio del nodo |
+| canale | **6**, ricavato da solo dall'AP da entrambi i lati |
+| primo DATA | 27,09 °C / 42,53 %RH / 1015,78 hPa |
+| cadenza appresa | dal **secondo** DATA: 60 s, soglia del muto scesa da 900 a 180 s |
+| pacchetti persi | **0 su 4** |
+
+**Trappola trovata strada facendo, e vale per tutto il repo**: il gestore
+dell'upload OTA non chiamava `Update.abort()` sul caso `UPLOAD_FILE_ABORTED`,
+quindi **un solo upload caduto a metà rendeva la scheda non più aggiornabile
+via rete, per sempre**. È la spiegazione retroattiva del "su `MeteoNode_C3`
+l'OTA non è mai riuscito" annotato qui sopra il 2026-08-22. Dettagli e
+correzione in `CLAUDE.md`.
+
+---
+
 Stato al **2026-08-22**. Il pannello e-ink è arrivato il 2026-08-21 e
 `projects/MeteoHub_S3/` — bring-up del solo pannello — è committato e
 **funzionante su hardware**. Il primo sensore è stato saldato e cablato al nodo
@@ -345,6 +400,185 @@ Due cose imparate, che valgono per tutto il repo:
 - **Se il chip ID esce 0x60** il modulo monta un BME280, non un BMP280: ha anche
   l'umidità e vuole la libreria Adafruit BME280. Il bring-up lo dice a schermo.
 
+### `EnvNode_C3` come hub provvisorio (fatto il 2026-08-23, `v4`)
+
+`MeteoHub_S3` non esiste ancora come hub — è solo il bring-up del pannello — ma
+il nodo ha bisogno di qualcuno che lo ascolti *prima* di poter dormire. Il
+posto naturale è `projects/EnvNode_C3/`: è l'unica scheda di casa sempre accesa,
+in funzione da oltre dieci giorni, con orologio NTP, microSD e web UI.
+
+Non è solo comodità. **Il deep sleep uccide lo storico del nodo**: i 720 slot in
+RAM e la previsione a 3 ore di `forecast.h` si azzererebbero ad ogni risveglio,
+cioè ogni cinque minuti. Quella serie *deve* stare su una scheda sempre accesa
+con un orologio vero. Ed è anche il banco di prova del lato hub di `EspNowLink`,
+finora esercitato solo dalle demo: le modifiche che servono qui sono le stesse
+che vorrà `MeteoHub_S3`.
+
+**Cosa c'è** (`remote_nodes.h/.cpp`, ~230 righe, più tre rotte in `web_ui.cpp`):
+ricezione dei DATA, tabella dei nodi in RAM con valori/cadenza/pacchetti persi/
+riavvii, rilevamento del nodo muto, pagina `/nodi` con pairing e stato,
+`/api/nodi` e `/api/pairing`. Costo: **+25 KB di flash** (63% → 64% della
+partizione) e +1,1 KB di RAM globale.
+
+**Scelte da conoscere**:
+
+- **Canale `ESPNOW_LINK_CHANNEL_CURRENT` (0), non un numero esplicito.** È il
+  motivo per cui l'ESP-NOW funziona senza toccare il router: questa scheda è su
+  un AP, il canale lo detta lui, e `esp_wifi_set_channel()` su una STA connessa
+  non serve o fa danni. Con lo 0 i peer sono registrati sul "canale corrente" e
+  seguono l'AP da soli, anche se il WiFi si connette *dopo* `remote_begin()`.
+  Resta vero che tutti i nodi devono stare sul canale dell'AP: `/api/nodi` lo
+  riporta apposta, perché un nodo che dorme senza WiFi dovrà impostarlo a mano.
+- **La soglia del "muto" è osservata, non configurata.** Il nodo decide la
+  propria cadenza dalla sua pagina (2-3600 s): duplicare quel numero sull'hub
+  sarebbe solo un modo per andare fuori sincrono. Si misura l'intervallo fra un
+  DATA e il successivo e si dichiara muto dopo ~2,5 intervalli, con clamp a
+  [90 s, 2 h]. I delta a cavallo di un riavvio del nodo, o più lunghi di 6 ore,
+  non entrano nella media: senza quel filtro una notte di silenzio alzerebbe la
+  soglia a giorni e il muto non scatterebbe mai più.
+- **Il registro dei nodi è persistito in NVS** (fatto il 2026-08-23, `v7`), che
+  era il prerequisito della Fase 4. Si salvano **solo MAC, tipo e nome**: il
+  MAC è l'identità vera, bruciata nel chip e stabile ai riflash. Al boot i nodi
+  tornano nel driver con `Link_Hub_AddPeer()`, quindi i loro DATA arrivano
+  **anche a finestra di pairing chiusa** — che è ciò che serviva al deep sleep,
+  dove un nodo può svegliarsi molto dopo i 5 minuti di finestra.
+  **I valori non si salvano**, di proposito: dopo un riavvio l'hub mostrerebbe
+  come "attuale" una lettura vecchia di giorni, cioè il guasto che il
+  rilevamento del nodo muto serve a evitare. Verificato sull'hardware: al primo
+  affaccio dopo il riavvio il nodo c'è con `pacchetti: 0`, `dati: false`,
+  `valori: null`, e si riempie al primo pacchetto vero.
+- **"Dimentica nodo"** (`POST /api/nodi/dimentica?mac=…`, pulsante su `/nodi` e
+  in dashboard): toglie il nodo da libreria, RAM e NVS. Serve perché l'identità
+  è il MAC — sostituendo una scheda, quella vecchia resterebbe in elenco per
+  sempre come nodo muto, cioè un allarme falso permanente. Rovescio della
+  medaglia: se il nodo dimenticato è ancora acceso e si crede associato non
+  manda più HELLO, quindi per riprenderlo serve una finestra di pairing aperta
+  o un suo riavvio.
+- **La finestra di pairing si riapre da sola per 5 minuti ad ogni avvio**, ora
+  solo per i nodi non ancora in elenco.
+- **In pairing l'hub adotta anche un DATA unicast da un nodo sconosciuto**
+  (correzione a `libraries/EspNowLink`, 2026-08-23). Senza, dopo un riavvio
+  dell'hub il nodo — che si crede ancora associato e quindi **non manda più
+  HELLO** — restava invisibile per sempre, e in modo **silenzioso da entrambe
+  le parti**: l'ACK di ESP-NOW è di livello radio e arriva comunque, quindi il
+  nodo contava i propri invii come riusciti (visti 15 su 15, zero falliti,
+  pagina del nodo tutta verde) mentre l'hub non mostrava niente. Verificato dal
+  vivo: caricato l'hub corretto **senza toccare il nodo**, che era proprio in
+  quello stato, è stato riadottato alla trasmissione successiva (61 s) con
+  dentro già i valori di quel pacchetto.
+- **Due interfacce, di proposito.** `/nodi` è una pagina a sé **in PROGMEM**,
+  quindi raggiungibile anche con una `dashboard.html` vecchia o rotta sulla SD:
+  è la via di recupero, come `/dashboard-upload`. La dashboard personalizzata ha
+  in più la card "Nodi remoti" (caricata sulla SD il 2026-08-23), che rilegge
+  `/api/nodi` **un giro su tre** (15 s) invece che ad ogni tick: il WebServer è
+  sincrono, e raddoppiare le richieste per una lista che cambia ogni minuto
+  sarebbe tempo tolto a campionamento, SD e OTA. Quando serve reagire subito ci
+  pensano i contatori `nodi`/`nodi_online`/`pairing` che `/api/stato` porta
+  già, e che forzano un rilettura immediata quando cambiano.
+- **Il nome del nodo arriva dalla radio**, quindi nella dashboard va scritto
+  come testo e mai come markup: sedici caratteri scelti da chiunque sia a tiro
+  d'antenna non sono un posto dove fidarsi.
+- **Compilare ora vuole `--libraries libraries`**, che per `EnvNode_C3` prima
+  non serviva.
+
+**Da fare qui, quando si torna sopra**: log su SD dei valori remoti (in
+`/logs/<nodo>/AAAA-MM-GG.csv` separato, per non rompere la dashboard che legge
+il CSV attuale), spostamento di `forecast.h` dal nodo all'hub, e la persistenza
+dei peer in NVS.
+
+### Fase 1 bis — invio ESP-NOW dal nodo (fatto il 2026-08-23, `v3`)
+
+`projects/MeteoNode_C3/hub_link.h/.cpp`, gemello di quello del nodo camera ma
+senza comandi. Il nodo manda un DATA ad ogni ciclo di misura (60 s di default,
+è lo stesso intervallo già impostabile da pagina).
+
+- **Canale**: `ESPNOW_LINK_CHANNEL_CURRENT` finché è connesso all'AP, canale
+  fisso 6 come ripiego se l'AP non c'è. Quest'ultimo ramo oggi è solo una rete
+  di sicurezza ma **diventerà la strada normale col deep sleep**, quando il
+  nodo non si connetterà più al WiFi.
+- **`value[0..2]` = °C, %RH, hPa**, con `LINK_NODE_SENSOR_TEMPERATURE` riusato
+  invece di aggiungere un tipo nuovo in coda all'enum: finché i tipi di nodo
+  sono due, cambiare la libreria condivisa non porta niente. Rimandabile.
+- **La pressione si trasmette GREZZA**, non riportata al livello del mare: la
+  correzione dipende dall'altitudine, che su questo nodo è ancora il default da
+  40 m mai calibrato, e trasmettere il valore corretto scriverebbe un errore
+  sistematico dentro lo storico dell'hub per sempre. Il trend — cioè la
+  previsione — non cambia in nessuno dei due casi, è un offset costante.
+- **Si trasmette anche una lettura fallita**, con NAN sui canali mancanti: "sono
+  vivo ma il sensore non risponde" è una informazione, il silenzio no — da fuori
+  sarebbe indistinguibile da un nodo morto, che è esattamente ciò che l'hub sta
+  cercando di riconoscere. L'hub li serve come `null` (vedi la trappola del
+  `String(NAN)` in `CLAUDE.md`).
+- La pagina del nodo mostra stato di associazione, canale reale e contatori
+  inviati/falliti: sono l'unico modo di accorgersi che la radio ha smesso di
+  consegnare mentre il resto della pagina sembra a posto.
+- **Compilare ora vuole `--libraries libraries`** anche per questo sketch:
+  ```
+  arduino-cli compile --fqbn "esp32:esp32:XIAO_ESP32C3:PartitionScheme=min_spiffs" --libraries libraries projects/MeteoNode_C3
+  ```
+
+**Da fare qui**: `battery_mv` resta 0 finché non c'è il partitore, e il
+`forecast.h` andrà spostato sull'hub quando il nodo dormirà (la sua RAM si
+azzera ad ogni risveglio).
+
+### Secondo nodo su ESP32 "classico" (2026-08-23, `v4`)
+
+Stesso sketch `projects/MeteoNode_C3/`, **una sola copia**, con pin, nome nodo,
+hostname OTA e guardia della Serial scelti a compile-time da
+`#if defined(CONFIG_IDF_TARGET_ESP32)`. Due cartelle gemelle sarebbero
+divergute al primo bugfix; il prezzo è che il nome della cartella dice `_C3` ma
+ci gira anche un ESP32 classico.
+
+**Cablaggio sulla DOIT ESP32 DevKit v1** (provato e funzionante):
+
+| Filo del modulo | Pin | GPIO |
+|---|---|---|
+| SDA | D21 | 21 |
+| SCL | D22 | 22 |
+| VCC (**commutato**) | D26 | 26 |
+| GND | GND | — |
+
+GPIO26 perché è RTC-capable (servirà a `gpio_hold_en()` col deep sleep), non è
+di strapping ed è libero.
+
+**Il motivo per cui i pin non potevano restare quelli della XIAO**: sull'ESP32
+classico i **GPIO6-11 sono la flash SPI**, cioè proprio il GPIO6 che sulla XIAO
+fa da SDA. Gli stessi numeri, sull'altro chip, non sono liberi ma fatali. Fuori
+uso anche GPIO0/2/12/15 (strapping) e GPIO34-39 (solo ingresso). Il partitore
+della batteria, quando ci sarà, va su GPIO35 (ADC1): **non** sul GPIO3, che lì
+è la RX della UART0.
+
+**`Serial.setTxTimeoutMs(0)` non compilava**: sull'ESP32 classico la `Serial` è
+una UART vera, non la CDC USB, e quel metodo non esiste. Ora è dietro
+`#if ARDUINO_USB_CDC_ON_BOOT`, che era già la regola scritta in `CLAUDE.md` ma
+non applicata in questo sketch.
+
+**Compilazione** (la board DOIT non espone l'opzione `PartitionScheme`: è fissa
+a `default`, 1280 kB per app, con OTA):
+
+```
+arduino-cli compile --fqbn "esp32:esp32:esp32doit-devkit-v1" --libraries libraries projects/MeteoNode_C3
+```
+
+Occupazione: **87% della partizione app** (1.141.972 byte su 1.310.720). Ci sta,
+ma è stretto: se questo sketch cresce ancora, su questa board servirà una
+tabella delle partizioni su misura.
+
+**Risultati**: sensore riconosciuto subito (AHT20 a 0x38, BMP280 a **0x77**,
+chip ID 0x58), letture coerenti con l'altro nodo a pochi centimetri, ESP-NOW
+associato all'hub **immediatamente**, zero pacchetti persi. Vedi anche
+l'aggiornamento al "Limite noto" in `CLAUDE.md`: **il problema documentato
+riguardava l'hub S3, non l'ESP32 classico come nodo.**
+
+**Bug trovato grazie a questa prova** (`libraries/EspNowLink`): l'hub
+**non aggiornava mai nome e tipo di un peer dopo il primo messaggio**. La
+scheda aveva addosso `Link_Node_Demo` e si era associata come "TempTest"; dopo
+averla riprogrammata come nodo meteo, l'hub ha continuato a chiamarla TempTest
+**mostrando temperatura, umidità e pressione vere** — il modo peggiore di
+sbagliare, perché tutto sembra funzionare. Il tipo conta anche più del nome:
+la UI ci sceglie le unità di misura. Ora si aggiornano ad ogni messaggio, e
+quando cambiano viene riscritta anche la NVS.
+
 ### Fase 2 — hub `projects/MeteoHub_S3/`, pannello e-ink
 
 Valori a schermo, niente SD/web ancora. Valida GxEPD2 e il refresh parziale.
@@ -424,8 +658,12 @@ di radio a risveglio l'ordine di grandezza è **6–12 mesi** su una 18650 reale
   sopravvive al deep sleep, e mandare DATA diretto al risveglio, ricadendo su
   HELLO solo dopo N fallimenti. Oggi ripartirebbe da HELLO in broadcast ad ogni
   risveglio, con l'hub costretto a stare sempre in pairing mode;
-- l'**hub** deve persistere il registro peer in **NVS**: oggi vive solo in RAM e
-  un reboot perde tutti i nodi.
+- ~~l'**hub** deve persistere il registro peer in **NVS**~~ — **fatto il
+  2026-08-23** su `EnvNode_C3` `v7` (vedi la sezione dell'hub provvisorio).
+  Restano da riportare su `MeteoHub_S3` quando esisterà: `remote_nodes.*` è già
+  scritto per essere copiato, e le due funzioni che gli servono
+  (`Link_Hub_AddPeer()` / `Link_Hub_ForgetPeer()`) stanno nella libreria
+  condivisa, non nello sketch.
 
 **Canale ESP-NOW**: l'hub sta sul WiFi del router, quindi il canale glielo impone
 l'AP e tutti devono usare quello (`Link_InitEx` con il canale dell'AP, non

@@ -39,9 +39,12 @@ funzionale.
 
 Non usano nessuna di queste librerie: `examples/Diag_Hub/` e
 `examples/Diag_Node/` (diagnostica ESP-NOW su `esp_now.h` grezzo), il template
-**`starters/C3_OLED_OTA/`** e il progetto **`projects/EnvNode_C3/`**, che sono
-per un'altra scheda, e **`projects/Timelapse_XIAO/`**, che è sulla stessa
-scheda del nodo camera ma senza ESP-NOW. Vedi le rispettive sezioni.
+**`starters/C3_OLED_OTA/`**, che è per un'altra scheda, e
+**`projects/Timelapse_XIAO/`**, che è sulla stessa scheda del nodo camera ma
+senza ESP-NOW. **`projects/EnvNode_C3/`** non ne usava nessuna fino a `v3`, ma
+da `v4` include `EspNowLink` per fare da hub ai nodi a batteria: è su un'altra
+scheda rispetto alla board AMOLED, ma `EspNowLink` non è legata a una scheda.
+Vedi le rispettive sezioni.
 
 ---
 
@@ -385,8 +388,16 @@ qualunque altro `msg_type`/`node_type`) e si ferma al primo: non ci si
 "ri-accoppia" con un secondo hub.
 
 **`link_hub.cpp`** — ruolo hub:
-- `hub_on_new_peer()` accetta un HELLO da MAC sconosciuto **solo** se è
-  broadcast **e** `Link_Hub_SetPairingMode(true)` è attivo.
+- `hub_on_new_peer()` accetta un MAC sconosciuto solo mentre
+  `Link_Hub_SetPairingMode(true)` è attivo, e in **due** casi: un `HELLO` in
+  broadcast (nodo che cerca un hub) oppure un `DATA` in **unicast** (nodo che
+  si crede già associato, ma che l'hub ha perso a un riavvio — il registro sta
+  in RAM). Senza il secondo caso quel nodo resterebbe invisibile per sempre,
+  in modo silenzioso da entrambe le parti: l'ACK di ESP-NOW è di livello radio,
+  quindi il nodo conta i propri invii come riusciti mentre l'hub non vede
+  niente. Nel caso `DATA` il messaggio viene anche salvato in `lastData`, o la
+  prima lettura andrebbe persa (`onReceive()` non è stato chiamato per quel
+  pacchetto: il peer non esisteva ancora).
 - Il WELCOME **non parte mai da dentro il callback di ricezione** (gira nel task
   del driver WiFi e va tenuto breve, stessa regola dei callback LVGL): viene
   accodato con `welcomePending` e inviato da `Link_Hub_Poll()`, dal `loop()`. Il
@@ -983,10 +994,15 @@ riusarne i moduli (che sono già scritti per essere staccabili) in un nodo nuovo
 
 **Ruolo**: nodo di monitoraggio temperatura/umidità con log storico e interfaccia
 web. Cresciuto dallo starter C3 aggiungendo, nell'ordine: sensore, storage,
-orario vero, dashboard, configurazione persistente. ~2400 righe in 7 moduli.
+orario vero, dashboard, configurazione persistente e — da `v4` — il ruolo di
+**hub ESP-NOW** per i nodi a batteria della stazione meteo. ~2700 righe in 8
+moduli.
 
 **Catena**: DHT11 → media mobile (OLED) e dato grezzo (CSV) → riga in
 `/logs/YYYY-MM-DD.csv` sulla microSD → grafici e download dalla dashboard web.
+
+**Seconda catena** (da `v4`): nodo a batteria → DATA ESP-NOW → `remote_nodes` →
+pagina `/nodi` e `/api/nodi`. Nessun log su SD dei valori remoti, per ora.
 
 **Hardware** (diverso dallo starter, che ha solo l'OLED): OLED SSD1306 su
 SDA=GPIO5/SCL=GPIO6, DHT11 su GPIO0, microSD su modulo **HW-125 in SPI**
@@ -996,8 +1012,9 @@ pagina OLED, LED GPIO8 come heartbeat.
 
 **Dipendenze**: `Adafruit SSD1306`+`GFX`, `DHT sensor library`+`Adafruit Unified
 Sensor` (Library Manager); `WiFi`, `ESPmDNS`, `ArduinoOTA`, `WebServer`,
-`Update`, `SD`, `SPI`, `Preferences`, `time.h` (core). **Nessuna** libreria di
-`libraries/`. FQBN:
+`Update`, `SD`, `SPI`, `Preferences`, `time.h` (core); e **`EspNowLink` di
+`libraries/`** da `v4` — quindi la compilazione ora vuole `--libraries
+libraries`, che fino a `v3` non serviva. FQBN:
 `esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=min_spiffs`.
 
 #### `EnvNode_C3.ino`
@@ -1099,6 +1116,63 @@ versione in PROGMEM — è la via di recupero se quella caricata a mano è rotta
 duplica stato: legge direttamente `settings_get()`, `sd_logger.*`, `rtc_time.*`
 e `comfort_eval()`; i ganci `app_*()` implementati nel `.ino` coprono solo le
 letture correnti e i min/max dall'ultimo avvio, che vivono lì.
+
+Da `v4` ci sono anche `/nodi` (pagina, PROGMEM), `/api/nodi` e `/api/pairing`,
+che leggono `remote_nodes.*`. **La pagina dei nodi è deliberatamente separata
+dalla dashboard**: quella vera sta sulla SD e va ricaricata a mano dopo ogni
+modifica, quindi una funzione nuova che vive nel firmware resta raggiungibile
+anche con una `dashboard.html` vecchia o rotta. Stessa logica di
+`/dashboard-upload`. In `/api/stato` sono comparsi `nodi`, `nodi_online` e
+`pairing`, per quando la dashboard verrà aggiornata.
+
+**Trappola**: i float dei nodi remoti passano da `appendJsonFloat()`, che emette
+`null` per NaN/infinito. `String(NAN, 2)` produce `"nan"`, che non è JSON valido
+e farebbe fallire il parse dell'**intera** risposta — pagina vuota per colpa di
+un solo sensore guasto su un solo nodo. E i NaN arrivano davvero: un nodo che
+non riesce a leggere il proprio sensore trasmette lo stesso.
+
+#### `remote_nodes.h` / `remote_nodes.cpp`
+
+Ruolo hub ESP-NOW (da `v4`): riceve i DATA dei nodi a batteria, ne tiene lo
+stato in RAM (valori, cadenza, perdita di pacchetti, riavvii) e li dichiara
+"muti" quando smettono di parlare. Sopra `libraries/EspNowLink`. Niente log su
+SD e niente disegno: `web_ui` legge da qui, come già fa con gli altri moduli.
+
+**Da sapere**:
+
+- **canale `ESPNOW_LINK_CHANNEL_CURRENT` (0)**, mai un numero esplicito: questa
+  scheda sta su un AP, e forzare il canale su una STA connessa non serve o fa
+  danni. Con lo 0 i peer seguono l'AP da soli, anche se il WiFi si connette
+  dopo `remote_begin()`. È il motivo per cui funziona senza toccare il router —
+  al prezzo che tutti i nodi devono stare sul canale dell'AP, che `/api/nodi`
+  riporta apposta;
+- **si polla `Link_Hub_GetPeerInfo()` da `loop()`** invece di registrare una
+  `Link_OnMessage()`: la concorrenza col task del driver WiFi sta già dentro
+  `EspNowLink` (portMUX), così non ce n'è di propria da sincronizzare. Il poll
+  gira ogni millisecondi contro trasmissioni ogni minuti, e comunque un DATA
+  nuovo si riconosce dal salto di `seq`;
+- **il registro è persistito in NVS** (namespace `envnodi`, blob unico) con
+  **solo MAC, tipo e nome**: il MAC è l'identità vera, bruciata nel chip. Al
+  boot i nodi tornano nel driver via `Link_Hub_AddPeer()`, quindi i loro DATA
+  passano **anche a pairing chiuso**. I valori non si salvano di proposito
+  (mostrare una lettura vecchia come attuale è il guasto da evitare) e nemmeno
+  i contatori, che sono "da quando la scheda è accesa"; si scrive solo quando
+  il registro cambia, mai ad ogni pacchetto;
+- **la finestra di pairing si riapre da sola per 5 minuti ad ogni avvio**, ora
+  solo per i nodi non ancora in elenco;
+- `remote_forget()` (pulsante "Dimentica") toglie il nodo da libreria, RAM e
+  NVS: serve quando si sostituisce una scheda, o il MAC vecchio resterebbe in
+  elenco per sempre come nodo muto;
+- **la soglia di "muto" è osservata, non configurata**: si misura l'intervallo
+  fra un DATA e il successivo (media mobile; delta a cavallo di un riavvio del
+  nodo, o più lunghi di 6 h, non entrano nella media) e si dichiara muto dopo
+  ~2,5 intervalli, con clamp a [90 s, 2 h]. Il nodo decide la propria cadenza
+  dalla sua pagina, e duplicare quel valore qui sarebbe solo un modo per andare
+  fuori sincrono;
+- l'istante di ricezione è quello che registra la libreria, non `millis()` al
+  momento del poll: fra il callback e il giro di `loop()` può esserci una
+  scrittura su SD o una richiesta HTTP lenta, e un timestamp spostato in avanti
+  falserebbe sia la cadenza appresa sia l'ora mostrata in pagina.
 
 #### `www/dashboard.html`
 
