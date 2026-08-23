@@ -118,7 +118,17 @@ static void handleUpdateUpload() {
       break;
 
     case UPLOAD_FILE_ABORTED:
+      // Update.abort() NON e' opzionale: senza, l'oggetto Update resta
+      // "in corso" per sempre dopo un upload interrotto, e OGNI tentativo
+      // successivo fallisce in silenzio - begin() torna false, le write()
+      // non scrivono niente e end() da' errore, quindi la pagina risponde
+      // 500 "Aggiornamento fallito" anche con un file perfettamente valido.
+      // L'unico modo di uscirne sarebbe riavviare la scheda, che e'
+      // esattamente cio' che via rete non si puo' fare. Trovato sul serio
+      // il 2026-08-23 su MeteoNode_C3: un primo upload caduto a meta' ha
+      // reso il nodo impossibile da aggiornare via rete.
       s_updateInProgress = false;
+      Update.abort();
       break;
 
     default:
