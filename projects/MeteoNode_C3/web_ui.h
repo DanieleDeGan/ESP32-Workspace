@@ -85,6 +85,17 @@ struct app_snapshot_t {
   // configurazione corrente
   uint32_t intervallo_s;
   float    altitudine_m;
+
+  // ESP-NOW verso l'hub. Contatori e stato di associazione sono l'unico
+  // modo di accorgersi che la radio ha smesso di consegnare mentre tutto
+  // il resto della pagina sembra a posto: il sensore legge, i grafici si
+  // riempiono, e l'hub non riceve piu' niente.
+  bool        espnow_ok;        // ESP-NOW inizializzato
+  bool        espnow_paired;    // WELCOME dell'hub ricevuto
+  uint8_t     espnow_channel;   // canale reale: deve combaciare con l'hub
+  uint32_t    espnow_sent;      // DATA consegnati (con conferma)
+  uint32_t    espnow_failed;    // DATA falliti dopo tutti i ritentativi
+  const char* espnow_hub_mac;   // "-" finche' non associato
 };
 
 void app_get_snapshot(app_snapshot_t &out);

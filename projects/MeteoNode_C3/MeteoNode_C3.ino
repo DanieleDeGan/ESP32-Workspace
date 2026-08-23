@@ -83,13 +83,29 @@
 #include "web_ui.h"
 #include "rtc_time.h"
 #include "forecast.h"
+#include "hub_link.h"
 
 // Da incrementare a ogni firmware caricato: la pagina lo mostra, ed e' l'unico
 // modo per sapere da remoto quale versione sta davvero girando.
+//   v4  2026-08-23  stesso sketch anche su ESP32 "classico" (DOIT DevKit
+//                   v1): pin, nome nodo e guardia della Serial scelti a
+//                   compile-time dal tipo di chip
+//   v3  2026-08-23  invio ESP-NOW all'hub ad ogni ciclo di misura
+//                   (hub_link.*). Da qui in poi lo sketch usa
+//                   libraries/EspNowLink: compilare con --libraries libraries
 //   v2  2026-08-22  storico 24 h in RAM + grafici, previsione dal trend
 //                   barometrico a 3 ore, intervallo e altitudine da pagina web
 //   v1  2026-08-22  bring-up del sensore, web UI, OTA
-static const char FW_VERSION[] = "v2";
+static const char FW_VERSION[] = "v4";
+
+// Nome con cui il nodo si presenta all'hub. Massimo 16 caratteri (troncato
+// da EspNowLink): due nodi con lo stesso nome sarebbero indistinguibili
+// nella lista dell'hub, ed e' il motivo per cui dipende dal chip.
+#if defined(CONFIG_IDF_TARGET_ESP32)
+static const char NODE_NAME[] = "MeteoEsp32";
+#else
+static const char NODE_NAME[] = "MeteoNode";
+#endif
 
 // Trieste. Costante di compilazione e non impostazione, come in
 // Timelapse_XIAO: questa scheda non viaggia.
@@ -100,9 +116,30 @@ static const char TZ_POSIX[] = "CET-1CEST,M3.5.0,M10.5.0/3";
 // ---------------------------------------------------------------------------
 // Numeri GPIO, non le etichette D2/D3/D4: cosi' lo sketch compila anche con la
 // board generica "ESP32C3 Dev Module", che non definisce i D*.
+//
+// I pin dipendono dal chip, non dalla scheda: le due varianti supportate hanno
+// pinout incompatibili, e sceglierli a compile-time e' l'unico modo di tenere
+// UN solo firmware invece di due copie destinate a divergere al primo bugfix.
+//
+// Vincoli comuni a entrambe: il pin che alimenta il sensore deve essere
+// RTC-capable (serve a gpio_hold_en() quando arrivera' il deep sleep, o
+// durante il sonno tornerebbe flottante) e non deve essere di strapping.
+#if defined(CONFIG_IDF_TARGET_ESP32)
+// ESP32 "classico" (DOIT ESP32 DevKit v1 e simili).
+//
+// ATTENZIONE: i GPIO6-11 sono la FLASH SPI e non si toccano - cioe' proprio il
+// GPIO6 che sulla XIAO C3 fa da SDA. E' la ragione per cui questo blocco
+// esiste: gli stessi numeri, sull'altro chip, non sono liberi ma fatali.
+// Fuori uso anche GPIO0/2/12/15 (strapping) e GPIO34-39 (solo ingresso).
+static const uint8_t PIN_SCL        = 22;  // I2C di default sull'ESP32 classico
+static const uint8_t PIN_SENSOR_PWR = 26;  // RTC-capable, non strapping, libero
+static const uint8_t PIN_SDA        = 21;  // I2C di default
+#else
+// XIAO ESP32-C3 - cablaggio saldato il 2026-08-22.
 static const uint8_t PIN_SCL        = 4;   // D2
 static const uint8_t PIN_SENSOR_PWR = 5;   // D3
 static const uint8_t PIN_SDA        = 6;   // D4
+#endif
 
 // Partitore della batteria: 2x1 MOhm fra + cella e GND, presa centrale su
 // D1/GPIO3, piu' 100 nF verso massa. Non e' ancora cablato, quindi la lettura
@@ -110,7 +147,13 @@ static const uint8_t PIN_SDA        = 6;   // D4
 // peggio di un "non disponibile" onesto. Quando il partitore ci sara', basta
 // mettere questo a 1.
 #define BATTERY_ADC_ENABLED 0
+#if defined(CONFIG_IDF_TARGET_ESP32)
+// Sull'ESP32 classico l'ADC1 e' sui GPIO32-39; il 35 e' solo ingresso, che per
+// un partitore va benissimo. NON usare il GPIO3, che li' e' la RX della UART0.
+static const uint8_t PIN_BATTERY = 35;
+#else
 static const uint8_t PIN_BATTERY = 3;      // D1, ADC1: usabile col WiFi acceso
+#endif
 
 static const uint8_t ADDR_AHT20    = 0x38;
 static const uint8_t ADDR_BMP_LOW  = 0x76;  // il piu' comune sui moduli combo
@@ -613,6 +656,19 @@ static void readAndPrint() {
       sensorsRestart(F("troppe letture fallite di fila"));
     }
   }
+
+  // Trasmissione all'hub. Si manda ANCHE una lettura fallita, con NAN sui
+  // canali mancanti: "sono vivo ma il sensore non risponde" e' una
+  // informazione, il silenzio no - da fuori sarebbe indistinguibile da un
+  // nodo morto, che e' proprio cio' che l'hub sta cercando di riconoscere.
+  // Non fa niente finche' non si e' associati, quindi niente da proteggere
+  // con un if. Attenzione: puo' trattenere loop() fino a ~1 s quando l'hub
+  // non risponde (ritentativi di EspNowLink), accettabile a questa cadenza.
+  const float battV = readBatteryV();
+  hub_send_measure(ahtRead ? tAht : NAN,
+                   ahtRead ? rh   : NAN,
+                   bmpRead ? hPa  : NAN,
+                   isnan(battV) ? 0 : (uint16_t)(battV * 1000.0f));
 }
 
 // ---------------------------------------------------------------------------
@@ -648,6 +704,13 @@ void app_get_snapshot(app_snapshot_t &out) {
 
   out.intervallo_s = s_intervalloS;
   out.altitudine_m = s_altitudineM;
+
+  out.espnow_ok      = hub_ready();
+  out.espnow_paired  = hub_paired();
+  out.espnow_channel = hub_channel();
+  out.espnow_sent    = hub_sent_ok();
+  out.espnow_failed  = hub_sent_fail();
+  out.espnow_hub_mac = hub_hub_mac();
 }
 
 // ---------------------------------------------------------------------------
@@ -820,7 +883,13 @@ void setup() {
   // mentre da monitor seriale collegato le stesse identiche operazioni
   // erano istantanee e pulite. Sembrava un problema di web server; era la
   // Serial che, senza un lettore, si portava dietro tutto il resto.
+  // Solo sulle board con USB nativa: li' Serial e' la CDC del chip e senza un
+  // host che svuoti il buffer le print() bloccano. Sull'ESP32 "classico" la
+  // Serial e' una UART vera, che quel metodo non ce l'ha proprio - senza
+  // questa guardia lo sketch non compilerebbe nemmeno per la DOIT.
+#if ARDUINO_USB_CDC_ON_BOOT
   Serial.setTxTimeoutMs(0);
+#endif
 
   const uint32_t t0 = millis();
   while (!Serial && millis() - t0 < 3000) delay(10);   // CDC: aspetta il monitor
@@ -860,6 +929,10 @@ void setup() {
     Serial.println(F("WiFi non connesso: ritento in background, il sensore intanto lavora."));
   }
 
+  // ESP-NOW dopo net_begin(): il canale dipende dall'essere connessi o meno
+  // all'AP (vedi hub_link.h). Non blocca e non e' fatale se fallisce.
+  hub_begin(NODE_NAME);
+
   printHelp();
 }
 
@@ -867,6 +940,7 @@ void loop() {
   net_loop();          // ArduinoOTA + richieste web: a OGNI giro, o l'OTA muore
   runPendingCmd();     // dopo net_loop(): la risposta HTTP e' gia' partita
   handleSerial();
+  hub_loop();          // ESP-NOW: HELLO finche' non associato all'hub
 
   // NTP a OGNI riconnessione, non solo alla prima: un nodo che riprende la
   // rete dopo ore altrimenti resterebbe con l'orologio alla deriva, e con lui

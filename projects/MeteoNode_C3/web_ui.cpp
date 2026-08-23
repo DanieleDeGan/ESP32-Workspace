@@ -160,7 +160,9 @@ svg{width:100%;height:110px;display:block;overflow:visible}
 <tr><td>Orario</td><td id="ora">&mdash;</td></tr>
 <tr><td>Indirizzo IP</td><td id="ip">&mdash;</td></tr>
 <tr><td>Segnale WiFi</td><td id="rs">&mdash;</td></tr>
-<tr><td>Canale (sara' quello ESP-NOW)</td><td id="ch">&mdash;</td></tr>
+<tr><td>Canale (anche ESP-NOW)</td><td id="ch">&mdash;</td></tr>
+<tr><td>ESP-NOW</td><td id="en">&mdash;</td></tr>
+<tr><td>DATA inviati / falliti</td><td id="ent">&mdash;</td></tr>
 <tr><td>Acceso da</td><td id="up">&mdash;</td></tr>
 <tr><td>RAM libera</td><td id="hp">&mdash;</td></tr>
 </table></div>
@@ -306,6 +308,12 @@ function aggiorna(){
     si('ip', d.ip);
     si('rs', d.rssi+' dBm', d.rssi<-80?'warn':'');
     si('ch', d.canale);
+    // Il canale ESP-NOW deve combaciare con quello dell'AP: se diverge, il
+    // pairing non parte e da fuori sembra un problema di portata.
+    if(!d.espnow_ok)          si('en','non attivo','ko');
+    else if(!d.espnow_paired) si('en',"in cerca dell'hub (canale "+d.espnow_canale+")",'warn');
+    else                      si('en','associato a '+d.espnow_hub+' (canale '+d.espnow_canale+')','ok');
+    si('ent', d.espnow_inviati+' / '+d.espnow_falliti, d.espnow_falliti?'warn':'');
     si('up', durata(d.uptime));
     si('hp', Math.round(d.heap/1024)+' kB');
 
@@ -394,7 +402,7 @@ static void handleStato() {
   rtctime_format(rtctime_now(), "%Y-%m-%d %H:%M:%S", ora, sizeof(ora));
 
   String j;
-  j.reserve(900);
+  j.reserve(1050);
   j += F("{\"fw\":\"");          j += app_fw_version();      j += F("\"");
   j += F(",\"powered\":");       j += s.powered ? F("true") : F("false");
   j += F(",\"aht_ok\":");        j += s.aht_ok ? F("true") : F("false");
@@ -428,6 +436,12 @@ static void handleStato() {
   j += F(",\"ip\":\"");          j += net_ip();              j += F("\"");
   j += F(",\"rssi\":");          j += net_rssi();
   j += F(",\"canale\":");        j += net_channel();
+  j += F(",\"espnow_ok\":");     j += s.espnow_ok ? F("true") : F("false");
+  j += F(",\"espnow_paired\":"); j += s.espnow_paired ? F("true") : F("false");
+  j += F(",\"espnow_canale\":"); j += s.espnow_channel;
+  j += F(",\"espnow_inviati\":");j += s.espnow_sent;
+  j += F(",\"espnow_falliti\":");j += s.espnow_failed;
+  j += F(",\"espnow_hub\":\"");  j += s.espnow_hub_mac;    j += F("\"");
   j += F(",\"uptime\":");        j += millis() / 1000;
   j += F(",\"heap\":");          j += ESP.getFreeHeap();
   j += F("}");
