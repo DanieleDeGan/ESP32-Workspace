@@ -123,6 +123,17 @@ svg{width:100%;height:110px;display:block;overflow:visible}
 
 <div class="card"><h2>Impostazioni</h2>
   <div class="riga">
+    <label for="nm">Nome del nodo (1&ndash;16: lettere, cifre, - e _)</label>
+    <input type="text" id="nm" maxlength="16">
+    <button onclick="salvaNome()">Salva</button>
+  </div>
+  <div class="nota">E' anche la CARTELLA in cui l'hub scrive il CSV di questo
+  nodo: due schede con lo stesso nome scrivono nello stesso file. Se non lo
+  imposti, il nome viene dal MAC (<code>Meteo-XXXXXX</code>) e resta unico da
+  solo. Rinominando un nodo gia' associato non lo si perde &mdash; per l'hub
+  l'identita' e' il MAC &mdash; ma da li' in poi il suo storico prosegue in
+  una cartella nuova.</div>
+  <div class="riga">
     <label for="iv">Intervallo di misurazione (2&ndash;3600 s)</label>
     <input type="number" id="iv" min="2" max="3600" step="1">
     <button onclick="salvaIntervallo()">Salva</button>
@@ -348,6 +359,7 @@ function aggiorna(){
     // I campi non si riscrivono se l'utente li sta modificando, o gli si
     // cancellerebbe quello che sta digitando sotto le dita.
     if(!cfgTocca){
+      document.getElementById('nm').value = d.nodo || '';
       document.getElementById('iv').value = d.intervallo_s;
       document.getElementById('al').value = Math.round(d.altitudine_m);
     }
@@ -356,7 +368,7 @@ function aggiorna(){
   });
 }
 
-['iv','al','cal'].forEach(function(id){
+['nm','iv','al','cal'].forEach(function(id){
   document.getElementById(id).addEventListener('focus',function(){cfgTocca=true;});
   document.getElementById(id).addEventListener('blur', function(){cfgTocca=false;});
 });
@@ -368,6 +380,7 @@ function cfg(q,ok){
                        cfgTocca=false; setTimeout(aggiorna,300); })
     .catch(function(){ document.getElementById('cfgmsg').textContent='non riuscito'; });
 }
+function salvaNome(){ cfg('nome='+encodeURIComponent(document.getElementById('nm').value)); }
 function salvaIntervallo(){ cfg('intervallo='+document.getElementById('iv').value); }
 function salvaAltitudine(){ cfg('altitudine='+document.getElementById('al').value); }
 function calibra(){
@@ -432,6 +445,7 @@ static void handleStato() {
   String j;
   j.reserve(1200);
   j += F("{\"fw\":\"");          j += app_fw_version();      j += F("\"");
+  j += F(",\"nodo\":\"");        j += app_node_name();       j += F("\"");
   j += F(",\"powered\":");       j += s.powered ? F("true") : F("false");
   j += F(",\"aht_ok\":");        j += s.aht_ok ? F("true") : F("false");
   j += F(",\"bmp_ok\":");        j += s.bmp_ok ? F("true") : F("false");
@@ -551,6 +565,16 @@ static void handleConfig() {
   if (!authOk()) return;
   WebServer &sv = net_server();
 
+  if (sv.hasArg("nome")) {
+    if (app_set_nome(sv.arg("nome").c_str())) {
+      sv.send(200, F("text/plain; charset=utf-8"),
+              String(F("nome: ")) + app_node_name());
+    } else {
+      sv.send(400, F("text/plain; charset=utf-8"),
+              F("nome non valido (1-16 caratteri: lettere, cifre, - e _)"));
+    }
+    return;
+  }
   if (sv.hasArg("intervallo")) {
     const uint32_t v = (uint32_t)sv.arg("intervallo").toInt();
     if (app_set_intervallo_s(v)) {

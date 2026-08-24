@@ -105,6 +105,14 @@ void app_get_snapshot(app_snapshot_t &out);
 // ---------------------------------------------------------------------
 // Ogni setter valida, persiste in NVS e aggiorna la copia in RAM; torna
 // false senza toccare niente se il valore e' fuori range.
+// Nome del nodo: e' anche la CARTELLA in cui l'hub scrive il suo CSV, quindi
+// due schede omonime finiscono a scrivere nello stesso file. Il default lo
+// deriva dal MAC proprio per rendere impossibile quella collisione; questo
+// setter serve a dargli un nome parlante ("Cantina", "Esterno").
+// Ammessi 1..16 caratteri fra lettere, cifre, '-' e '_'.
+const char* app_node_name();
+bool app_set_nome(const char* nome);
+
 bool app_set_intervallo_s(uint32_t secondi);
 bool app_set_altitudine_m(float metri);
 

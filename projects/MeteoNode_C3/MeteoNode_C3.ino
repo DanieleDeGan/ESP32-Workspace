@@ -81,6 +81,7 @@
 #include <Wire.h>
 #include <Preferences.h>
 #include <esp_system.h>   // esp_reset_reason(): perche' la scheda e' ripartita
+#include <esp_mac.h>      // esp_read_mac(): il nome del nodo deriva dal MAC
 #include <esp_sleep.h>    // deep sleep fra una misura e l'altra
 #include <WiFi.h>         // idem: la radio si spegne da qui prima del sonno
 #include <esp_wifi.h>     // esp_wifi_stop()/deinit() prima di dormire, vedi vaiADormire()
@@ -97,6 +98,11 @@
 
 // Da incrementare a ogni firmware caricato: la pagina lo mostra, ed e' l'unico
 // modo per sapere da remoto quale versione sta davvero girando.
+//   v11 2026-08-24  il nome del nodo lo deriva dal MAC (Meteo-XXXXXX) se non
+//                   ne e' stato impostato uno dalla pagina: due schede
+//                   flashate con lo stesso firmware non possono piu'
+//                   collidere per una dimenticanza, e il nome e' anche la
+//                   cartella in cui l'hub scrive il CSV di questo nodo
 //   v10 2026-08-24  tiene il VDD del sensore inchiodato basso durante il
 //                   sonno (gpio_hold_en): senza, il pin tornava flottante e
 //                   il modulo restava mezzo alimentato dai diodi di
@@ -128,16 +134,74 @@
 //   v2  2026-08-22  storico 24 h in RAM + grafici, previsione dal trend
 //                   barometrico a 3 ore, intervallo e altitudine da pagina web
 //   v1  2026-08-22  bring-up del sensore, web UI, OTA
-static const char FW_VERSION[] = "v10";
+static const char FW_VERSION[] = "v11";
 
-// Nome con cui il nodo si presenta all'hub. Massimo 16 caratteri (troncato
-// da EspNowLink): due nodi con lo stesso nome sarebbero indistinguibili
-// nella lista dell'hub, ed e' il motivo per cui dipende dal chip.
+// ---------------------------------------------------------------------
+//  Nome del nodo
+// ---------------------------------------------------------------------
+// Massimo 16 caratteri (li tronca EspNowLink). Non e' un'etichetta
+// decorativa: l'hub ci fa la CARTELLA su microSD in cui scrive il CSV di
+// questo nodo, quindi due schede con lo stesso nome finiscono a scrivere
+// nello stesso file, mescolando le letture di due posti diversi. Restano
+// distinguibili solo dalla colonna mac, ma grafici, trend e download le
+// vedrebbero mischiate.
+//
+// Tre livelli, dal piu' forte al piu' debole:
+//   1. quello impostato dalla pagina web, persistito in NVS;
+//   2. NODE_NAME_FISSO, se non e' vuoto;
+//   3. derivato dal MAC: "Meteo-XXXXXX".
+//
+// Il terzo livello e' il motivo di tutto questo: due schede identiche
+// flashate con lo stesso firmware non possono piu' collidere per una
+// dimenticanza. Il MAC e' bruciato nel chip, quindi il nome e' stabile fra
+// un riavvio e l'altro e attraverso il deep sleep, e si legge con
+// esp_read_mac() dall'eFuse - senza bisogno che il WiFi sia acceso, cosa
+// che al risveglio non e' mai vera.
+//
+// NODE_NAME_FISSO resta valorizzato solo dove serve la continuita' con una
+// scheda gia' in funzione, che ha il suo storico in una cartella con quel
+// nome sull'hub. Per l'ESP32 "classico" (un esemplare solo, gia' installato)
+// vale la pena; per la XIAO C3, che e' la board che si replica, no.
 #if defined(CONFIG_IDF_TARGET_ESP32)
-static const char NODE_NAME[] = "MeteoEsp32";
+static const char NODE_NAME_FISSO[] = "MeteoEsp32";
 #else
-static const char NODE_NAME[] = "MeteoNode";
+static const char NODE_NAME_FISSO[] = "";
 #endif
+
+static char s_nome[17] = "";
+
+static const char* nodeName() {
+  if (s_nome[0]) return s_nome;
+
+  if (NODE_NAME_FISSO[0]) {
+    strncpy(s_nome, NODE_NAME_FISSO, sizeof(s_nome) - 1);
+    s_nome[sizeof(s_nome) - 1] = '\0';
+    return s_nome;
+  }
+
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  snprintf(s_nome, sizeof(s_nome), "Meteo-%02X%02X%02X", mac[3], mac[4], mac[5]);
+  return s_nome;
+}
+
+// Un nome valido e' 1..16 caratteri fra lettere, cifre, '-' e '_': niente
+// spazi, niente accenti, niente '/' o '.'. Non e' pignoleria - questo nome
+// diventa un percorso sulla microSD dell'hub, e l'hub lo sanifica gia' per
+// conto suo (sd_node_dir_name), ma un nome che li' viene riscritto a meta'
+// e' un nome che poi non si ritrova.
+static bool nomeValido(const char* n) {
+  if (n == nullptr) return false;
+  const size_t len = strlen(n);
+  if (len == 0 || len > 16) return false;
+  for (const char* p = n; *p; p++) {
+    const char c = *p;
+    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '-' || c == '_';
+    if (!ok) return false;
+  }
+  return true;
+}
 
 // Trieste. Costante di compilazione e non impostazione, come in
 // Timelapse_XIAO: questa scheda non viaggia.
@@ -375,6 +439,16 @@ static void settingsLoad() {
   s_sleepOn     = p.getBool("sleep", false);
   s_wakeTot     = p.getULong("w_tot", 0);
   s_wakeOk      = p.getULong("w_ok", 0);
+
+  // Il nome impostato a mano vince su tutto. Se la chiave non c'e' o il
+  // valore non e' valido, s_nome resta vuoto e nodeName() ricade sul fisso
+  // o sul MAC.
+  char nome[17] = "";
+  p.getString("nome", nome, sizeof(nome));
+  if (nomeValido(nome)) {
+    strncpy(s_nome, nome, sizeof(s_nome) - 1);
+    s_nome[sizeof(s_nome) - 1] = '\0';
+  }
   p.end();
 
   if (s_intervalloS < INTERVALLO_MIN_S || s_intervalloS > INTERVALLO_MAX_S) {
@@ -960,6 +1034,29 @@ const char* app_reset_reason() {
 uint32_t app_boot_count() { return s_bootCount; }
 
 bool     app_sleep_enabled() { return s_sleepOn; }
+
+const char* app_node_name() { return nodeName(); }
+
+// Rinominare un nodo GIA' associato non lo fa sparire dall'hub: l'identita'
+// li' e' il MAC, e l'anagrafica viene aggiornata al primo messaggio col nome
+// nuovo. Cambia pero' la cartella in cui l'hub scrive il CSV, quindi lo
+// storico prosegue in un'altra cartella e quello vecchio resta dov'e'.
+bool app_set_nome(const char* nome) {
+  if (!nomeValido(nome)) return false;
+  if (strcmp(nome, nodeName()) == 0) return true;   // niente da scrivere
+
+  strncpy(s_nome, nome, sizeof(s_nome) - 1);
+  s_nome[sizeof(s_nome) - 1] = '\0';
+
+  Preferences p;
+  if (p.begin("meteonode", false)) {
+    p.putString("nome", s_nome);
+    p.end();
+  }
+  Serial.printf("[nodo] ora mi chiamo \"%s\"\n", s_nome);
+  return true;
+}
+
 uint32_t app_wake_count()    { return s_wakeTot; }
 uint32_t app_wake_ok_count() { return s_wakeOk; }
 
@@ -1195,7 +1292,7 @@ static void cicloRisveglio() {
   // attesa del WELCOME. Si passa dritti al DATA.
   bool pronto = false;
   if (s_rtcHubMacOk) {
-    pronto = hub_resume(NODE_NAME, s_rtcChannel, s_rtcHubMac);
+    pronto = hub_resume(nodeName(), s_rtcChannel, s_rtcHubMac);
   }
 
   // Seconda strada: il pairing classico. Serve la primissima volta, e ogni
@@ -1204,7 +1301,7 @@ static void cicloRisveglio() {
   // LinkPeer::onReceive() gestisce apposta il peer noto che ha perso il
   // proprio stato - senza quello, un nodo che dorme non rientrerebbe mai.
   if (!pronto) {
-    hub_begin_ex(NODE_NAME, s_rtcChannel);
+    hub_begin_ex(nodeName(), s_rtcChannel);
     const uint32_t t0 = millis();
     while (!hub_paired() && millis() - t0 < PAIRING_MS) {
       hub_loop();
@@ -1342,7 +1439,7 @@ void setup() {
 
   // ESP-NOW dopo net_begin(): il canale dipende dall'essere connessi o meno
   // all'AP (vedi hub_link.h). Non blocca e non e' fatale se fallisce.
-  hub_begin(NODE_NAME);
+  hub_begin(nodeName());
 
   printHelp();
 }
