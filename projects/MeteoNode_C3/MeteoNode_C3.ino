@@ -1,11 +1,15 @@
 /*
  * MeteoNode_C3 - nodo sensore della stazione meteo e-ink (Seeed XIAO ESP32-C3)
  * ---------------------------------------------------------------------------
- * STATO: bring-up del sensore, con WiFi + pagina web + OTA per poterlo provare
- * SENZA cavo USB, anche a batteria. Della Fase 1 vera manca ancora l'ESP-NOW
- * verso l'hub; deep sleep e partitore della batteria sono di Fase 4 e qui non
- * ci sono. Questo sketch serve a dimostrare quattro cose prima di costruirci
- * sopra, esattamente come MeteoHub_S3 ha fatto col pannello:
+ * STATO: nodo completo e in funzione a batteria - sensore, WiFi + pagina web
+ * + OTA per poterlo seguire SENZA cavo USB, invio ESP-NOW all'hub e deep sleep
+ * fra una misura e l'altra (Fase 4). Della Fase 4 manca solo il partitore
+ * della batteria, che e' hardware non ancora cablato: battery_mv resta 0 e
+ * non c'e' cutoff di fine scarica.
+ *
+ * Il bring-up da cui nasce e' rimasto tutto dentro, e serve ancora: sono le
+ * quattro cose che questo sketch dimostra prima che ci si costruisca sopra,
+ * esattamente come MeteoHub_S3 ha fatto col pannello:
  *
  *   1. che le saldature tengono (scansione I2C, non "il sensore non va");
  *   2. che i due chip sul modulo sono quelli che crediamo (legge il chip ID
@@ -81,6 +85,7 @@
 #include <WiFi.h>         // idem: la radio si spegne da qui prima del sonno
 #include <esp_wifi.h>     // esp_wifi_stop()/deinit() prima di dormire, vedi vaiADormire()
 #include <esp_now.h>      // esp_now_deinit(): idem, va smontato prima del sonno
+#include <driver/gpio.h>  // gpio_hold_en(): tiene giu' il VDD del sensore nel sonno
 #include <Adafruit_AHTX0.h>
 #include <Adafruit_BMP280.h>
 
@@ -92,6 +97,11 @@
 
 // Da incrementare a ogni firmware caricato: la pagina lo mostra, ed e' l'unico
 // modo per sapere da remoto quale versione sta davvero girando.
+//   v10 2026-08-24  tiene il VDD del sensore inchiodato basso durante il
+//                   sonno (gpio_hold_en): senza, il pin tornava flottante e
+//                   il modulo restava mezzo alimentato dai diodi di
+//                   protezione. Invisibile nei dati, si paga in autonomia.
+//                   Cadenza di default riportata a 300 s
 //   v9  2026-08-23  porta il seq ESP-NOW attraverso il sonno. Senza, ogni
 //                   risveglio ripartiva da seq=0 e l'hub scartava i DATA
 //                   come doppioni: 19 risvegli, 19 invii confermati dal
@@ -118,7 +128,7 @@
 //   v2  2026-08-22  storico 24 h in RAM + grafici, previsione dal trend
 //                   barometrico a 3 ore, intervallo e altitudine da pagina web
 //   v1  2026-08-22  bring-up del sensore, web UI, OTA
-static const char FW_VERSION[] = "v9";
+static const char FW_VERSION[] = "v10";
 
 // Nome con cui il nodo si presenta all'hub. Massimo 16 caratteri (troncato
 // da EspNowLink): due nodi con lo stesso nome sarebbero indistinguibili
@@ -335,7 +345,14 @@ static void trackMinMax(float v, float &mn, float &mx) {
 // scrive solo quando l'utente cambia davvero un valore dalla pagina.
 static const uint32_t INTERVALLO_MIN_S     = 2;
 static const uint32_t INTERVALLO_MAX_S     = 3600;
-static const uint32_t INTERVALLO_DEFAULT_S = 60;
+// 300 s e' la cadenza di progetto (docs/Stazione-Meteo.md): con un nodo che
+// dorme, l'intervallo E' anche la durata del sonno, quindi questo numero da
+// solo decide l'autonomia. I 60 s con cui e' girata la prima notte erano un
+// valore da banco di prova, tenuto per vedere subito se i pacchetti
+// arrivavano. NB: e' solo il DEFAULT - un nodo gia' in funzione ha il suo
+// valore in NVS e continua a usare quello finche' non lo si cambia dalla
+// pagina.
+static const uint32_t INTERVALLO_DEFAULT_S = 300;
 
 // Trieste. E' una STIMA da calibrare, non un dato: conta circa 1 hPa ogni 8 m,
 // quindi sbagliarla di 50 m sposta la pressione di 6 hPa e rende il confronto
@@ -517,6 +534,14 @@ static void aggiornaTrend() {
 // tale e quale al deep sleep di Fase 4: meglio averla giusta da subito.
 static void sensorPower(bool on) {
   if (on) {
+    // Se veniamo da un deep sleep questo pin e' ancora INCHIODATO basso
+    // dall'hold messo in vaiADormire(). Finche' non lo si rilascia,
+    // pinMode()/digitalWrite() non hanno alcun effetto: il sensore non si
+    // accende, l'I2C non risponde e sembra un guasto di saldatura. Va fatto
+    // qui e non nel setup(), perche' il percorso di risveglio (cicloRisveglio())
+    // il setup() non lo esegue.
+    gpio_hold_dis((gpio_num_t)PIN_SENSOR_PWR);
+    gpio_deep_sleep_hold_dis();
     pinMode(PIN_SENSOR_PWR, OUTPUT);
     digitalWrite(PIN_SENSOR_PWR, HIGH);
     delay(SENSOR_BOOT_MS);
@@ -1093,6 +1118,26 @@ static void vaiADormire() {
   Serial.flush();   // con la CDC il log si butta se nessuno legge: qui si aspetta
 
   sensorPower(false);   // giu' il VDD del sensore prima di spegnere tutto
+
+  // ...e ora inchiodalo li'. Entrando nel deep sleep un GPIO perde il suo
+  // stato di uscita e torna flottante: il modulo del sensore resta "mezzo
+  // acceso" attraverso i diodi di protezione dei suoi piedini, ed e' la
+  // stessa alimentazione parassita che sensorPower(false) evita gia' per SDA
+  // e SCL. Senza questo si perde buona parte del risparmio del sonno.
+  //
+  // Il guasto NON si vede nei dati: le misure restano giuste, i pacchetti
+  // arrivano tutti, il nodo sembra perfetto. Si vede solo con un amperometro
+  // in serie, o come autonomia piu' corta del previsto - ed e' per questo che
+  // e' rimasto invisibile per una notte intera di funzionamento senza un
+  // pacchetto perso (20,4 h, 1212 DATA, zero buchi: 2026-08-24).
+  //
+  // Il pin e' stato scelto RTC-capable apposta (GPIO5 sulla XIAO C3, GPIO26
+  // sull'ESP32 classico): l'hold di un RTC GPIO lo tiene il dominio RTC, che
+  // nel deep sleep resta alimentato. gpio_deep_sleep_hold_en() e' la
+  // controparte per i pin digitali normali - qui non serve, ma tiene la
+  // coppia esplicita e simmetrica al rilascio in sensorPower(true).
+  gpio_hold_en((gpio_num_t)PIN_SENSOR_PWR);
+  gpio_deep_sleep_hold_en();
 
   // La radio va SMONTATA esplicitamente, non lasciata accesa a
   // esp_deep_sleep_start(), e in tre passi: deinit di ESP-NOW, stop del WiFi,
