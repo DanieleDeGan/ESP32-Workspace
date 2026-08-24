@@ -842,6 +842,105 @@ di pagine con tipo/layout/attiva/durata, e i tre comandi dell'interfaccia
 Astrazione "pagina" (elenco + callback di disegno), cambio con il tasto BOOT
 oppure da web. Il cambio pagina è sempre un refresh completo.
 
+### Fase 7 — configurare i nodi dall'hub (idea del 2026-08-24, da fare dopo `MeteoHub_S3`)
+
+**L'idea**: l'utente apre la UI dell'hub, imposta la cadenza di un nodo (o delle
+fasce orarie con cadenze diverse), e il nodo la riceve **al suo prossimo
+risveglio**, senza toccarlo. Oggi per cambiare quel numero bisogna staccare la
+batteria, aspettare la finestra di veglia e usare la pagina del nodo — cioè
+l'unica cosa che il deep sleep rende difficile è proprio configurarlo.
+
+**Rimandata di proposito a dopo `MeteoHub_S3`**: la UI dove vivono queste
+impostazioni è quella dell'hub vero, e costruirla ora su `EnvNode_C3` — che fa
+da hub *provvisorio* — vorrebbe dire scriverla due volte.
+
+**L'ACK di ESP-NOW NON può portare i settings.** È di livello MAC: lo genera il
+driver, e ciò che arriva all'applicazione (`onSent()`) è solo consegnato/non
+consegnato. Serve un COMMAND separato, con il nodo che resta in ascolto una
+finestra dopo aver mandato il DATA. Per l'utente è identico; per il nodo no,
+perché quella finestra è radio in RX.
+
+**Il protocollo non va toccato**, ed è la ragione per cui la cosa è fattibile a
+poco prezzo: in un COMMAND i tre `value[]` sono liberi (servono a
+temperatura/umidità/pressione solo nei DATA), quindi `value[0]` = secondi di
+sonno e ne restano due. Importante che basti: `link_peer.cpp:28` valida con
+`len != sizeof(link_message_t)`, quindi allargare la struct farebbe scartare i
+pacchetti da ogni firmware non aggiornato — il nodo camera compreso.
+
+**Cosa manca davvero** (poco):
+
+1. `hub_link.cpp:19` sul nodo scarta tutto ciò che non è WELCOME: va accettato
+   anche COMMAND (copiare e basta — quel callback gira sul task del driver WiFi).
+2. `cicloRisveglio()` va a `vaiADormire()` subito dopo l'invio
+   (`MeteoNode_C3.ino:1264`): la finestra di ascolto va in mezzo.
+3. Lato hub, una coda "comando pendente per questo MAC" svuotata da
+   `remote_loop()` — **mai** dal callback di ricezione (stessa regola del
+   WELCOME, vedi `CLAUDE.md`).
+
+`Link_Hub_SendCommand()` (`link_hub.cpp:288`) esiste già e funziona.
+
+**Il costo è energetico, e decide il disegno.** Ordini di grandezza per ciclo,
+con la veglia **misurata** (0,68 s il 2026-08-24) e le correnti **stimate, mai
+misurate** (~70 mA in veglia/RX, ~44 µA dormendo), cadenza 300 s:
+
+| | carica per ciclo | sul totale |
+|---|---|---|
+| veglia attuale (0,68 s) | ~47,6 mAs | 78 % |
+| sonno (300 s) | ~13,2 mAs | 22 % |
+| **finestra RX di 300 ms, ogni ciclo** | **+21 mAs** | **+34 %** → autonomia −26 % |
+| finestra RX 1 ciclo su 12 (~1 h) | +1,75 mAs | +2,9 % |
+| finestra RX 1 ciclo su 288 (~1 giorno) | +0,07 mAs | +0,12 % |
+
+Da leggere così: **ascoltare ad ogni ciclo è insostenibile**, ma già una volta
+all'ora recupera il 97 % del risparmio possibile. Passare da un'ora a un giorno
+recupera l'ultimo 3 % **pagandolo 24 volte in attesa**. Quindi la scelta
+ragionevole è **raro e lungo** — una finestra generosa, presa di rado — con
+default intorno all'ora, non al giorno. L'urgenza ha già la sua strada: il
+power-cycle, che apre 5 minuti di veglia con WiFi e OTA.
+
+**Nessuno dei due lati deve sincronizzarsi**, ed è la parte elegante: l'hub
+tiene il comando in coda e lo rispedisce ad ogni DATA finché non risulta
+applicato; quasi tutti quei tentativi cadono nel vuoto perché il nodo dorme già,
+ma **il costo di provare sta tutto dalla parte alimentata a muro**. Attenzione a
+usare l'invio semplice e non `sendReliable()` per questi tentativi: 3 ritentativi
+x 300 ms sono fino a 900 ms bloccanti nel `loop()` di un hub che ha il
+WebServer sincrono.
+
+**Le fasce orarie stanno TUTTE sull'hub**, e il nodo non deve sapere che ora è:
+l'hub, che ha NTP, calcola "quanto devi dormire adesso" e manda un numero.
+Niente fuso, niente ora legale, nessuna tabella da portare attraverso il sonno
+in RTC memory — tutte cose fragili su un nodo il cui orologio è una stima che il
+power-cycle azzera. Conseguenza pratica: **la Fase 7 si può fare in due passi**,
+e il secondo non tocca il firmware del nodo. Prima il comando one-shot "cambia
+cadenza"; poi le fasce, che sono solo logica sull'hub.
+
+**Le trappole da mettere in conto**:
+
+- **Chi comanda?** Oggi la cadenza si imposta anche dalla pagina del nodo. Con
+  due padroni si va fuori sincrono di sicuro: o l'hub è la fonte di verità e la
+  pagina del nodo diventa di sola lettura, o il nodo ha un flag "segui l'hub"
+  visibile da entrambe le parti.
+- **NVS**: il valore ricevuto si scrive **solo se cambia**, o si scrive la flash
+  ad ogni ciclo. Il valore attivo sta in RTC memory, che è dove il risveglio lo
+  legge.
+- **Una cadenza lunga è un semi-brick**: se l'hub dice 3600 s, per correggere si
+  aspetta un'ora. Il clamp c'è già (`INTERVALLO_MIN_S`/`MAX_S`, 2..3600) e la
+  via di rientro pure, ma la UI deve dire chiaramente che si sta scegliendo
+  anche quanto ci vorrà a cambiare idea. Vale doppio per il "1 ciclo su N": se
+  N arriva a sua volta per comando, sbagliarlo si paga N cicli.
+- **Hub assente o sostituito**: il nodo conserva l'ultimo valore e continua. Non
+  deve esistere uno stato "aspetto istruzioni".
+- **Conferma**: l'hub misura già la cadenza reale dei nodi (media mobile,
+  `remote_nodes.cpp:218`), quindi vede da sé quando un nodo cambia passo — ma ci
+  mette ~4 cicli. Finché non c'è un ack esplicito, la UI deve mostrare "in
+  attesa di conferma" e non fingere che il comando sia immediato.
+
+**Nota sui termini**: sul nodo **non esiste un tempo di veglia da configurare**.
+La veglia dura quanto serve (0,68 s misurati) e finisce da sola; l'unico
+parametro è il periodo. L'unica veglia configurabile è quella dei 5 minuti con
+WiFi/OTA dopo un'accensione vera (`VEGLIA_MS`), che è la via di recupero e
+conviene lasciare com'è.
+
 ## Web UI dell'hub — specifica in lavorazione
 
 > **Work in progress.** Questa sezione è una bozza aperta, scritta il 2026-08-21
