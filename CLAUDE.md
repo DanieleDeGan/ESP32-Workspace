@@ -646,7 +646,8 @@ SSD1306 + dashboard web con grafici + orario NTP + OTA. Moduli:
 | `sd_logger.h/.cpp` | CSV con rotazione giornaliera in `/logs/YYYY-MM-DD.csv`, contatori in RAM+NVS |
 | `net_ota.h/.cpp` | gemello di quello del C3, variante "server condiviso": espone `net_server()` |
 | `web_ui.h/.cpp` | dashboard + API JSON registrate sul WebServer di `net_ota` |
-| `remote_nodes.h/.cpp` | **hub ESP-NOW**: riceve i DATA dei nodi a batteria, ne tiene lo stato in RAM e li dichiara "muti" (vedi sotto) |
+| `remote_nodes.h/.cpp` | **hub ESP-NOW**: riceve i DATA dei nodi a batteria, ne tiene lo stato in RAM, li dichiara "muti" e da `v11` ne calcola **trend barometrico e previsione** (vedi sotto) |
+| `forecast.h` | copia di quella del nodo: trend a 3 h con isteresi, header-only e pura. Da `v11` il calcolo autorevole sta **qui**, non sul nodo |
 | `www/dashboard.html` | dashboard personalizzata, **non compilata**: sorgente della pagina da caricare su SD via `/dashboard-upload` |
 
 **Vincoli e scelte da conoscere**:
@@ -750,6 +751,36 @@ la RAM ad ogni risveglio, quindi il suo storico **non può** stare su di lui.
   successivo (media mobile, delta assurdi scartati) e si dichiara muto dopo
   ~2,5 intervalli. **Finché i nodi non hanno il partitore della batteria,
   questa è l'unica diagnostica esistente**: `battery_mv` arriva 0.
+- **Il trend barometrico si calcola qui, non sul nodo** (da `v11`, 2026-08-24).
+  La previsione di `forecast.h` vuole la pressione di tre ore fa, e un nodo a
+  batteria non ce l'ha e non potrà mai averla: il deep sleep gli azzera la RAM
+  ad ogni risveglio, quindi la sua pagina resta per sempre su "raccolgo dati:
+  servono tre ore di storico". L'hub è già sempre acceso ed è già il posto dove
+  quei dati arrivano.
+  - **Lo storico è un anello di slot da 10 minuti** (20 slot, ~160 byte per
+    nodo), non i 720 slot da 2 minuti che il nodo teneva per i suoi grafici: al
+    trend non serve quella risoluzione. Gli slot sono ancorati all'orologio e
+    non ai pacchetti, perché la cadenza la decidono i nodi — un anello a numero
+    fisso di *campioni* coprirebbe tre ore o tre minuti a seconda di come è
+    configurato chi trasmette.
+  - **Lo storico si ricostruisce dai CSV su SD al primo sync NTP dopo il boot**
+    (`seedForecastDaSD()` nel `.ino`, che legge solo la **coda** dei file).
+    Senza, ogni riavvio — e ogni OTA — costerebbe tre ore di "non ancora noto",
+    cioè lo stesso guasto che si sta togliendo al nodo, spostato di una scheda.
+    Va fatto dopo il sync perché lì i timestamp non datano una riga: compongono
+    il **nome del file** da aprire.
+  - **`remote_seed_begin()` prima di seminare**: i DATA veri arrivano anche
+    prima che il seeding parta (aspetta NTP, i nodi no), e l'anello rifiuta i
+    campioni fuori ordine — senza l'azzeramento il seeding girerebbe senza
+    errori e senza seminare niente.
+  - **L'altitudine è una sola per tutti i nodi** (`/api/nodi/altitudine`,
+    NVS a chiave separata dal blob del registro, per non doverne migrare il
+    formato): serve solo a riportare al livello del mare la pressione, che i
+    nodi trasmettono **grezza**. Il trend non ne dipende — è una differenza, e
+    l'offset si cancella.
+  - **Solo per pressioni plausibili** (800..1100 hPa): `value[2]` ha significati
+    diversi per tipo di nodo, e senza quel controllo il terzo canale di un
+    attuatore diventerebbe una previsione del tempo.
 - `remote_nodes.cpp` **polla** `Link_Hub_GetPeerInfo()` da `loop()` invece di
   registrare una `Link_OnMessage()`: la concorrenza col task del driver WiFi
   sta già dentro `EspNowLink`, e così non ce n'è di nostra da sincronizzare.

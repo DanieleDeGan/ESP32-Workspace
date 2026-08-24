@@ -1144,8 +1144,9 @@ non riesce a leggere il proprio sensore trasmette lo stesso.
 #### `remote_nodes.h` / `remote_nodes.cpp`
 
 Ruolo hub ESP-NOW (da `v4`): riceve i DATA dei nodi a batteria, ne tiene lo
-stato in RAM (valori, cadenza, perdita di pacchetti, riavvii) e li dichiara
-"muti" quando smettono di parlare. Sopra `libraries/EspNowLink`. Niente log su
+stato in RAM (valori, cadenza, perdita di pacchetti, riavvii), li dichiara
+"muti" quando smettono di parlare e da `v11` ne calcola **trend barometrico e
+previsione**. Sopra `libraries/EspNowLink`. Niente log su
 SD e niente disegno: `web_ui` legge da qui, come già fa con gli altri moduli.
 
 **Da sapere**:
@@ -1176,6 +1177,22 @@ SD e niente disegno: `web_ui` legge da qui, come già fa con gli altri moduli.
 - **niente dipendenza da `sd_logger`**: il modulo espone `remote_on_data()`, e
   il `.ino` ci aggancia `sd_log_remote()`. È scritto per essere copiato su
   `MeteoHub_S3`, che avrà uno storage diverso;
+- **il trend barometrico si calcola qui** (`forecast.h`, arrivato dal nodo):
+  storico a **slot da 10 minuti**, 20 per nodo (~160 byte) — non i 720 slot da
+  2 minuti del nodo, che servivano ai suoi grafici. Gli slot sono ancorati
+  all'orologio e non ai pacchetti, perché la cadenza la decidono i nodi. Si
+  calcola solo per pressioni **plausibili** (800..1100 hPa): `value[2]` ha
+  significati diversi per tipo di nodo. `remote_seed_begin()` +
+  `remote_seed_pressure()` servono al `.ino` per rimettere in RAM le tre ore
+  dopo un riavvio, leggendole dai CSV — e vanno chiamate in quest'ordine,
+  perché l'anello rifiuta i campioni fuori ordine e senza l'azzeramento il
+  seeding girerebbe a vuoto senza dare errore. **`s_hist` è un array parallelo
+  a `s_nodi`**: `remote_forget()` deve compattarli insieme, o dopo un
+  "dimentica" ogni nodo eredita lo storico del vicino;
+- **una sola altitudine per tutti i nodi** (`remote_set_altitude_m()`, chiave
+  NVS separata dal blob del registro per non doverne migrare il formato):
+  serve solo a riportare al livello del mare la pressione, che i nodi
+  trasmettono grezza. Il trend non ne dipende, è una differenza;
 - **la soglia di "muto" è osservata, non configurata**: si misura l'intervallo
   fra un DATA e il successivo (media mobile; delta a cavallo di un riavvio del
   nodo, o più lunghi di 6 h, non entrano nella media) e si dichiara muto dopo
@@ -1265,8 +1282,15 @@ Da conoscere:
 
 Header-only e puro: trend barometrico a 3 ore con isteresi, e il testo della
 previsione. Nessuna dipendenza da hardware o rete, quindi si sposta di peso —
-ed è previsto che si sposti **sull'hub**, perché la RAM di un nodo che dorme si
-azzera ad ogni risveglio e lo storico non può stare su di lui.
+ed è **spostato sull'hub** il 2026-08-24 (`EnvNode_C3` `v11`), perché la RAM di
+un nodo che dorme si azzera ad ogni risveglio e lo storico non può stare su di
+lui.
+
+Il file resta anche qui, e non è una svista: sul gemello che gira su ESP32
+"classico", alimentato a muro e senza deep sleep, il calcolo locale funziona e
+la sua pagina lo mostra. Su un nodo a batteria è invece inerte — la sua
+previsione dirà "raccolgo dati: servono tre ore di storico" per sempre, e
+quella vera va letta dall'hub.
 
 #### `hub_link.h` / `hub_link.cpp`
 
