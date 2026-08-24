@@ -1177,6 +1177,13 @@ SD e niente disegno: `web_ui` legge da qui, come già fa con gli altri moduli.
 - **niente dipendenza da `sd_logger`**: il modulo espone `remote_on_data()`, e
   il `.ino` ci aggancia `sd_log_remote()`. È scritto per essere copiato su
   `MeteoHub_S3`, che avrà uno storage diverso;
+- **una rinomina non sposta lo storico**: la cartella su SD è `/nodi/<NOME>/` e
+  nessuno la rinomina, quindi dopo un cambio nome l'hub scrive in una cartella
+  nuova e la vecchia resta come archivio — visibile solo interrogando gli
+  endpoint con il nome vecchio (`/api/nodi/giorni?nodo=…`). Il modulo rileva
+  già il cambio: se un giorno si vorrà spostare anche i file, il gancio è una
+  callback verso il `.ino`, non una `SD.rename()` qui dentro. Dettagli e casi
+  limite in `CLAUDE.md`;
 - **il trend barometrico si calcola qui** (`forecast.h`, arrivato dal nodo):
   storico a **slot da 10 minuti**, 20 per nodo (~160 byte) — non i 720 slot da
   2 minuti del nodo, che servivano ai suoi grafici. Gli slot sono ancorati
@@ -1265,6 +1272,15 @@ Da conoscere:
   resterebbe mezzo alimentato), `sensorPower(true)` chiama `gpio_hold_dis()`
   prima di ripilotarlo — senza quel rilascio il pin resta inchiodato e il
   sensore non si riaccende più. Il pin è RTC-capable apposta.
+- `nodeName()` / `app_set_nome()` — il nome con cui il nodo si presenta. Tre
+  livelli: NVS (impostato dalla pagina) → `NODE_NAME_FISSO` se non vuoto →
+  derivato dal MAC (`Meteo-XXXXXX`). Il MAC si legge con `esp_read_mac()`
+  dall'eFuse e non con `WiFi.macAddress()`, perché al risveglio dal deep sleep
+  il WiFi non è acceso. Non è un'etichetta: sull'hub quel nome diventa la
+  **cartella** del CSV, quindi due schede omonime scrivono nello stesso file.
+  `NODE_NAME_FISSO` resta valorizzato solo sull'ESP32 "classico", che è un
+  esemplare unico già installato con il suo storico; sulla XIAO C3 è vuoto,
+  perché è la board che si replica.
 - `bootDiagBegin()` / `app_reset_reason()` / `app_boot_count()` — perché la
   scheda è ripartita e quante volte (il contatore è in NVS). Tutti gli altri
   contatori vivono in RAM e ripartono da zero, quindi senza questi un riavvio è

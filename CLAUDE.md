@@ -712,6 +712,30 @@ la RAM ad ogni risveglio, quindi il suo storico **non può** stare su di lui.
     leggere; ma il nome può cambiare (basta riprogrammare un nodo) mentre
     l'identità vera è il MAC, quindi ogni riga se lo porta dietro e le righe
     vecchie restano attribuibili anche dopo una rinomina.
+  - **Rinominare un nodo NON rinomina la sua cartella** (verificato il
+    2026-08-24: in tutto il progetto non esiste una sola `rename`). L'hub crea
+    `/nodi/<NOME_NUOVO>/` alla prima scrittura e ci scrive da lì in poi;
+    `/nodi/<NOME_VECCHIO>/` resta intatta con lo storico fino a quel momento.
+    Il nodo **non** si sdoppia in elenco — per l'hub l'identità è il MAC — ma
+    il pulsante "Registri su SD" mostra solo la cartella del nome corrente,
+    quindi lo storico vecchio **sparisce dalla vista pur essendo ancora sulla
+    card**. Si riprende a mano, perché gli endpoint accettano un nome
+    qualsiasi e non solo quello dei nodi registrati:
+    `/api/nodi/giorni?nodo=<vecchio>` e
+    `/api/nodi/scarica?nodo=<vecchio>&d=AAAA-MM-GG`.
+    - Scelta consapevole, non svista: le cartelle vecchie restano come
+      archivio. Il caso si presenta comunque di rado, e da `MeteoNode_C3`
+      `v11` un nodo senza nome esplicito si chiama `Meteo-XXXXXX` (dal MAC),
+      quindi la sua cartella è stabile per costruzione.
+    - **Se un giorno la si volesse spostare**: `remote_nodes.cpp` rileva già
+      il cambio (stampa "il nodo X ora si presenta come Y" e alza `s_dirty`),
+      quindi basta esporre una callback tipo `remote_on_rename(vecchio,
+      nuovo)` e agganciarci nel `.ino` una `SD.rename()` — il modulo non deve
+      conoscere la SD, stessa regola di `remote_on_data()`. Due casi da
+      gestire: la cartella di destinazione che **esiste già** (nome riciclato
+      da un'altra scheda: lì i due storici andrebbero fusi, non sovrascritti)
+      e la **SD assente** proprio nel momento del cambio, che lascerebbe il
+      rinominare a metà.
   - **Un valore non finito diventa un campo vuoto, non uno zero**: nel grafico
     dev'essere un buco, non una misura che nessuno ha fatto. `seq` c'è apposta
     perché i salti si vedano: su una tratta radio il pacchetto perso è un dato.
@@ -849,6 +873,35 @@ nodo e guardia della `Serial` si scelgono a compile-time dal tipo di chip.
   - La durata del sonno **è l'intervallo di misura** già configurabile dalla
     pagina: un parametro solo, già persistito, invece di due che possono andare
     fuori sincrono.
+
+### Aggiungere un nodo nuovo alla rete
+
+Copia la cartella, rinomina il `.ino`, `secrets.h` con un `OTA_HOSTNAME`
+diverso, carica via USB, **apri la finestra di associazione sull'hub** (pagina
+`/nodi` o dashboard: l'hub accetta un MAC sconosciuto solo mentre è aperta, e
+si apre da sola solo al suo avvio), accendi. Il resto è automatico: canale,
+CSV, cadenza appresa, trend, rilevamento del nodo muto, persistenza in NVS.
+
+**Il nome non va più inventato a mano** (da `v11`, 2026-08-24): se
+`NODE_NAME_FISSO` è vuoto — ed è vuoto sulla XIAO C3, la board che si replica —
+il nodo si chiama `Meteo-XXXXXX`, dalle ultime tre coppie del MAC letto
+dall'eFuse con `esp_read_mac()` (non da `WiFi.macAddress()`: al risveglio dal
+deep sleep il WiFi non è acceso). Dalla pagina si può dare un nome parlante,
+che finisce in NVS e vince sul derivato.
+
+**Perché conta più di un'etichetta**: sull'hub il nome è la **cartella** in cui
+finisce il CSV di quel nodo (`sd_node_dir_name`), quindi due schede omonime
+scrivono nello stesso file, mescolando letture di posti diversi. Restano
+separabili solo dalla colonna `mac`, ma grafici, trend e download le vedono
+mischiate. Il default dal MAC rende quella collisione impossibile per
+dimenticanza.
+
+**Limiti da conoscere**: massimo **8 nodi** (`REMOTE_MAX_NODES`), e il CSV
+dell'hub ha colonne fisse `temp_c,hum_pct,press_hpa` — il contratto dei tre
+float è quello del nodo meteo, un sensore di altro tipo richiede lavoro
+sull'hub. E **rinominare un nodo già associato** non lo fa sparire (per l'hub
+l'identità è il MAC, e l'anagrafica si aggiorna al primo messaggio), ma da lì
+in poi il suo storico prosegue in una cartella nuova.
 
 **Dove scrivere la logica**: nel `.ino` (misura, previsione, ciclo di sonno).
 `forecast.h`, `hub_link.*`, `rtc_time.*`, `net_ota.*`, `web_ui.*` sono
