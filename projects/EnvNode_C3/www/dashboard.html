@@ -29,7 +29,11 @@
      POST /api/elimina?d=...          {ok, errore}
      GET  /api/config                 configurazione
      POST /api/config?<campi>         {ok, errore}
-     GET  /api/nodi                   nodi ESP-NOW a batteria (da fw v4)
+     GET  /api/nodi                   nodi ESP-NOW a batteria (da fw v4);
+                                      da fw v11 porta anche trend, delta_3h,
+                                      press_sea e previsione, calcolati
+                                      dall'HUB perche' un nodo che dorme non
+                                      puo' tenere tre ore di storico
      POST /api/pairing?on=1|0[&s=..]  finestra di associazione
      POST /api/nodi/dimentica?mac=..  toglie un nodo da registro e NVS
 
@@ -107,6 +111,10 @@ header{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin:.4rem 0 1
 .tile .big{font-size:2rem;font-weight:600;letter-spacing:-.03em;line-height:1.15;margin-top:.15rem}
 .tile .big .u{font-size:.95rem;font-weight:500;color:var(--tx2);margin-left:.15rem;letter-spacing:0}
 .tile .sub{font-size:.73rem;color:var(--tx3);margin-top:.2rem}
+.tile .prev{font-size:.73rem;margin-top:.35rem;line-height:1.45;
+            border-top:1px dashed var(--line);padding-top:.3rem}
+.tile .prev .pv{color:var(--tx3)}
+.tile .prev .att{color:var(--tx3);font-style:italic}
 .tile canvas{width:100%;height:34px;display:block;margin-top:.5rem}
 .tile.t .big{color:var(--temp)} .tile.h .big{color:var(--hum)}
 .tile .nd{display:inline-block;width:7px;height:7px;border-radius:50%;
@@ -1045,6 +1053,41 @@ function silStr(sec){
    buco invece di uno zero, che sembrerebbe una misura vera. */
 function nv(x, d){ return x==null ? '--' : x.toFixed(d).replace('.',','); }
 
+/* Freccia e colore dal DELTA, non dall'etichetta testuale: le soglie sono
+   quelle di forecast.h sull'hub, e leggere il numero invece della stringa
+   evita di dover tenere allineate due liste di nomi in due posti diversi.
+   Una discesa e' una brutta notizia molto piu' di quanto una salita sia una
+   bella notizia, e il colore lo dice. */
+function trendGlifo(d){
+  if (d == null)  return ['', 'var(--tx3)'];
+  if (d <= -3.5)  return ['↓↓', 'var(--bad)'];
+  if (d <= -1.6)  return ['↓',       'var(--bad)'];
+  if (d <= -0.5)  return ['↘',       'var(--warn)'];
+  if (d <   0.5)  return ['→',       'var(--tx3)'];
+  if (d <   1.6)  return ['↗',       'var(--ok)'];
+  if (d <   3.5)  return ['↑',       'var(--ok)'];
+  return ['↑↑', 'var(--ok)'];
+}
+
+/* La previsione la calcola l'HUB, non il nodo: un nodo a batteria perde la
+   RAM ad ogni risveglio e non puo' tenere le tre ore di storico che servono
+   al trend. Qui si mostra e basta. Finche' lo storico non copre tre ore si
+   dice a che punto e', invece di un generico "non disponibile": "sto ancora
+   raccogliendo" e "qualcosa non va" devono restare distinguibili. */
+function nodePrev(n){
+  if (!n.dati || n.press_sea == null) return '';
+  if (n.delta_3h == null){
+    return '<div class="prev"><span class="att">previsione: storico '+
+           (n.storico_slot||0)+'/19</span></div>';
+  }
+  const g = trendGlifo(n.delta_3h);
+  const segno = n.delta_3h > 0 ? '+' : '';
+  return '<div class="prev"><span style="color:'+g[1]+'">'+g[0]+' '+esc(n.trend)+
+         '</span> <span class="pv">&middot; '+segno+nv(n.delta_3h,1)+' hPa/3h &middot; '+
+         nv(n.press_sea,1)+' hPa slm</span><br><span class="pv">'+
+         esc(n.previsione)+'</span></div>';
+}
+
 function nodeTile(n){
   const v = n.valori || [null,null,null];
   const meteo = (n.tipo == 2);
@@ -1067,6 +1110,7 @@ function nodeTile(n){
              esc(n.nome || '(senza nome)')+'</div>'+
            '<div class="big num">'+big+'</div>'+
            '<div class="sub">'+sub+'</div>'+
+           nodePrev(n)+
            '<button class="mini" data-mac="'+esc(n.mac)+'">Dimentica</button>'+
          '</div>';
 }
