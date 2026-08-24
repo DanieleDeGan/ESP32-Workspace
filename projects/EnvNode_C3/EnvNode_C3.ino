@@ -58,6 +58,12 @@ DHT              dht(PIN_DHT, DHT11);
 
 // Da incrementare a ogni firmware caricato sul nodo: la dashboard lo mostra,
 // ed e' l'unico modo per sapere da remoto quale versione sta davvero girando.
+//   v11 2026-08-24  calcola qui il trend barometrico e la previsione dei
+//                   nodi remoti (forecast.h, arrivato dal nodo): un nodo in
+//                   deep sleep perde la RAM ad ogni risveglio e non puo'
+//                   tenere le tre ore di storico che servono. Lo storico si
+//                   ricostruisce dai CSV su SD ad ogni riavvio, o ogni OTA
+//                   costerebbe tre ore di "non ancora noto"
 //   v10 2026-08-23  non registra piu' un campione finche' l'orario non e'
 //                   sincronizzato (al massimo 5 minuti, poi lo registra
 //                   comunque): prima ogni riavvio lasciava nel CSV una riga
@@ -85,7 +91,7 @@ DHT              dht(PIN_DHT, DHT11);
 //                   riconosciuta dal PC ma nessuno che legge, le print()
 //                   bloccavano loop() e con lui web server, OTA e campionamento
 //   v2  ...
-static const char* FW_VERSION = "v10";
+static const char* FW_VERSION = "v11";
 
 static bool     otaActive = false;   // true mentre un update e' in corso
 static uint32_t lastDraw  = 0;
@@ -419,6 +425,123 @@ static void onRemoteData(const RemoteNode* n) {
 }
 
 // ---------------------------------------------------------------------
+//  Ricostruzione dello storico di pressione dopo un riavvio
+// ---------------------------------------------------------------------
+// Il trend a tre ore lo calcola l'hub (vedi remote_nodes.h), ma il suo
+// storico vive in RAM: senza questo, ogni riavvio - e ogni OTA, che qui sono
+// frequenti - costerebbe tre ore di "non ancora noto". Sarebbe esattamente il
+// guasto che si sta togliendo al nodo, spostato di una scheda.
+//
+// I dati per rifarlo ci sono gia': sono i CSV che questo stesso hub scrive in
+// /nodi/<NOME>/<GIORNO>.csv. Sta nel .ino e non in remote_nodes perche' quel
+// modulo non conosce la SD di proposito, per la stessa ragione per cui non
+// conosce sd_logger: e' scritto per essere trapiantato su MeteoHub_S3, che
+// avra' uno storage diverso.
+static bool s_seedFatto = false;
+
+// Una riga di testo dal File, senza allocare String: su un CSV di un giorno
+// intero sarebbero migliaia di allocazioni in un colpo solo.
+static size_t leggiRiga(File& f, char* buf, size_t cap) {
+  size_t n = 0;
+  while (f.available() && n < cap - 1) {
+    const char c = (char)f.read();
+    if (c == '\n') break;
+    if (c != '\r') buf[n++] = c;
+  }
+  buf[n] = '\0';
+  return n;
+}
+
+// Colonne: ts_iso,ts_unix,fonte_ora,mac,seq,temp_c,hum_pct,press_hpa,batt_mv
+static void seedNodoDaCsv(const RemoteNode* n, const char* giorno, time_t minTs, int* righe) {
+  File f = sd_open_remote_day(n->nome, giorno);
+  if (!f) return;
+
+  // Solo la coda del file: le tre ore che servono sono al massimo qualche
+  // migliaio di byte, mentre un giorno intero a cadenza fitta ne fa oltre
+  // centomila. Leggerlo tutto bloccherebbe il loop() - e quindi web server,
+  // OTA e campionamento - per secondi, ad ogni avvio.
+  const size_t size = f.size();
+  const size_t CODA = 65536;
+  if (size > CODA) {
+    f.seek(size - CODA);
+    char scarto[160];
+    leggiRiga(f, scarto, sizeof(scarto));   // la prima riga e' tagliata a meta'
+  }
+
+  char buf[160];
+  while (leggiRiga(f, buf, sizeof(buf)) > 0) {
+    char* campo[9];
+    int nc = 0;
+    campo[nc++] = buf;
+    for (char* p = buf; *p && nc < 9; p++) {
+      if (*p == ',') { *p = '\0'; campo[nc++] = p + 1; }
+    }
+    if (nc < 8) continue;
+
+    // L'intestazione cade da sola: "ts_unix" non e' un numero, strtoul da' 0
+    // e remote_seed_pressure scarta i timestamp non validi.
+    const time_t ts = (time_t)strtoul(campo[1], nullptr, 10);
+    if (ts < minTs) continue;
+
+    // Campo vuoto = valore non finito al momento della scrittura (regola del
+    // CSV: un buco resta un buco, non diventa uno zero).
+    if (campo[7][0] == '\0') continue;
+
+    remote_seed_pressure(n->mac, ts, atof(campo[7]));
+    (*righe)++;
+  }
+  f.close();
+}
+
+static void seedForecastDaSD() {
+  if (s_seedFatto) return;
+
+  // Serve l'orologio VERO, non la stima da build-time: qui i timestamp non
+  // servono solo a datare una riga, ma a comporre il nome del file da aprire
+  // e a decidere quali righe cadono nelle ultime tre ore. Con l'ora di
+  // compilazione si leggerebbe il CSV di un giorno sbagliato.
+  if (!rtctime_isSynced() || !sd_mounted()) return;
+  if (remote_count() == 0) return;
+
+  s_seedFatto = true;
+
+  const time_t ora   = rtctime_now();
+  const time_t minTs = ora - (time_t)(3 * 3600 + 900);   // 3 h + la tolleranza
+
+  char giornoOggi[12] = "", giornoPrima[12] = "";
+  rtctime_format(ora,   "%Y-%m-%d", giornoOggi,  sizeof(giornoOggi));
+  rtctime_format(minTs, "%Y-%m-%d", giornoPrima, sizeof(giornoPrima));
+
+  int totale = 0;
+  for (int i = 0; i < remote_count(); i++) {
+    RemoteNode n;
+    if (!remote_get(i, &n)) continue;
+
+    int righe = 0;
+    remote_seed_begin(n.mac);
+
+    // In ordine cronologico: l'anello dello storico accetta solo campioni che
+    // avanzano nel tempo, quindi ieri PRIMA di oggi. Il file di ieri si apre
+    // solo se la finestra di tre ore ci cade davvero dentro (cioe' passata
+    // mezzanotte da poco).
+    if (strcmp(giornoPrima, giornoOggi) != 0) {
+      seedNodoDaCsv(&n, giornoPrima, minTs, &righe);
+    }
+    seedNodoDaCsv(&n, giornoOggi, minTs, &righe);
+
+    if (righe > 0) {
+      Serial.printf("[trend] %s: storico ricostruito da SD, %d campioni\n", n.nome, righe);
+    }
+    totale += righe;
+  }
+
+  if (totale == 0) {
+    Serial.println("[trend] nessuno storico da ricostruire: si riparte da zero");
+  }
+}
+
+// ---------------------------------------------------------------------
 //  Feedback a schermo durante un update OTA (chiamata da net_ota).
 //  percent = 0..100, oppure -1 = sconosciuto (upload web).
 // ---------------------------------------------------------------------
@@ -523,6 +646,12 @@ void loop() {
   wasConnected = nowConnected;
 
   remote_loop();              // nodi ESP-NOW: WELCOME, nuovi DATA, stato muto
+
+  // Una volta sola, al primo giro in cui l'orologio e' sincronizzato davvero
+  // (che e' dopo il WiFi, quindi non nel setup): rimette in RAM le tre ore di
+  // pressione che servono al trend, leggendole dai CSV di questa stessa card.
+  // Esce subito nei giri successivi.
+  seedForecastDaSD();
 
   handleBootButton();
   updatePageRotation();

@@ -1,5 +1,6 @@
 #include "remote_nodes.h"
 #include "rtc_time.h"
+#include "forecast.h"
 
 #include <EspNowLink.h>
 #include <Preferences.h>
@@ -75,6 +76,142 @@ static remote_data_cb_t s_dataCb = nullptr;
 static uint32_t   s_pairingFineMs = 0;
 
 // ---------------------------------------------------------------------
+//  Storico della pressione, per il trend a tre ore
+// ---------------------------------------------------------------------
+// Un anello di slot da 10 minuti. Al trend non serve la risoluzione fine
+// che il nodo teneva per i suoi grafici: 20 slot coprono 3 h 20 con un po'
+// di margine sui pacchetti persi, e costano 160 byte per nodo.
+//
+// Perche' a slot e non "un campione ogni DATA": la cadenza dei nodi la
+// decidono i nodi (da 2 s a 1 h), quindi un anello a numero fisso di
+// campioni coprirebbe tre ore o tre minuti a seconda di come e' configurato
+// chi trasmette. Ancorare gli slot all'orologio rende la finestra la stessa
+// per tutti.
+static const uint32_t HIST_SLOT_S     = 600;     // 10 min
+static const int      HIST_SLOTS      = 20;      // -> 3 h 20 di copertura
+static const uint32_t TREND_WINDOW_S  = 10800;   // le tre ore canoniche
+static const uint32_t TREND_TOLL_S    = 900;     // +-15 min sul campione di 3 h fa
+
+// Range di plausibilita' di una pressione atmosferica al suolo. value[2] ha
+// significati diversi per tipo di nodo: senza questo controllo il terzo
+// canale di un attuatore diventerebbe una previsione del tempo.
+static const float PRESS_MIN_HPA = 800.0f;
+static const float PRESS_MAX_HPA = 1100.0f;
+
+struct PressHist {
+  time_t ts[HIST_SLOTS];
+  float  p[HIST_SLOTS];
+  int    head;    // ultimo scritto (-1 = vuoto)
+  int    count;
+};
+static PressHist s_hist[REMOTE_MAX_NODES];
+
+// Altitudine dei nodi, per riportare al livello del mare. Vedi la nota in
+// remote_nodes.h: e' una sola per tutti, di proposito.
+static const float ALT_DEFAULT_M = 29.0f;
+static const float ALT_MIN_M     = -400.0f;
+static const float ALT_MAX_M     = 4000.0f;
+static float s_altitudeM = ALT_DEFAULT_M;
+
+// Definita in fondo, insieme al resto della gestione dell'altitudine; qui
+// serve solo il prototipo, perche' remote_begin() la chiama e sta prima.
+static void altCarica();
+
+static void histReset(int idx) {
+  if (idx < 0 || idx >= REMOTE_MAX_NODES) return;
+  s_hist[idx].head  = -1;
+  s_hist[idx].count = 0;
+}
+
+static bool pressPlausibile(float p) {
+  return !isnan(p) && p >= PRESS_MIN_HPA && p <= PRESS_MAX_HPA;
+}
+
+// Un campione nello storico. Stesso slot dell'ultimo -> lo sovrascrive
+// (l'ultima lettura di quei dieci minuti va bene quanto le altre); slot piu'
+// vecchio -> si ignora, perche' l'anello e' ordinato e un campione fuori
+// ordine romperebbe la ricerca. Capita davvero: il seeding da SD legge righe
+// gia' passate, e l'orologio puo' spostarsi all'indietro al primo sync NTP.
+static void histPush(int idx, time_t ts, float p) {
+  if (idx < 0 || idx >= REMOTE_MAX_NODES) return;
+  if (ts <= 0 || !pressPlausibile(p)) return;
+
+  PressHist& h = s_hist[idx];
+  const uint32_t slot = (uint32_t)(ts / (time_t)HIST_SLOT_S);
+
+  if (h.count > 0 && h.head >= 0) {
+    const uint32_t slotUltimo = (uint32_t)(h.ts[h.head] / (time_t)HIST_SLOT_S);
+    if (slot == slotUltimo) { h.ts[h.head] = ts; h.p[h.head] = p; return; }
+    if (slot <  slotUltimo) return;
+  }
+
+  h.head = (h.head + 1) % HIST_SLOTS;
+  h.ts[h.head] = ts;
+  h.p[h.head]  = p;
+  if (h.count < HIST_SLOTS) h.count++;
+}
+
+// Il campione piu' vicino a 'target', se cade entro la tolleranza. NAN se lo
+// storico non arriva ancora cosi' indietro: e' il caso normale nelle prime
+// tre ore, e va detto, non arrotondato al campione piu' vecchio che c'e' -
+// un delta misurato su venti minuti letto come se fosse su tre ore
+// sparerebbe fuori scala tutte le soglie.
+static float histLookup(int idx, time_t target, uint32_t toll) {
+  if (idx < 0 || idx >= REMOTE_MAX_NODES) return NAN;
+  const PressHist& h = s_hist[idx];
+
+  float migliore = NAN;
+  uint32_t distanza = toll + 1;
+  // Si scorre TUTTO l'anello e si saltano gli slot vuoti (ts == 0), invece di
+  // fermarsi a h.count: quel conteggio combacia con gli indici occupati solo
+  // finche' il primo push parte da head == -1, che e' vero oggi ma e' un
+  // invariante che non si vede da qui. Venti confronti non si sentono, un
+  // campione saltato in silenzio si', e sarebbe pure intermittente.
+  for (int i = 0; i < HIST_SLOTS; i++) {
+    const time_t t = h.ts[i];
+    if (t <= 0) continue;
+    const uint32_t d = (uint32_t)((t > target) ? (t - target) : (target - t));
+    if (d <= toll && d < distanza) { distanza = d; migliore = h.p[i]; }
+  }
+  return migliore;
+}
+
+// Ricalcola pressione al livello del mare, delta a 3 h e trend di un nodo.
+// Da chiamare quando e' appena arrivato un DATA nuovo.
+static void forecastUpdate(int idx) {
+  if (idx < 0 || idx >= REMOTE_MAX_NODES) return;
+  RemoteNode* r = &s_nodi[idx];
+
+  const float pNow = r->value[2];
+  if (!pressPlausibile(pNow)) {
+    r->pressSeaHpa = NAN;
+    r->delta3h     = NAN;
+    r->trend       = (uint8_t)TREND_IGNOTO;
+    r->storicoSlot = 0;
+    return;
+  }
+
+  histPush(idx, r->ultimoTs, pNow);
+  r->storicoSlot = (uint8_t)s_hist[idx].count;
+  r->pressSeaHpa = forecast_sea_level_hpa(pNow, s_altitudeM);
+
+  const float pAllora = histLookup(idx, r->ultimoTs - (time_t)TREND_WINDOW_S, TREND_TOLL_S);
+  if (!pressPlausibile(pAllora)) {
+    r->delta3h = NAN;
+    r->trend   = (uint8_t)TREND_IGNOTO;
+    return;
+  }
+
+  // Stesso conto che faceva il nodo: la correzione si applica a entrambi i
+  // termini. Sul trend si cancella quasi del tutto, ma tenerla esplicita
+  // evita di doversi ricordare perche' era lecito ometterla il giorno che
+  // l'altitudine diventasse un campo per nodo.
+  r->delta3h = forecast_sea_level_hpa(pNow,     s_altitudeM)
+             - forecast_sea_level_hpa(pAllora,  s_altitudeM);
+  r->trend   = (uint8_t)forecast_classify_hyst(r->delta3h, (forecast_trend_t)r->trend);
+}
+
+// ---------------------------------------------------------------------
 //  Helper
 // ---------------------------------------------------------------------
 static RemoteNode* trovaOCrea(const uint8_t mac[6]) {
@@ -82,10 +219,19 @@ static RemoteNode* trovaOCrea(const uint8_t mac[6]) {
     if (memcmp(s_nodi[i].mac, mac, 6) == 0) return &s_nodi[i];
   }
   if (s_count >= REMOTE_MAX_NODES) return nullptr;
-  RemoteNode* r = &s_nodi[s_count++];
+  const int idx = s_count++;
+  RemoteNode* r = &s_nodi[idx];
   memset(r, 0, sizeof(*r));
   memcpy(r->mac, mac, 6);
   r->sogliaMutoS = SOGLIA_DEFAULT_S;
+
+  // memset() ha appena messo a ZERO i campi della previsione, e uno zero qui
+  // sarebbe una bugia: 0.0 hPa non e' "non lo so", e un grafico o una soglia
+  // lo prenderebbero per una misura. NAN e TREND_IGNOTO dicono la verita'.
+  r->pressSeaHpa = NAN;
+  r->delta3h     = NAN;
+  r->trend       = (uint8_t)TREND_IGNOTO;
+  histReset(idx);
   return r;
 }
 
@@ -241,6 +387,10 @@ static void aggiornaDaLibreria() {
     r->ultimoMs = lastSeenMs;
     r->ultimoTs = rtctime_now() - (time_t)((millis() - lastSeenMs) / 1000);
 
+    // Prima della callback: cosi' chi ascolta (il .ino, che ci aggancia il
+    // log su SD) trova il record completo di trend e previsione, non a meta'.
+    forecastUpdate((int)(r - s_nodi));
+
     // In fondo, quando il record e' completo: chi ascolta (il .ino, che ci
     // aggancia il log su SD) deve vedere il dato gia' assestato. Siamo nel
     // contesto di loop(), quindi una scrittura su card qui e' lecita.
@@ -270,6 +420,7 @@ bool remote_begin(const char* selfName) {
   // bisogno (il driver li riconosce di nuovo), la finestra resta per chi non
   // era ancora in elenco.
   nvsRipristina();
+  altCarica();
   remote_pairing_open(REMOTE_PAIRING_BOOT_S);
   return true;
 }
@@ -381,9 +532,16 @@ bool remote_forget(const uint8_t mac[6]) {
   for (int i = 0; i < s_count; i++) {
     if (memcmp(s_nodi[i].mac, mac, 6) != 0) continue;
     Serial.printf("[ESP-NOW] nodo dimenticato: %s\n", s_nodi[i].nome);
-    for (int j = i; j < s_count - 1; j++) s_nodi[j] = s_nodi[j + 1];
+    // s_hist e' un array PARALLELO indicizzato come s_nodi: va compattato
+    // insieme, o dopo un "dimentica" ogni nodo si ritrova lo storico di
+    // pressione del vicino e il trend diventa una misura di due posti diversi.
+    for (int j = i; j < s_count - 1; j++) {
+      s_nodi[j] = s_nodi[j + 1];
+      s_hist[j] = s_hist[j + 1];
+    }
     s_count--;
     memset(&s_nodi[s_count], 0, sizeof(s_nodi[s_count]));
+    histReset(s_count);
     break;
   }
 
@@ -401,4 +559,79 @@ const char* remote_tipo_nome(uint8_t tipo) {
     case LINK_NODE_CAMERA:              return "camera";
     default:                            return "sconosciuto";
   }
+}
+
+// ---------------------------------------------------------------------
+//  Altitudine, storico seminato da fuori, etichette
+// ---------------------------------------------------------------------
+// Chiave a se' nella NVS, non dentro il blob del registro: quel blob ha un
+// formato impacchettato a mano con il suo numero di versione, e allargarlo
+// per un singolo float vorrebbe dire scriverne la migrazione. Una chiave
+// separata non tocca niente di cio' che gia' funziona.
+#define NVS_KEY_ALT  "alt"
+
+static void altCarica() {
+  Preferences p;
+  if (!p.begin(NVS_NS, true)) return;
+  const float v = p.getFloat(NVS_KEY_ALT, ALT_DEFAULT_M);
+  p.end();
+  if (v >= ALT_MIN_M && v <= ALT_MAX_M) s_altitudeM = v;
+}
+
+float remote_altitude_m() { return s_altitudeM; }
+
+bool remote_set_altitude_m(float m) {
+  if (isnan(m) || m < ALT_MIN_M || m > ALT_MAX_M) return false;
+  if (fabsf(m - s_altitudeM) < 0.01f) return true;   // niente da scrivere
+  s_altitudeM = m;
+
+  Preferences p;
+  if (p.begin(NVS_NS, false)) {
+    p.putFloat(NVS_KEY_ALT, s_altitudeM);
+    p.end();
+  }
+
+  // Le pressioni al livello del mare gia' calcolate sono ora sbagliate di un
+  // offset: si rifanno subito, senza aspettare il prossimo DATA (che con un
+  // nodo a cinque minuti di cadenza lascerebbe in pagina un numero vecchio
+  // proprio mentre l'utente sta guardando l'effetto di cio' che ha appena
+  // cambiato). Il TREND non cambia: e' una differenza.
+  for (int i = 0; i < s_count; i++) {
+    if (pressPlausibile(s_nodi[i].value[2])) {
+      s_nodi[i].pressSeaHpa = forecast_sea_level_hpa(s_nodi[i].value[2], s_altitudeM);
+    }
+  }
+  return true;
+}
+
+void remote_seed_begin(const uint8_t mac[6]) {
+  if (mac == nullptr) return;
+  for (int i = 0; i < s_count; i++) {
+    if (memcmp(s_nodi[i].mac, mac, 6) != 0) continue;
+    histReset(i);
+    s_nodi[i].storicoSlot = 0;
+    // Il campione corrente NON si perde davvero: il delta si misura fra
+    // value[2] di adesso e lo storico, quindi la lettura in corso non deve
+    // stare nell'anello. Ci rientra da sola al prossimo DATA.
+    return;
+  }
+}
+
+void remote_seed_pressure(const uint8_t mac[6], time_t ts, float pressHpa) {
+  if (mac == nullptr) return;
+  for (int i = 0; i < s_count; i++) {
+    if (memcmp(s_nodi[i].mac, mac, 6) != 0) continue;
+    histPush(i, ts, pressHpa);
+    s_nodi[i].storicoSlot = (uint8_t)s_hist[i].count;
+    return;
+  }
+}
+
+const char* remote_trend_label(uint8_t trend) {
+  return forecast_trend_label((forecast_trend_t)trend);
+}
+
+const char* remote_forecast_text(const RemoteNode* n) {
+  if (n == nullptr) return "non ancora noto";
+  return forecast_text((forecast_trend_t)n->trend, n->pressSeaHpa);
 }

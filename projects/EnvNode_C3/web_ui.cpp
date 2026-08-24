@@ -722,6 +722,9 @@ static const char NODI_PAGE[] PROGMEM = R"HTML(
  .vals{font-size:1.3rem;margin:.6rem 0 .4rem}
  .muted{color:#8a8a8a;font-size:.8rem;line-height:1.6;margin:.2rem 0}
  .warn{color:#f0a020}
+ .prev{margin:.35rem 0 0;font-size:.88rem;color:#cfe3ff}
+ .prev b{color:#8ab4e8;font-weight:600}
+ input[type=number]{width:5.5rem;padding:.45rem;border-radius:6px;border:1px solid #444;background:#161616;color:#eee}
  button.dim{background:#3a2020;border:1px solid #5a2a2a;color:#e0888a;font-size:.75rem;padding:.35rem .6rem;margin-top:.6rem}
  button.reg{background:#1f2a38;border:1px solid #2e3f55;color:#8ab4e8;font-size:.75rem;padding:.35rem .6rem;margin:.6rem .5rem 0 0}
  .giorni{margin-top:.5rem;font-size:.78rem;line-height:1.9}
@@ -740,6 +743,20 @@ static const char NODI_PAGE[] PROGMEM = R"HTML(
  registro dei nodi vive in RAM: dopo un riavvio di questa scheda la finestra
  si riapre da sola per 5 minuti, cosi' i nodi gia' noti rientrano senza che
  nessuno debba premere niente.</p>
+</div>
+<div class="card">
+ <div class="row">
+  <span class="muted">Altitudine dei nodi</span>
+  <input type="number" id="alt" step="1" min="-400" max="4000">
+  <span class="muted">m</span>
+  <button id="ba">Salva</button>
+  <span class="muted" id="sa"></span>
+ </div>
+ <p class="muted">Serve solo a riportare al livello del mare la pressione, che i
+ nodi trasmettono GREZZA. Il trend a tre ore non ne dipende (e' una differenza,
+ l'offset si cancella): cambiarla sposta i valori assoluti, non la previsione.
+ Un valore per tutti i nodi &mdash; 8 m valgono 1 hPa, e i nodi di una casa
+ stanno molto piu' vicini di cosi'.</p>
 </div>
 <div id="lista"></div>
 <p class="muted"><a href="/">&larr; dashboard</a></p>
@@ -762,6 +779,20 @@ function vals(n){
  if(n.tipo==2)return num(v[0],1)+' &deg;C &middot; '+num(v[1],1)+' % &middot; '+num(v[2],1)+' hPa';
  return v.map(x=>num(x,2)).join(' &middot; ');
 }
+// La previsione la calcola l'HUB, non il nodo: un nodo in deep sleep perde la
+// RAM ad ogni risveglio e non puo' tenere le tre ore di storico che servono.
+// Finche' lo storico non arriva a tre ore si dice quanti slot ci sono, non
+// "non disponibile": la differenza fra "sto ancora raccogliendo" e "qualcosa
+// non va" deve restare leggibile.
+function meteo(n){
+ if(!n.dati || n.press_sea===null) return '';
+ let r='<p class="muted">livello mare: '+num(n.press_sea,1)+' hPa';
+ if(n.delta_3h===null){
+  return r+' &middot; storico '+n.storico_slot+'/19 slot da 10 min</p>';
+ }
+ r+=' &middot; variazione 3 h: '+(n.delta_3h>0?'+':'')+num(n.delta_3h,1)+' hPa</p>';
+ return r+'<p class="prev"><b>'+esc(n.trend)+'</b> &mdash; '+esc(n.previsione)+'</p>';
+}
 function stato(n){
  if(!n.dati)return '<p class="muted">in attesa del primo DATA</p>';
  return '<p class="muted">ultimo: '+n.ultimo+' &middot; silenzio '+dur(n.silenzio_s)+
@@ -776,6 +807,7 @@ function render(d){
   <h3><span class="dot ${n.online?'ok':'ko'}"></span>${esc(n.nome||'(senza nome)')}
    <span class="muted">${esc(n.tipo_nome)}</span></h3>
   <div class="vals">${vals(n)}</div>
+  ${meteo(n)}
   ${stato(n)}
   <p class="muted">cadenza osservata: ${n.intervallo_s?dur(n.intervallo_s):'in apprendimento'}
    &middot; batteria: ${n.batteria_mv?(n.batteria_mv/1000).toFixed(2)+' V':'non misurata'}</p>
@@ -809,7 +841,23 @@ function dimentica(mac){
  fetch('/api/nodi/dimentica?mac='+encodeURIComponent(mac),{method:'POST'})
   .then(r=>r.text()).then(()=>tick()).catch(()=>{});
 }
-function tick(){fetch('/api/nodi').then(r=>r.json()).then(render).catch(()=>{});}
+// Il campo non si riscrive ad ogni polling (2 s), o cancellerebbe quello che
+// l'utente sta digitando proprio mentre lo digita: si riempie una volta sola,
+// e poi solo se non e' stato toccato.
+let altTocca=false;
+function altAggiorna(d){
+ const i=E('alt');
+ if(altTocca||document.activeElement===i)return;
+ i.value=d.altitudine_m;
+}
+E('alt').addEventListener('input',()=>{altTocca=true;});
+E('ba').onclick=()=>{
+ E('sa').textContent='salvo...';
+ fetch('/api/nodi/altitudine?m='+encodeURIComponent(E('alt').value),{method:'POST'})
+  .then(r=>r.text()).then(t=>{E('sa').textContent=t;altTocca=false;tick();})
+  .catch(()=>{E('sa').textContent='errore';});
+};
+function tick(){fetch('/api/nodi').then(r=>r.json()).then(d=>{render(d);altAggiorna(d);}).catch(()=>{});}
 E('bp').onclick=()=>fetch('/api/pairing?on=1&s=300',{method:'POST'}).then(tick);
 E('bc').onclick=()=>fetch('/api/pairing?on=0',{method:'POST'}).then(tick);
 tick();setInterval(tick,2000);
@@ -852,6 +900,9 @@ static void handleApiNodi() {
   json += "\"canale\":" + String(net_channel()) + ",";
   json += "\"pairing\":"; json += (remote_pairing_active() ? "true" : "false"); json += ',';
   json += "\"pairing_resta_s\":" + String(remote_pairing_remaining_s()) + ",";
+  // L'altitudine sta qui e non fra le impostazioni del nodo locale: serve ai
+  // nodi REMOTI, che trasmettono la pressione grezza (vedi remote_nodes.h).
+  json += "\"altitudine_m\":" + String(remote_altitude_m(), 0) + ",";
   json += "\"nodi\":[";
 
   bool primo = true;
@@ -889,7 +940,17 @@ static void handleApiNodi() {
     json += "\"seq\":"           + String(r.seq)         + ",";
     json += "\"pacchetti\":"     + String(r.pacchetti)   + ",";
     json += "\"persi\":"         + String(r.persi)       + ",";
-    json += "\"riavvii\":"       + String(r.riavvii);
+    json += "\"riavvii\":"       + String(r.riavvii)     + ",";
+
+    // Previsione: calcolata qui sull'hub, perche' un nodo che dorme non puo'
+    // tenere tre ore di storico (remote_nodes.h). I campi restano null finche'
+    // lo storico non arriva a tre ore, e storico_slot dice quanto manca -
+    // senza quel numero, "non ancora noto" e "guasto" si somigliano troppo.
+    json += "\"press_sea\":";  appendJsonFloat(json, r.pressSeaHpa, 2); json += ',';
+    json += "\"delta_3h\":";   appendJsonFloat(json, r.delta3h, 2);     json += ',';
+    json += "\"trend\":";      appendJsonString(json, remote_trend_label(r.trend)); json += ',';
+    json += "\"previsione\":"; appendJsonString(json, remote_forecast_text(&r));    json += ',';
+    json += "\"storico_slot\":" + String(r.storicoSlot);
     json += '}';
   }
 
@@ -929,6 +990,23 @@ static void handleApiNodiScarica() {
   srv.sendHeader("Content-Disposition", disp);
   srv.streamFile(f, "text/csv");
   f.close();
+}
+
+// POST /api/nodi/altitudine?m=29
+// Quota usata per riportare al livello del mare la pressione dei nodi, che la
+// trasmettono grezza. Non tocca il trend, che e' una differenza: sposta solo i
+// valori assoluti, cioe' le soglie con cui forecast_text() distingue "bel
+// tempo stabile" da "perturbato che non si sblocca".
+static void handleApiNodiAltitudine() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+
+  if (!srv.hasArg("m")) { srv.send(400, "text/plain", "manca il parametro m"); return; }
+  if (!remote_set_altitude_m(srv.arg("m").toFloat())) {
+    srv.send(400, "text/plain", "fuori range (-400..4000 m)");
+    return;
+  }
+  srv.send(200, "text/plain", String("altitudine: ") + String(remote_altitude_m(), 0) + " m");
 }
 
 // POST /api/nodi/dimentica?mac=AA:BB:CC:DD:EE:FF
@@ -1023,6 +1101,7 @@ void web_ui_begin() {
   srv.on("/api/nodi", HTTP_GET, handleApiNodi);
   srv.on("/api/pairing", HTTP_POST, handleApiPairing);
   srv.on("/api/nodi/dimentica", HTTP_POST, handleApiNodiDimentica);
+  srv.on("/api/nodi/altitudine", HTTP_POST, handleApiNodiAltitudine);
   srv.on("/api/nodi/giorni", HTTP_GET, handleApiNodiGiorni);
   srv.on("/api/nodi/scarica", HTTP_GET, handleApiNodiScarica);
 }

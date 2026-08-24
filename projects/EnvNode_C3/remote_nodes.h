@@ -72,6 +72,16 @@ struct RemoteNode {
   uint32_t sogliaMutoS;     // oltre questo silenzio il nodo e' dichiarato muto
   uint32_t silenzioS;       // da quanto non parla
   bool     online;          // false = muto
+
+  // --- previsione dal trend barometrico (solo nodi che mandano pressione) ---
+  // Il calcolo sta QUI e non sul nodo perche' un nodo in deep sleep perde la
+  // RAM ad ogni risveglio: le tre ore di storico che servono al trend non
+  // possono stare su di lui. Vedi la nota "Il trend si calcola sull'hub" in
+  // fondo a questo file.
+  float    pressSeaHpa;     // pressione riportata al livello del mare (NAN = n/d)
+  float    delta3h;         // variazione a 3 h in hPa (NAN = storico insufficiente)
+  uint8_t  trend;           // forecast_trend_t, TREND_IGNOTO finche' non si sa
+  uint8_t  storicoSlot;     // slot di storico pieni: dice QUANTO manca al trend
 };
 
 // Da chiamare in setup(), DOPO net_begin(): non perche' serva la
@@ -156,3 +166,66 @@ bool remote_parse_mac(const char* testo, uint8_t out[6]);
 
 // Nome leggibile di un link_node_type_t, per la UI.
 const char* remote_tipo_nome(uint8_t tipo);
+
+// ---------------------------------------------------------------------
+//  Il trend barometrico si calcola QUI, non sul nodo
+// ---------------------------------------------------------------------
+// La previsione di forecast.h vuole la pressione di tre ore fa. Un nodo a
+// batteria non ce l'ha e non potra' mai averla: il deep sleep gli azzera la
+// RAM ad ogni risveglio, quindi la sua pagina resterebbe per sempre su
+// "raccolgo dati: servono tre ore di storico". L'hub invece e' sempre acceso
+// ed e' gia' il posto dove quei dati vengono raccolti.
+//
+// Lo storico e' un anello di slot da 10 minuti: al trend non serve la
+// risoluzione dei due minuti che il nodo teneva per i suoi grafici, e cosi'
+// tre ore costano ~160 byte per nodo invece di 4,3 kB.
+//
+// Si calcola solo per i nodi che mandano una pressione PLAUSIBILE in
+// value[2] (800..1100 hPa): il campo ha significati diversi per tipo di
+// nodo, e senza quel controllo il value[2] di un attuatore diventerebbe una
+// previsione del tempo.
+
+// La pressione arriva GREZZA dai nodi (scelta del nodo: la correzione
+// dipende da un'altitudine che li' non e' mai stata calibrata, e applicarla
+// scriverebbe un errore sistematico dentro lo storico dell'hub, per sempre).
+// Riportarla al livello del mare tocca quindi a chi la mostra, ed e' l'unico
+// motivo per cui questo modulo ha bisogno di un'altitudine.
+//
+// E' UN VALORE SOLO per tutti i nodi, non uno per nodo: i nodi di una casa
+// stanno entro pochi metri l'uno dall'altro e 8 m valgono 1 hPa. Se un
+// giorno ci fossero nodi a quote davvero diverse, questo e' il punto da
+// spaccare in un campo per nodo — e allora andra' nel blob NVS del registro,
+// con la migrazione di formato che ne consegue.
+//
+// NB: il TREND non dipende dall'altitudine (e' una differenza, l'offset si
+// cancella). L'altitudine serve solo al valore assoluto, che forecast_text()
+// usa per distinguere "bel tempo stabile" da "perturbato che non si sblocca".
+float remote_altitude_m();
+bool  remote_set_altitude_m(float m);   // false se fuori range (-400..4000)
+
+// Azzera lo storico di un nodo, da chiamare PRIMA di una serie di
+// remote_seed_pressure().
+//
+// Serve perche' i DATA veri possono arrivare prima che il seeding parta (il
+// seeding aspetta il primo sync NTP, i nodi no): lo storico conterrebbe gia'
+// un campione recente, e ogni campione letto dal CSV — piu' vecchio — verrebbe
+// rifiutato come fuori ordine. Il risultato sarebbe un seeding che gira,
+// non da' errori e non semina niente.
+void remote_seed_begin(const uint8_t mac[6]);
+
+// Inserisce nello storico un campione di pressione LETTO ALTROVE, tipicamente
+// dai CSV su SD subito dopo un riavvio dell'hub.
+//
+// Senza questo, ogni riavvio (e ogni OTA) costerebbe tre ore di "non ancora
+// noto" — cioe' lo stesso guasto che si sta togliendo al nodo, spostato
+// sull'hub. I campioni vanno passati in ordine cronologico; quelli piu'
+// vecchi dell'ultimo gia' noto vengono ignorati.
+//
+// Sta qui e non dentro il modulo perche' remote_nodes non conosce la SD, per
+// la stessa ragione per cui non conosce sd_logger: l'incollatura e' nel .ino.
+void remote_seed_pressure(const uint8_t mac[6], time_t ts, float pressHpa);
+
+// Etichetta e testo della previsione, per la UI. Incapsulati qui cosi' chi
+// disegna non deve includere forecast.h ne' sapere come e' fatto il trend.
+const char* remote_trend_label(uint8_t trend);
+const char* remote_forecast_text(const RemoteNode* n);
