@@ -677,21 +677,39 @@ nodo, uno solo arrivato. Risolto con `Link_Node_SetSeq()`/`GetSeq()` e il seq
 conservato in RTC memory. Le trappole complete stanno in `CLAUDE.md`, sezione
 "Deep sleep".
 
+**La prima notte a batteria, misurata (2026-08-24)** — `v9`, cadenza 60 s,
+senza `gpio_hold_en()`. Letta dai CSV dell'hub (`/nodi/MeteoNode/`):
+
+| | |
+|---|---|
+| finestra continua | 2026-08-23 21:11:51 → 2026-08-24 17:36:34 |
+| durata | **20,41 h** |
+| pacchetti attesi / scritti | 1212 / **1212** — zero buchi, zero salti di `seq`, zero riavvii |
+| ciclo reale | **60,68 s** su 60 s di sonno → veglia completa **~0,68 s**, duty cycle 1,1 % |
+| batteria (multimetro, a riposo) | **4,18 V → 4,12 V**, cioè −60 mV in 20,41 h |
+
+I 60 mV sono l'unico dato di consumo che esiste, ed è **un solo segmento della
+curva**, per giunta nel tratto alto dove un litio scende in fretta: non basta a
+stimare l'autonomia, e non va spacciato per una misura di capacità. Serve una
+serie di punti — o il partitore, che è il modo giusto.
+
 **Ancora da fare su questa fase**:
 
-- **`gpio_hold_en(D3/GPIO5)` + `gpio_deep_sleep_hold_en()` NON sono ancora nel
-  codice.** Il pin è stato scelto RTC-capable apposta (vedi sotto) ma la
-  chiamata manca: durante il sonno torna flottante, quindi il sensore resta
-  parzialmente alimentato e si perde buona parte del risparmio che giustifica
-  tutto il resto. Non è un guasto funzionale — il nodo dorme, si sveglia e
-  trasmette — ed è per questo che è passato inosservato: **si vede solo
-  misurando la corrente, non guardando i dati**.
+- ~~**`gpio_hold_en(D3/GPIO5)` + `gpio_deep_sleep_hold_en()` NON sono ancora nel
+  codice**~~ — **fatto il 2026-08-24 in `MeteoNode_C3` `v10`**, insieme al
+  rilascio dell'hold in `sensorPower(true)` (senza, al risveglio il pin resta
+  inchiodato basso e il sensore non si riaccende più). La cadenza di default è
+  tornata a 300 s nello stesso firmware. Quanto valga davvero in corrente resta
+  **da misurare**: nei dati non si vede nulla, né prima né dopo.
 - **Il partitore della batteria non è cablato** (`BATTERY_ADC_ENABLED 0`, D1 /
   GPIO3 libero): niente cutoff di sottotensione e `battery_mv` resta 0. Finché
   è così, un nodo a batteria va guardato a vista.
-- **L'autonomia non è mai stata misurata.** La stima di 6-12 mesi qui sotto vale
-  con il GPIO tenuto basso e a intervallo di 5 minuti; il nodo lasciato acceso
-  la notte del 2026-08-23 girava a **60 s** e senza `gpio_hold_en()`.
+- **L'autonomia non è ancora misurata davvero.** La stima di 6-12 mesi qui
+  sotto vale con il GPIO tenuto basso e a intervallo di 5 minuti — cioè la
+  configurazione che esiste solo da `v10`. Quello che si sa è la tabella qui
+  sopra: 60 mV in 20,4 h nella configurazione *sbagliata*. Il confronto utile
+  è ripetere la stessa misura, stessa durata e stessa batteria, con `v10` a
+  300 s: due segmenti confrontabili valgono più di una stima.
 - Spostare `forecast.h` sull'hub: la RAM del nodo si azzera ad ogni risveglio,
   quindi lo storico a 3 ore per il trend non può stare su di lui.
 

@@ -210,11 +210,13 @@ mentre si cercava di leggere i log di un deep sleep — e per un pezzo è sembra
 che lo sketch non partisse affatto.
 
 
-### Deep sleep — tre trappole trovate su hardware
+### Deep sleep — quattro trappole trovate su hardware
 
 Implementato per la prima volta il 2026-08-23 su `projects/MeteoNode_C3/`
 (`v9`): il nodo si sveglia a timer, misura, manda un DATA ESP-NOW e torna a
-dormire, senza mai accendere il WiFi. Le tre cose che sono costate una serata:
+dormire, senza mai accendere il WiFi. Le tre cose che sono costate una serata,
+più una quarta che non è costata niente — e proprio per questo è la peggiore da
+riconoscere:
 
 **1. Il `seq` di `EspNowLink` deve attraversare il sonno.** È la peggiore, e ha
 una sezione sua più sotto (vedi `EspNowLink`): il contatore vive in RAM, quindi
@@ -247,6 +249,29 @@ in **NVS, non in RTC memory**: la RTC memory la cancella il power-cycle, cioè
 proprio l'operazione con cui si recupera un nodo che non torna, quindi la prova
 sparisce esattamente quando serve. È stato il contatore `risvegli=19,
 consegnati=19` a spostare il sospetto dal nodo all'hub.
+
+**4. Un GPIO che alimenta qualcosa torna flottante nel sonno, e nessun dato lo
+dice.** Se il VCC di un sensore passa da un pin (`MeteoNode_C3` lo fa apposta,
+per poterlo power-ciclare), portarlo LOW prima di dormire **non basta**:
+entrando nel deep sleep il pin perde lo stato di uscita, e attraverso i diodi
+di protezione dei piedini il modulo resta "mezzo acceso". Serve
+`gpio_hold_en((gpio_num_t)PIN)` + `gpio_deep_sleep_hold_en()` subito prima di
+dormire, e il pin dev'essere **RTC-capable** (GPIO0-5 sul C3) perché l'hold lo
+tiene il dominio RTC.
+
+**E al risveglio l'hold va RILASCIATO** con `gpio_hold_dis()` +
+`gpio_deep_sleep_hold_dis()` *prima* di ripilotare il pin, altrimenti
+`pinMode()`/`digitalWrite()` non hanno alcun effetto e il sensore non si
+riaccende più — che da fuori somiglia a una saldatura fredda. Va fatto nel
+percorso di risveglio, non nel `setup()`: il `setup()` il risveglio non lo
+esegue.
+
+Perché è la trappola peggiore: **le altre tre si vedono nei dati** (pacchetti
+mancanti, risvegli che non arrivano), questa no. Il nodo dorme, si sveglia,
+misura bene e consegna tutto. `MeteoNode_C3` ha girato così per **20,4 ore, 1212
+pacchetti, zero persi** e sembrava perfetto; il costo esce solo da un
+amperometro in serie o da un'autonomia più corta del previsto. Corretto in `v10`
+il 2026-08-24.
 
 **Ordine di spegnimento prima di dormire** (preso da uno sketch già validato su
 hardware, non inventato qui): `esp_now_deinit()` → `esp_wifi_stop()` →

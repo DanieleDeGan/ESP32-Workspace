@@ -1242,7 +1242,12 @@ Da conoscere:
 
 - `sensorPower(bool)` — il VDD del sensore passa da un GPIO (D3/GPIO5), così si
   può fare un power-cycle vero del modulo quando smette di rispondere. È anche
-  la sequenza usata prima di dormire.
+  la sequenza usata prima di dormire, e da `v10` è la **coppia** che regge
+  l'hold del pin nel deep sleep: `vaiADormire()` chiama `gpio_hold_en()` dopo
+  averlo messo basso (o entrando nel sonno tornerebbe flottante e il modulo
+  resterebbe mezzo alimentato), `sensorPower(true)` chiama `gpio_hold_dis()`
+  prima di ripilotarlo — senza quel rilascio il pin resta inchiodato e il
+  sensore non si riaccende più. Il pin è RTC-capable apposta.
 - `bootDiagBegin()` / `app_reset_reason()` / `app_boot_count()` — perché la
   scheda è ripartita e quante volte (il contatore è in NVS). Tutti gli altri
   contatori vivono in RAM e ripartono da zero, quindi senza questi un riavvio è
