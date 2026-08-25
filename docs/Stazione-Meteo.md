@@ -782,7 +782,11 @@ di radio a risveglio l'ordine di grandezza è **6–12 mesi** su una 18650 reale
 
 **Canale ESP-NOW**: l'hub sta sul WiFi del router, quindi il canale glielo impone
 l'AP e tutti devono usare quello (`Link_InitEx` con il canale dell'AP, non
-`Link_Init`). **Fissare il canale 2,4 GHz nel router**, altrimenti un giorno
+`Link_Init`). ~~**Fissare il canale 2,4 GHz nel router**~~ — **valutato e
+scartato il 2026-08-25**, dopo che il caso si è presentato davvero: toglierebbe
+all'AP la scelta automatica per risolvere il problema di un solo dispositivo.
+La strada scelta è farlo cercare al nodo, vedi **Fase 9**. Resta vero il
+perché: altrimenti un giorno
 cambia da solo e i nodi diventano muti.
 
 **Alimentare il sensore da un GPIO** — **deciso e saldato il 2026-08-22: VCC su
@@ -1049,6 +1053,56 @@ notevole: sparisce il problema del **canale che cambia da solo**, che il
 2) e il telefono esce dalla rete di casa per parlare con l'hub. Ha senso per
 `MeteoHub_S3` se finirà dove non arriva il WiFi di casa; non per `EnvNode_C3`,
 che sta in casa.
+
+### Fase 9 — il nodo che cerca il canale da solo (idea del 2026-08-25, nulla di fatto)
+
+Nasce dal guasto del 2026-08-25: l'AP ha cambiato canale da solo (da 6 a 1) e
+il nodo a batteria, che tiene il canale in RTC memory, è diventato sordo finché
+la rete di sicurezza non l'ha riavviato — 25 minuti di dati persi.
+
+**Fissare il canale nel router è stato valutato e scartato** (2026-08-25):
+toglie all'AP la scelta automatica, che serve a scansare le reti dei vicini, e
+in un condominio denso peggiorerebbe il WiFi di casa per risolvere il problema
+di **un solo** dispositivo. L'hub e il nodo a muro seguono l'AP da soli
+riassociandosi; il sordo è solo chi dorme.
+
+**L'idea**: il nodo sa già quando non è stato consegnato — è lo stesso segnale
+che alimenta il contatore dei risvegli muti (`hub_sent_ok()`, cioè l'ACK di
+livello radio, che è esattamente il segnale giusto per "sono sul canale
+sbagliato"). Oggi quella conoscenza porta a un'unica reazione, la più cara:
+dopo cinque risvegli muti si riavvia e resta sveglio 5 minuti con il WiFi.
+Invece, al risveglio, se il DATA non viene consegnato: cambiare canale e
+ritentare — prima 1, 6, 11 (i non sovrapposti, dove sta la quasi totalità dei
+router domestici), poi eventualmente tutti. Al primo che risponde, salvarlo in
+RTC memory **e in NVS** e tornare a dormire.
+
+| | ripristino di oggi | scansione dei canali |
+|---|---|---|
+| radio accesa | 5 min di WiFi | ~1,5 s |
+| carica spesa | ~7 mAh | ~0,03 mAh |
+| in risvegli normali equivalenti | **~450** (≈1,6 giorni di budget) | **~2** |
+| dati persi | **25 minuti** | nessuno |
+| quando si paga | ad ogni cambio di canale | solo se il primo invio fallisce |
+
+~200x più economico, e recupera **dentro lo stesso risveglio**. **Non**
+sostituisce la rete di sicurezza: resta sotto, per quando l'hub è davvero giù e
+nessun canale risponde.
+
+**Cosa costa, in onestà**:
+
+- serve una funzione in più in `libraries/EspNowLink` per cambiare canale a
+  caldo (`esp_wifi_set_channel()` più l'aggiornamento del peer): oggi il canale
+  si sceglie **solo** a `Link_InitEx()`. Una ventina di righe, ma è la libreria
+  **condivisa** — la usano anche l'hub e il nodo camera, quindi va fatta
+  retrocompatibile e va ricompilato tutto;
+- risolve il canale che cambia, **non** l'hub che cambia MAC (scheda
+  sostituita): per quello resta il fallback su HELLO, che c'è già;
+- la scansione va **limitata**: un tentativo per canale con timeout corto, o il
+  costo del caso peggiore mangia il vantaggio.
+
+**Alternativa che chiude lo stesso problema da un'altra parte**: l'hub in
+SoftAP con canale fisso (vedi Fase 8) — lì il canale non cambia mai, per
+costruzione.
 
 ## Web UI dell'hub — specifica in lavorazione
 
