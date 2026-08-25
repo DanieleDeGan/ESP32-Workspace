@@ -1,5 +1,55 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-08-25 — il secondo segmento di scarica, e un guasto dell'hub
+
+**Segmento 2 della misura di scarica, chiuso.** Stessa cella, `v10`, cadenza
+300 s, con l'`gpio_hold_en()` sul VCC del sensore:
+
+| | segmento 1 (`v9`) | segmento 2 (`v10`) |
+|---|---|---|
+| cadenza | 60 s | 300 s |
+| hold sul VCC del sensore | no | sì |
+| finestra | 20,41 h | **24,93 h** |
+| pacchetti attesi / scritti | 1212 / 1212 | 294 / 294 |
+| batteria (multimetro, a riposo) | 4,18 → 4,12 V | **4,12 → 4,10 V** |
+| caduta oraria | −2,94 mV/h | **−0,80 mV/h** |
+
+È un **indizio concorde, non una misura**: 20 mV sono due cifre sul
+multimetro; il segmento 2 sta più in basso sulla curva del litio, dove scende
+più piano di suo; e fra i due segmenti sono cambiate **due** cose insieme
+(60→300 s e l'hold), quindi i due contributi non sono separabili. Serve sempre
+il partitore.
+
+**Il nodo si è riavviato alle 00:38 del 25**, e per la prima volta è scattata
+la rete di sicurezza: `seq` da 75 a 1 (RTC memory persa = `ESP.restart()`, non
+un risveglio) preceduto da 1508 s di silenzio, cioè **cinque cicli da 300 s** —
+la firma esatta di `RISVEGLI_MUTI_MAX`. Nella stessa finestra il gemello a muro
+ha consegnato senza un buco, quindi l'hub riceveva: era il nodo a non essere
+sentito. **Il canale ESP-NOW oggi è 1, non il 6 delle prime prove**: l'AP l'ha
+cambiato per conto suo. Un nodo sveglio lo segue riassociandosi, uno che dorme
+resta sul canale in RTC memory e diventa sordo finché non si riavvia. È
+esattamente il caso per cui il piano dice **di fissare il canale 2,4 GHz nel
+router** — e che finora non era mai stato osservato dal vivo. La rete di
+sicurezza ha funzionato, ma costa 25 minuti di dati e un riavvio.
+
+**L'hub è rimasto fermo 456 s il 24 alle 21:00**, senza riavviarsi (lo esclude
+`uptime`). Causa trovata e corretta in `EnvNode_C3` `v12`: `streamFile()` del
+core non controlla se il client accetta i dati e ogni write può attendere 10 s,
+quindi un client andato via a metà scaricamento tiene `loop()` dentro
+l'handler. **Il danno non resta sull'hub**: senza `remote_loop()` i DATA dei
+nodi arrivavano alla radio e nessuno li prelevava dal driver, che tiene solo
+l'ultimo — nei log sembravano perdite radio. Meccanismo completo, e le due
+schede dove il difetto **resta**, in `CLAUDE.md`. Da `v12` `/api/stato` riporta
+anche `loop_max_ms`/`loop_max_dove`/`loop_lenti`/`invii_interrotti`: la
+prossima volta la risposta è lì invece che in un'indagine sui CSV.
+
+Censimento su 23 giorni di log dell'hub (33 184 righe): sette buchi sopra i
+150 s in tutto, di cui uno da 47,8 min il 2026-08-02 (sviluppo) e gli altri fra
+2,5 e 7,6 min. È un evento raro, non un difetto continuo — ma ogni occorrenza
+si porta via anche i dati dei nodi.
+
+---
+
 ## Aggiornamento del 2026-08-23 — il nodo è morto di notte, e cosa ne è seguito
 
 Il nodo lasciato a batteria la notte fra il 22 e il 23 è stato trovato spento:
@@ -940,6 +990,65 @@ La veglia dura quanto serve (0,68 s misurati) e finisce da sola; l'unico
 parametro è il periodo. L'unica veglia configurabile è quella dei 5 minuti con
 WiFi/OTA dopo un'accensione vera (`VEGLIA_MS`), che è la via di recupero e
 conviene lasciare com'è.
+
+### Fase 8 — l'orologio senza internet (idea del 2026-08-25, nulla di fatto)
+
+Nata da una domanda giusta: *internet serve solo a sincronizzare l'ora?* Sì.
+Dashboard, OTA, ESP-NOW e log su SD vivono tutti sulla **rete locale**, e
+funzionerebbero identici col router scollegato da internet. Le due dipendenze
+vanno tenute separate perché si tolgono in modi diversi: **internet** lo si
+toglie in tre modi, il **router** solo diventando SoftAP.
+
+**Il punto che decide tutto**: l'ora impostata a mano **non sopravvive a un
+distacco di corrente**, perché non c'è RTC tamponato (scelta confermata, niente
+DS3231). Al riavvio si torna alla stima da build-time. Quindi l'orario manuale
+non toglie una dipendenza: la sposta da internet **a una persona**, che deve
+essere lì dopo ogni blackout e accorgersene. È il motivo per cui NTP c'è.
+
+Le tre strade che tolgono internet *senza* metterci una persona:
+
+1. **Il router come server NTP.** Molti router lo fanno. Una riga in
+   `rtc_time.cpp`: il gateway come primo server in `configTzTime()`, i due
+   pubblici come fallback. Automatico, e se il router non risponde il
+   comportamento è quello di oggi. **Da provare per prima**: costa quasi nulla
+   e potrebbe chiudere la questione da sola.
+2. **L'ora la manda il browser**: la pagina, ad ogni caricamento, fa una POST
+   con il proprio orologio — chi apre la dashboard semina l'hub senza saperlo.
+   Copre anche il caso "router senza NTP". **Il JS va messo anche nelle pagine
+   in PROGMEM** (`/nodi`, `/dashboard-upload`), non solo nella dashboard sulla
+   SD, che è vecchia finché non la si ricarica a mano e quindi non si può
+   assumere aggiornata.
+3. **Impostazione manuale esplicita** nelle settings: utile come ultima risorsa
+   e per correggere, ma è quella che invecchia peggio ed è l'unica che richiede
+   che qualcuno se ne ricordi. La 2 costa quasi uguale ed è più furba.
+
+**Cosa tocca, se si fa**: `settimeofday()`, un endpoint, e un **terzo valore per
+`fonte_ora`** accanto a `NTP`/`STIMA`. Il progetto è già predisposto — quella
+colonna esiste apposta per dire quanto fidarsi di un timestamp, e
+`orario_registrabile()` è già il punto unico dove si decide se un dato è
+databile. Vale per `rtc_time.*`, quindi si propaga per copia a `MeteoHub_S3` e
+`Timelapse_XIAO`.
+
+**Due numeri da non dare per buoni**:
+
+- **la deriva senza sync** è quella del cristallo del C3, dell'ordine di
+  qualche secondo al giorno. Per campioni al minuto è irrilevante per
+  settimane, ma **va misurata**, non stimata;
+- si può **salvare l'ultimo orario noto in NVS** ogni tanto: dopo un blackout
+  la stima riparte dall'ultimo istante vissuto invece che dalla data di
+  compilazione. Resta indietro della durata del guasto — quindi resta `STIMA` —
+  ma toglie la patologia peggiore, cioè che la stima da build-time sia
+  **identica ad ogni riavvio** (è ciò che il 2026-08-23 ha lasciato dieci righe
+  con lo stesso timestamp `10:48:06`).
+
+**Se invece l'obiettivo fosse l'indipendenza dal ROUTER**, l'architettura è
+un'altra: hub in **SoftAP**, il telefono si collega direttamente a lui, ESP-NOW
+su canale fisso con `Link_Init()` invece di seguire l'AP. Effetto collaterale
+notevole: sparisce il problema del **canale che cambia da solo**, che il
+2026-08-25 ha fatto riavviare il nodo a batteria. Prezzo: niente NTP (serve la
+2) e il telefono esce dalla rete di casa per parlare con l'hub. Ha senso per
+`MeteoHub_S3` se finirà dove non arriva il WiFi di casa; non per `EnvNode_C3`,
+che sta in casa.
 
 ## Web UI dell'hub — specifica in lavorazione
 
