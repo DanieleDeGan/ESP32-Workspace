@@ -74,3 +74,13 @@ time_t app_hum_max_ts();
 
 uint32_t    app_dht_errors();
 const char* app_fw_version();
+
+// Diagnostica del giro di loop(), misurata nel .ino. Serve a distinguere
+// "la scheda si e' riavviata" da "la scheda e' rimasta ferma dentro una
+// chiamata": nei CSV le due cose hanno lo stesso identico aspetto - un
+// buco - e il 2026-08-25 distinguerle e' costato un'indagine incrociando
+// uptime, log locale e log dei nodi. Ora la risposta e' in /api/stato.
+uint32_t    app_loop_max_ms();     // la fase piu' lunga vista da questo avvio
+const char* app_loop_max_dove();   // quale fase era ("web", "nodi", "campione"...)
+time_t      app_loop_max_ts();     // quando, 0 se non c'e' ancora nulla
+uint32_t    app_loop_lenti();      // quante fasi hanno sforato LOOP_LENTO_MS

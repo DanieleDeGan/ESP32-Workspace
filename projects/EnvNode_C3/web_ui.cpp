@@ -385,6 +385,71 @@ static void appendJsonString(String& out, const char* s) {
 }
 
 // ---------------------------------------------------------------------
+//  Invio limitato: un client morto non deve poter fermare la scheda
+//
+//  WebServer::streamFile() finisce in NetworkClient::write(Stream&), che
+//  IGNORA il valore di ritorno della write() e prosegue fino a fine file
+//  anche quando il client non accetta piu' un byte. E ogni write() aspetta
+//  che il socket torni scrivibile con dieci select() da un secondo l'uno.
+//  Quindi un client che smette di dare ACK senza chiudere il socket -
+//  telefono che si addormenta, WiFi che cade, coperchio del portatile - ci
+//  tiene dentro l'handler finche' non e' lo stack TCP a rinunciare al peer,
+//  che sono minuti. Non e' un caso limite: e' come muore una pagina lasciata
+//  aperta.
+//
+//  Misurato su questa scheda il 2026-08-24 alle 21:00:46: ferma 456 s. In
+//  quella finestra non ha campionato il proprio DHT11 (buco nel CSV) e
+//  soprattutto non ha chiamato remote_loop(), quindi i DATA dei nodi
+//  ESP-NOW arrivavano alla radio e nessuno li prelevava dal driver, che
+//  tiene solo l'ultimo: sei pacchetti di un nodo e uno dell'altro persi per
+//  sempre. Un client andato via a meta' scaricamento fa un buco nei dati di
+//  TUTTA la rete, e nei log sembra un problema di radio: e' un guasto che
+//  punta lontano da se stesso.
+//
+//  Rimedio: ci si ferma al primo chunk che il client non accetta per
+//  intero, e comunque a fine budget. Il costo residuo e' UNA write bloccata
+//  (~10 s): quel numero sta dentro il core e da qui non si abbassa.
+// ---------------------------------------------------------------------
+static constexpr uint32_t INVIO_BUDGET_MS = 20000;   // su una LAN un giorno intero di CSV vola: 20 s e' gia' larghissimo
+
+static uint32_t s_invii_interrotti = 0;   // quante volte e' scattato il taglio, da questo avvio
+
+static void invioInterrotto(const char* perche) {
+  s_invii_interrotti++;
+  Serial.printf("[web] invio interrotto: %s\n", perche);
+}
+
+// Come streamFile(), ma si arrende invece di trascinarsi dietro la scheda.
+static bool streamFileLimitato(WebServer& srv, File& f, const char* contentType) {
+  srv.setContentLength(f.size());
+  srv.send(200, contentType, "");
+
+  NetworkClient& cli = srv.client();
+  uint8_t buf[1024];
+  const uint32_t t0 = millis();
+
+  while (f.available()) {
+    if (!cli.connected()) { invioInterrotto("il client ha chiuso"); return false; }
+
+    const int letti = f.read(buf, sizeof(buf));
+    if (letti <= 0) break;
+
+    // E' il controllo che manca al core, ed e' tutto qui: se il client non
+    // ha preso l'intero chunk non ne prendera' altri, e ogni giro in piu'
+    // costa dieci secondi.
+    if (cli.write(buf, (size_t)letti) != (size_t)letti) {
+      invioInterrotto("il client non accetta piu' dati");
+      return false;
+    }
+    if (millis() - t0 > INVIO_BUDGET_MS) {
+      invioInterrotto("oltre il budget di tempo");
+      return false;
+    }
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------
 //  GET /
 // ---------------------------------------------------------------------
 static void handleRoot() {
@@ -394,7 +459,7 @@ static void handleRoot() {
   // altrimenti quella di default incorporata nel firmware.
   File custom = sd_open_dashboard();
   if (custom) {
-    net_server().streamFile(custom, "text/html");
+    streamFileLimitato(net_server(), custom, "text/html");
     custom.close();
     return;
   }
@@ -524,6 +589,20 @@ static void handleApiStato() {
   json += "\"nodi_online\":"   + String(remote_count_online()) + ",";
   json += "\"pairing\":"; json += (remote_pairing_active() ? "true" : "false"); json += ',';
 
+  // Diagnostica del giro e degli invii tagliati: e' cio' che permette di
+  // spiegare un buco nei dati senza rifare l'indagine sui CSV.
+  json += "\"loop_max_ms\":"   + String(app_loop_max_ms()) + ",";
+  json += "\"loop_max_dove\":"; appendJsonString(json, app_loop_max_dove()); json += ',';
+  if (app_loop_max_ts() > 0) {
+    char lbuf[24];
+    rtctime_format(app_loop_max_ts(), "%Y-%m-%d %H:%M:%S", lbuf, sizeof(lbuf));
+    json += "\"loop_max_ora\":"; appendJsonString(json, lbuf); json += ',';
+  } else {
+    json += "\"loop_max_ora\":null,";
+  }
+  json += "\"loop_lenti\":"      + String(app_loop_lenti()) + ",";
+  json += "\"invii_interrotti\":" + String(s_invii_interrotti) + ",";
+
   json += "\"uptime\":"        + String(millis() / 1000) + ",";
   json += "\"heap\":"          + String(ESP.getFreeHeap());
   json += '}';
@@ -555,15 +634,50 @@ static void handleApiGiorni() {
 struct GiornoStreamCtx {
   WebServer* server;
   bool       first;
+  bool       interrotto;   // client morto o budget scaduto: si smette di spedire
+  uint32_t   t0;
+  String     buf;          // le righe si accumulano invece di partire una per una
 };
+
+// Una sendContent() per riga erano TRE write() sul socket per ~25 byte di
+// dati (in chunked encoding: la dimensione, il corpo, il terminatore), cioe'
+// ~4200 write per un giorno. Accumulando in un buffer da 1 kB diventano una
+// cinquantina - e ogni write in meno e' un'attesa in meno da dieci secondi
+// quando il client dall'altra parte e' morto (vedi streamFileLimitato).
+static void giornoFlush(GiornoStreamCtx* ctx) {
+  if (ctx->interrotto || ctx->buf.length() == 0) return;
+
+  if (!ctx->server->client().connected()) {
+    ctx->interrotto = true;
+    invioInterrotto("il client ha chiuso");
+    return;
+  }
+  ctx->server->sendContent(ctx->buf);
+  ctx->buf = "";
+
+  // sendContent() non dice quanto ha scritto, quindi qui il client morto non
+  // si riconosce dal chunk rifiutato come nello streaming dei file: si
+  // riconosce dal tempo. Una write bloccata costa ~10 s, quindi bastano due
+  // giri sopra il budget per accorgersene.
+  if (millis() - ctx->t0 > INVIO_BUDGET_MS) {
+    ctx->interrotto = true;
+    invioInterrotto("oltre il budget di tempo");
+  }
+}
 
 static void streamRowCb(time_t ts, float t, float h, void* arg) {
   GiornoStreamCtx* ctx = (GiornoStreamCtx*)arg;
+
+  // sd_read_day() non si puo' fermare a meta': si smette di spedire e si
+  // lascia scorrere la lettura, che sulla card e' questione di un secondo.
+  if (ctx->interrotto) return;
+
   char chunk[48];
-  int n = snprintf(chunk, sizeof(chunk), "%s[%lu,%.1f,%.1f]",
-                    ctx->first ? "" : ",", (unsigned long)ts, t, h);
+  snprintf(chunk, sizeof(chunk), "%s[%lu,%.1f,%.1f]",
+           ctx->first ? "" : ",", (unsigned long)ts, t, h);
   ctx->first = false;
-  ctx->server->sendContent(chunk, n);
+  ctx->buf += chunk;
+  if (ctx->buf.length() >= 1024) giornoFlush(ctx);
 }
 
 static void handleApiGiorno() {
@@ -579,9 +693,17 @@ static void handleApiGiorno() {
   srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
   srv.send(200, "application/json", "");
   srv.sendContent("[");
-  GiornoStreamCtx ctx{ &srv, true };
+  GiornoStreamCtx ctx{ &srv, true, false, millis(), String() };
+  ctx.buf.reserve(1200);
   sd_read_day(date.c_str(), streamRowCb, &ctx);
-  srv.sendContent("]");
+  giornoFlush(&ctx);
+
+  // Se si e' interrotto, il JSON resta tronco E NON SI CHIUDE: un array
+  // chiuso a meta' verrebbe letto come un giorno con meno dati, cioe' un
+  // grafico sbagliato che sembra giusto. Cosi' invece il parse fallisce e
+  // la dashboard mostra un errore, che e' la verita'. Il chunked lo chiude
+  // comunque WebServer::_finalizeResponse().
+  if (!ctx.interrotto) srv.sendContent("]");
 }
 
 // ---------------------------------------------------------------------
@@ -606,7 +728,7 @@ static void handleApiScarica() {
   char header[40];
   snprintf(header, sizeof(header), "attachment; filename=\"%s.csv\"", date.c_str());
   srv.sendHeader("Content-Disposition", header);
-  srv.streamFile(f, "text/csv");
+  streamFileLimitato(srv, f, "text/csv");
   f.close();
 }
 
@@ -988,7 +1110,7 @@ static void handleApiNodiScarica() {
   snprintf(disp, sizeof(disp), "attachment; filename=\"%s_%s.csv\"",
            srv.arg("nodo").c_str(), srv.arg("d").c_str());
   srv.sendHeader("Content-Disposition", disp);
-  srv.streamFile(f, "text/csv");
+  streamFileLimitato(srv, f, "text/csv");
   f.close();
 }
 

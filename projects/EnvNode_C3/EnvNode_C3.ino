@@ -58,6 +58,13 @@ DHT              dht(PIN_DHT, DHT11);
 
 // Da incrementare a ogni firmware caricato sul nodo: la dashboard lo mostra,
 // ed e' l'unico modo per sapere da remoto quale versione sta davvero girando.
+//   v12 2026-08-25  gli invii web si fermano quando il client smette di
+//                   accettare dati, invece di trascinarsi dietro la scheda:
+//                   il 24 alle 21:00 loop() e' rimasto fermo 456 s dentro
+//                   il web server, e in quella finestra sono spariti dai
+//                   dati anche i pacchetti dei nodi ESP-NOW. Piu' la misura
+//                   del tempo di giro in /api/stato, per non doverlo piu'
+//                   ricostruire dai CSV
 //   v11 2026-08-24  calcola qui il trend barometrico e la previsione dei
 //                   nodi remoti (forecast.h, arrivato dal nodo): un nodo in
 //                   deep sleep perde la RAM ad ogni risveglio e non puo'
@@ -91,10 +98,54 @@ DHT              dht(PIN_DHT, DHT11);
 //                   riconosciuta dal PC ma nessuno che legge, le print()
 //                   bloccavano loop() e con lui web server, OTA e campionamento
 //   v2  ...
-static const char* FW_VERSION = "v11";
+static const char* FW_VERSION = "v12";
 
 static bool     otaActive = false;   // true mentre un update e' in corso
 static uint32_t lastDraw  = 0;
+
+// ---------------------------------------------------------------------
+//  Diagnostica del giro di loop()
+//
+//  Un buco nel CSV non dice da solo se la scheda si e' RIAVVIATA o se e'
+//  rimasta FERMA dentro una chiamata: in tutti e due i casi mancano delle
+//  righe, e per distinguerli il 2026-08-25 e' servito incrociare uptime,
+//  log locale e log dei nodi remoti. La conclusione - 456 s dentro il web
+//  server, per un client che era andato via a meta' scaricamento - stava
+//  scritta solo nella forma dei dati mancanti.
+//
+//  Qui ogni fase del giro si misura e si tiene la peggiore. Costa due
+//  millis() per fase e restituisce, la prossima volta, una risposta invece
+//  di un'indagine.
+//
+//  Sta in RAM di proposito: il buco nel CSV la data gia' da se', e scrivere
+//  in NVS dentro il giro sarebbe un costo continuo per un evento che
+//  capita una volta al mese. Se un giorno servisse sopravvivere al riavvio,
+//  il posto e' settings.cpp, non qui.
+// ---------------------------------------------------------------------
+static constexpr uint32_t LOOP_LENTO_MS = 1000;   // oltre questo una fase e' "lenta" e si conta
+
+static uint32_t s_loopMaxMs       = 0;
+static char     s_loopMaxDove[12] = "";
+static time_t   s_loopMaxTs       = 0;
+static uint32_t s_loopLenti       = 0;
+
+// Chiude la fase iniziata a "inizio" e apre la successiva: il valore di
+// ritorno e' il nuovo istante di partenza, cosi' nel loop() si incatenano.
+static uint32_t faseFine(const char* nome, uint32_t inizio) {
+  const uint32_t durata = millis() - inizio;
+
+  if (durata > s_loopMaxMs) {
+    s_loopMaxMs = durata;
+    strncpy(s_loopMaxDove, nome, sizeof(s_loopMaxDove) - 1);
+    s_loopMaxDove[sizeof(s_loopMaxDove) - 1] = '\0';
+    s_loopMaxTs = rtctime_now();
+  }
+  if (durata >= LOOP_LENTO_MS) {
+    s_loopLenti++;
+    Serial.printf("[lento] %s ha tenuto il giro per %lu ms\n", nome, (unsigned long)durata);
+  }
+  return millis();
+}
 
 // ---------------------------------------------------------------------
 //  Stato applicativo: lettura corrente (media mobile) + estremi dal boot
@@ -144,6 +195,11 @@ float  app_hum_max()         { return s_humMax; }
 time_t app_hum_max_ts()      { return s_humMaxTs; }
 uint32_t    app_dht_errors() { return s_dhtErrors; }
 const char* app_fw_version() { return FW_VERSION; }
+
+uint32_t    app_loop_max_ms()   { return s_loopMaxMs; }
+const char* app_loop_max_dove() { return s_loopMaxDove; }
+time_t      app_loop_max_ts()   { return s_loopMaxTs; }
+uint32_t    app_loop_lenti()    { return s_loopLenti; }
 
 // ---------------------------------------------------------------------
 //  Campionamento: legge il DHT11, aggiorna min/max, logga su SD.
@@ -637,7 +693,14 @@ void setup() {
 }
 
 void loop() {
+  uint32_t t = millis();
+
   net_loop();                 // gestisce ArduinoOTA + web server
+
+  // Durante un OTA il web server scrive la partizione dentro handleClient():
+  // sono decine di secondi legittimi, e finirebbero nel massimo coprendo per
+  // sempre il guasto che questo contatore deve far vedere.
+  t = otaActive ? millis() : faseFine("web", t);
   if (otaActive) return;      // durante un update non fare altro
 
   static bool wasConnected = false;
@@ -646,15 +709,18 @@ void loop() {
   wasConnected = nowConnected;
 
   remote_loop();              // nodi ESP-NOW: WELCOME, nuovi DATA, stato muto
+  t = faseFine("nodi", t);
 
   // Una volta sola, al primo giro in cui l'orologio e' sincronizzato davvero
   // (che e' dopo il WiFi, quindi non nel setup): rimette in RAM le tre ore di
   // pressione che servono al trend, leggendole dai CSV di questa stessa card.
   // Esce subito nei giri successivi.
   seedForecastDaSD();
+  t = faseFine("trend", t);
 
   handleBootButton();
   updatePageRotation();
+  t = faseFine("bottone", t);
 
   static uint32_t winStartMs = 0;
   static uint32_t winSpanMs  = FIRST_SAMPLE_MS;
@@ -663,11 +729,13 @@ void loop() {
     take_sample();
     winStartMs = millis();
     winSpanMs  = settings_get().logIntervalS * 1000UL;
+    t = faseFine("campione", t);
   }
 
   if (millis() - lastDraw > DRAW_PERIOD_MS) {
     lastDraw = millis();
     drawCurrentPage();
+    faseFine("oled", t);
   }
 
   // Heartbeat: LED acceso mezzo secondo ogni secondo (attivo LOW).
