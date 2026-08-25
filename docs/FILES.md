@@ -1135,6 +1135,18 @@ anche con una `dashboard.html` vecchia o rotta. Stessa logica di
 `/dashboard-upload`. In `/api/stato` sono comparsi `nodi`, `nodi_online` e
 `pairing`, per quando la dashboard verrà aggiornata.
 
+**Trappola, e non è di questo file ma del core** (da `v12`): niente
+`streamFile()` nudo, e niente `sendContent()` una riga per volta. Gli invii
+passano da `streamFileLimitato()` e `giornoFlush()`, che si fermano appena il
+client smette di accettare dati — il controllo che `NetworkClient::write()` non
+fa — e comunque a fine budget (`INVIO_BUDGET_MS`). Senza, un client andato via
+a metà scaricamento tiene `loop()` dentro l'handler per minuti: misurati 456 s
+il 2026-08-24, e in quella finestra spariscono anche i pacchetti dei nodi
+ESP-NOW, perché `remote_loop()` non gira e il driver tiene solo l'ultimo DATA.
+Meccanismo completo in `CLAUDE.md`. Conseguenza voluta: una risposta interrotta
+resta **JSON tronco e non chiuso**, così il parse fallisce invece di consegnare
+un grafico con meno dati che sembra giusto.
+
 **Trappola**: i float dei nodi remoti passano da `appendJsonFloat()`, che emette
 `null` per NaN/infinito. `String(NAN, 2)` produce `"nan"`, che non è JSON valido
 e farebbe fallire il parse dell'**intera** risposta — pagina vuota per colpa di

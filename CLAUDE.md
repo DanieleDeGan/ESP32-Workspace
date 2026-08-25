@@ -308,6 +308,63 @@ retroattivamente perché su quel nodo l'OTA non era mai riuscito). Corretto in
 `starters/XIAO_S3_Camera/`; `projects/Timelapse_XIAO/` ce l'aveva già —
 era la correzione fatta nella copia più recente e mai riportata indietro.
 
+### `streamFile()` e le risposte grosse — un client morto ferma la scheda
+
+`WebServer::streamFile()` finisce in `NetworkClient::write(Stream&)`, che nel
+core 3.3.10 e' scritto cosi':
+
+```cpp
+while (available) {
+  toRead  = (available > 1360) ? 1360 : available;
+  toWrite = stream.readBytes(buf, toRead);
+  written += write(buf, toWrite);   // <-- il valore di ritorno NON viene guardato
+  available = stream.available();
+}
+```
+
+Due difetti che si sommano: il ritorno della `write()` e' ignorato, quindi il
+ciclo prosegue fino a fine file anche se il client non prende piu' un byte; e
+ogni `write()` aspetta che il socket torni scrivibile con dieci `select()` da
+un secondo l'uno (`WIFI_CLIENT_MAX_WRITE_RETRY` x
+`WIFI_CLIENT_SELECT_TIMEOUT_US`). Un client che smette di dare ACK **senza
+chiudere il socket** — telefono che si addormenta, WiFi che cade, coperchio del
+portatile — tiene quindi `loop()` dentro l'handler finche' non e' lo stack TCP
+a rinunciare al peer. Sono minuti, e non e' un caso limite: e' il modo normale
+in cui muore una pagina lasciata aperta.
+
+**Il guasto non somiglia alla sua causa, e punta lontano da se stesso.** Su
+`EnvNode_C3` il 2026-08-24 alle 21:00:46 la scheda e' rimasta ferma **456 s**
+(misurati: buco nel suo CSV locale, con `uptime` che esclude un riavvio). In
+quella finestra non ha campionato il DHT11 **e non ha chiamato
+`remote_loop()`**, quindi i DATA dei nodi ESP-NOW arrivavano alla radio e
+nessuno li prelevava dal driver, che tiene solo l'ultimo: sei pacchetti di un
+nodo e uno dell'altro persi. Nei log sembravano perdite radio, e la caccia
+sarebbe partita da li'. **Un client andato via a meta' scaricamento fa un buco
+nei dati di tutta la rete.**
+
+L'endpoint piu' esposto non e' il download che si chiede a mano: e' quello che
+la dashboard chiama **da sola** (`/api/giorno`), che in chunked encoding faceva
+una `sendContent()` per riga — tre `write()` sul socket ogni ~25 byte di dati,
+~4200 write per un giorno.
+
+**Rimedio** (in `EnvNode_C3/web_ui.cpp`, `streamFileLimitato()` e
+`giornoFlush()`): ci si ferma al primo chunk che il client non accetta per
+intero — il controllo che manca al core — e comunque a fine budget
+(`INVIO_BUDGET_MS`, 20 s: su una LAN un giorno di CSV vola). Dove si usa
+`sendContent()`, che non dice quanto ha scritto, il client morto si riconosce
+dal **tempo**, non dal ritorno. Il costo residuo e' UNA write bloccata (~10 s):
+quel numero sta dentro il core e da li' non si abbassa.
+
+**Attenzione**: se la risposta si interrompe, il JSON resta **tronco e non si
+chiude**. E' deliberato — un array chiuso a meta' verrebbe letto come un giorno
+con meno dati, cioe' un grafico sbagliato che sembra giusto; cosi' invece il
+parse fallisce e si vede un errore, che e' la verita'.
+
+**Dove NON e' ancora corretto** (stesso `streamFile()`, stesso difetto):
+`projects/Timelapse_XIAO/web_ui.cpp` (foto e CSV) e
+`starters/XIAO_S3_Camera/web_ui.cpp` (foto). Li' e' **peggio**, non uguale: una
+foto da 300 kB sono 220 chunk, e la galleria ne carica decine per volta.
+
 ### `Serial.setTxTimeoutMs(0)` — obbligatorio su C3 e S3
 
 Su queste schede la `Serial` dell'USB **non è una UART ma la CDC del chip**. Se
@@ -681,6 +738,16 @@ SSD1306 + dashboard web con grafici + orario NTP + OTA. Moduli:
   uso è versionato in `www/dashboard.html`, ma è **solo** un sorgente: dopo
   averlo modificato va ri-caricato a mano da `/dashboard-upload`, perché il nodo
   serve la copia sulla SD e ricompilare il firmware non cambia nulla.
+- **Il tempo di giro si misura** (da `v12`): `/api/stato` riporta
+  `loop_max_ms`, `loop_max_dove` (`web`/`nodi`/`trend`/`bottone`/`campione`/
+  `oled`), `loop_max_ora`, `loop_lenti` e `invii_interrotti`. Serve a
+  distinguere **"si è riavviata"** da **"è rimasta ferma dentro una chiamata"**:
+  nei CSV le due cose hanno lo stesso identico aspetto — un buco — e
+  distinguerle il 2026-08-25 è costato un'indagine incrociando `uptime`, log
+  locale e log dei nodi. Sta in RAM di proposito: il buco nel CSV lo data già
+  da sé, e scrivere in NVS dentro il giro sarebbe un costo continuo per un
+  evento raro. La fase `web` **non** si misura durante un OTA: sono decine di
+  secondi legittimi che coprirebbero per sempre il massimo vero.
 - **`web_ui` non deve** duplicare stato: legge `settings_get()`, `sd_logger.*`,
   `rtc_time.*`, `comfort_eval()` direttamente; i ganci `app_*()` implementati
   nel `.ino` coprono solo letture correnti e min/max dall'ultimo avvio.
