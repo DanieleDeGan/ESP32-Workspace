@@ -107,6 +107,45 @@ Cosa se ne ricava:
 Per un altro punto di calibrazione i due nodi vanno rimessi insieme: da oggi il
 confronto misura le stanze, non i sensori.
 
+**Il nodo a muro è passato da `v5` a `v11`** (OTA su 192.168.1.72, 1,16 MB in
+10,8 s, `reset_reason=SW`): era rimasto indietro di sei versioni. Il firmware
+compilato per la DOIT DevKit v1 occupa ora l'**88 %** della partizione
+(1 158 460 su 1 310 720 byte), e su questa board la tabella è fissa — il
+margine per crescere è quello, e va tenuto d'occhio ad ogni aggiunta.
+
+**E qui è saltata fuori una trappola che vale per ogni prossimo aggiornamento,
+di qualunque nodo**: dopo il riavvio l'intervallo di misura era **300 s invece
+di 60**. Non l'ha cambiato nessuno — `settingsLoad()` legge da NVS **con i
+default del firmware nuovo**:
+
+```cpp
+s_intervalloS = p.getULong("intervallo", INTERVALLO_DEFAULT_S);
+```
+
+Se la chiave in NVS **non è mai stata scritta**, il valore che si vede è il
+default del firmware, e un aggiornamento che cambia quel default cambia il
+comportamento del nodo **senza che nessuno tocchi niente**. Fra `v5` e `v10`
+`INTERVALLO_DEFAULT_S` è passato da 60 a 300 s (la cadenza pensata per il nodo a
+batteria), e il nodo a muro se l'è preso. L'altitudine, che era stata impostata
+davvero dalla pagina (29 m), è invece sopravvissuta — perché quella la chiave ce
+l'ha.
+
+**Il punto cattivo è che le due cose sono indistinguibili da fuori**:
+`/api/stato` riporta `intervallo_s: 60` sia quando quel 60 è una scelta salvata
+sia quando è solo il default di quel firmware. Non esiste modo, via rete, di
+sapere quali impostazioni siano davvero in NVS — e quindi quali sopravvivranno
+al prossimo aggiornamento e quali no.
+
+Rimedio applicato: `GET /api/config?intervallo=60`, che **scrive** la chiave e
+rende il valore stabile ai prossimi salti di versione. Rimedio generale, per chi
+aggiorna un nodo in funzione: **dopo un OTA, rileggere `/api/stato` e
+riscrivere esplicitamente i parametri che devono restare come sono** — vale
+anche per `altitudine` e per `sleep`, dove un default cambiato in futuro
+metterebbe a dormire un nodo alimentato da USB, o terrebbe sveglio uno a
+batteria. Lo stesso schema (`Preferences` + default nel codice) è in
+`EnvNode_C3` e in `Timelapse_XIAO`, quindi la trappola non è di questo progetto:
+è del modo in cui tutti questi sketch tengono la configurazione.
+
 ---
 
 ## Aggiornamento del 2026-08-25 — il secondo segmento di scarica, e un guasto dell'hub
