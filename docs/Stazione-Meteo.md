@@ -1,5 +1,114 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-08-26 — il terzo segmento, due riavvii in più, e la co-locazione finita
+
+**Segmento 3 della misura di scarica, chiuso.** Stessa cella, `v10`, cadenza
+300 s, letture al multimetro alle ~21:00 del 25 e alle ~20:30 del 26:
+
+| | segmento 1 (`v9`) | segmento 2 (`v10`) | segmento 3 (`v10`) |
+|---|---|---|---|
+| cadenza | 60 s | 300 s | 300 s |
+| hold sul VCC del sensore | no | sì | sì |
+| finestra | 20,41 h | 24,93 h | **23,43 h** |
+| pacchetti attesi / scritti | 1212 / 1212 | 294 / 294 | **282 / 272** |
+| batteria (multimetro, a riposo) | 4,18 → 4,12 V | 4,12 → 4,10 V | **4,10 → 4,08 V** |
+| caduta oraria | −2,94 mV/h | −0,80 mV/h | **−0,85 mV/h** |
+
+La pendenza ripete quella del segmento 2, ma vale ancora l'avvertenza del 25 —
+20 mV sono due cifre sul multimetro, quindi i due segmenti sono
+**indistinguibili, non confermati**. Il fatto nuovo è un altro: il segmento 3
+**non è pulito**.
+
+**La rete di sicurezza dei cinque risvegli muti è scattata altre due volte.**
+Letto dai CSV dell'hub (`/nodi/MeteoNode/`), la firma è identica ogni volta:
+1508 s di silenzio (5 cicli da 300 s), `seq` che riparte da 1, poi altri ~10
+minuti prima del primo DATA.
+
+| silenzio da | riavvio (`seq` → 1) | dati persi |
+|---|---|---|
+| 2026-08-25 00:13 | 00:38 | 25,1 min (già annotato il 25) |
+| 2026-08-25 21:14 | 21:39 | 25,1 min — **nuovo** |
+| 2026-08-26 00:14 | 00:39 | 25,1 min — **nuovo** |
+
+In totale, nel segmento 3: 4 buchi, 8 cicli persi, 70 minuti di dati mancanti su
+23,43 h. **Il gemello a muro non ha un buco in nessuna delle tre finestre**,
+quindi l'hub riceveva ed era il nodo a non essere sentito: stessa diagnosi del
+25 (il canale in RTC memory contro un AP che se lo cambia da solo), ora su tre
+occorrenze in due giorni. Non è un caso raro da manuale, è la normalità di
+questa rete — la **Fase 9** smette di essere un'idea di comodo.
+
+**Quanto costa un riavvio, in corrente.** Il funzionamento regolare a 300 s sta
+sui ~6,5 mAh/giorno (44 µA dormendo = 1,06 mAh, più 288 risvegli da 0,68 s a
+~100 mA = 5,4 mAh). Un intervento della rete di sicurezza accende WiFi e OTA per
+la finestra di veglia da 5 minuti: a ~80 mA sono **~6,7 mAh**, cioè **più di un
+giorno intero di funzionamento normale in un colpo solo**. I due eventi dentro
+il segmento 3 valgono ~13 mAh contro i ~6,3 mAh consumati dal ciclo vero: **il
+grosso della scarica osservata potrebbe non essere il deep sleep, ma i
+riavvii.** Le correnti sono stime da datasheet mai misurate su questa scheda e
+la capacità reale della cella è ignota, quindi il numero è buono entro un
+fattore due — ma l'ordine di grandezza regge, e ribalta la lettura della
+tabella qui sopra.
+
+**Perché non si vede nel multimetro**: 20 mAh su una cella economica (1500 mAh
+reali) sono l'1,3 % della capacità, cioè ~15-18 mV nel tratto alto della curva —
+esattamente i 20 mV misurati, ma anche esattamente la risoluzione dello
+strumento. **L'evento si vede nei dati (il buco, il `seq` che riparte) e non
+nella tensione**: è la stessa asimmetria dell'`gpio_hold_en()`, al contrario.
+Chi guardasse solo il multimetro concluderebbe che il segmento 3 conferma il 2.
+
+**Il nodo a muro è stato spostato** (2026-08-26, staccato dalla presa USB verso
+le 10:51, ora in camera): il buco di 3,2 min in `/nodi/MeteoEsp32/2026-08-26.csv`
+è quello, non un guasto. Da lì in poi le sue letture di temperatura e umidità
+sono di **un'altra stanza** — il delta con il nodo a batteria passa da −0,00 a
+−0,37 °C alle 11:00 in punto, ed è una differenza fra ambienti, non fra sensori.
+Chi guarderà i grafici fra sei mesi vedrà uno scalino senza spiegazione: è qui.
+
+**La co-locazione è finita, ma i dati per la calibrazione erano già stati
+raccolti.** È il confronto che il backlog aspettava da giorni. 225 campioni
+appaiati (25 agosto 06:00-20:00 e 26 agosto fino alle 10:51, abbinati per
+timestamp entro 60 s):
+
+| | media (muro − batteria) | sd | min .. max |
+|---|---|---|---|
+| temperatura | **+0,016 °C** | 0,031 | −0,10 .. +0,08 |
+| umidità | **+0,11 %** | 0,15 | −0,3 .. +0,7 |
+| pressione | **−1,265 hPa** | 0,034 | −1,43 .. −1,17 |
+
+Cosa se ne ricava:
+
+- **I due AHT20 non hanno bisogno di alcun offset**: concordano entro il rumore
+  di quantizzazione, temperatura e umidità insieme. `offset_temp`/`offset_rh`
+  per nodo in NVS, previsti come lavoro da fare, **non servono** — ed è una
+  decisione da prendere adesso che il numero c'è, non un lavoro da fare per
+  scrupolo. La soglia che ci si era dati era 0,2 °C: siamo a un decimo di
+  quella.
+- **Risponde anche alla domanda lasciata aperta il 23**: la co-locazione non era
+  "pulita", perché `MeteoNode` dorme e `MeteoEsp32` sta sveglio col WiFi acceso
+  su un DevKit v1 che ha regolatore e USB-seriale sempre alimentati. Ci si
+  aspettava quindi di misurare soprattutto l'**autoriscaldamento**, che era
+  stato stimato valere gradi interi. Su 225 campioni **non si vede**: +0,016 °C
+  con sd 0,031, senza deriva nelle ore dopo l'addormentamento. Il montaggio del
+  sensore su cavo, lontano dalla scheda, evidentemente basta.
+- **La pressione resta non calibrata fra nodi**, come deciso il 2026-08-22: la
+  previsione usa il **trend**, e un offset costante sparisce nella differenza.
+  Il numero ora però è misurato bene — **1,265 hPa, sd 0,034**, stabile su due
+  giorni e **invariato dopo lo spostamento** (−1,20 contro −1,25, dentro la
+  dispersione), come dev'essere visto che la pressione è la stessa in tutta la
+  casa. Se un giorno si vorranno confrontare i valori assoluti di due nodi —
+  oggi la dashboard li mostra affiancati — il numero è questo, e non serve
+  rifare la co-locazione. Quale dei due sia *giusto* non lo dice: per quello
+  serve un riferimento esterno (il QNH di una stazione vicina riportato alla
+  quota di casa).
+- La differenza di temperatura annotata il 23 (27,7 contro 27,2 °C) era
+  **transitoria** — equilibrio termico non ancora raggiunto, o una delle due
+  schede appena accesa. Quella di pressione (~1,4 hPa) era reale ed è ancora lì,
+  ora quantificata a 1,265.
+
+Per un altro punto di calibrazione i due nodi vanno rimessi insieme: da oggi il
+confronto misura le stanze, non i sensori.
+
+---
+
 ## Aggiornamento del 2026-08-25 — il secondo segmento di scarica, e un guasto dell'hub
 
 **Segmento 2 della misura di scarica, chiuso.** Stessa cella, `v10`, cadenza
@@ -760,6 +869,12 @@ serie di punti — o il partitore, che è il modo giusto.
   sopra: 60 mV in 20,4 h nella configurazione *sbagliata*. Il confronto utile
   è ripetere la stessa misura, stessa durata e stessa batteria, con `v10` a
   300 s: due segmenti confrontabili valgono più di una stima.
+  - **Aggiornamento del 2026-08-26**: i segmenti a `v10` sono ora due
+    (24,93 h e 23,43 h, −20 mV ciascuno), ma **nessuno dei due è pulito** —
+    contengono uno e due interventi della rete di sicurezza, e una finestra di
+    veglia da 5 minuti costa da sola più di un giorno di funzionamento
+    regolare. Finché il canale non è risolto (Fase 9), una misura di scarica
+    misura anche i riavvii. Numeri e conti nell'aggiornamento in testa al file.
 - Spostare `forecast.h` sull'hub: la RAM del nodo si azzera ad ogni risveglio,
   quindi lo storico a 3 ore per il trend non può stare su di lui.
 
