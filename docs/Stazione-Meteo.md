@@ -113,38 +113,17 @@ compilato per la DOIT DevKit v1 occupa ora l'**88 %** della partizione
 (1 158 460 su 1 310 720 byte), e su questa board la tabella è fissa — il
 margine per crescere è quello, e va tenuto d'occhio ad ogni aggiunta.
 
-**E qui è saltata fuori una trappola che vale per ogni prossimo aggiornamento,
-di qualunque nodo**: dopo il riavvio l'intervallo di misura era **300 s invece
-di 60**. Non l'ha cambiato nessuno — `settingsLoad()` legge da NVS **con i
-default del firmware nuovo**:
-
-```cpp
-s_intervalloS = p.getULong("intervallo", INTERVALLO_DEFAULT_S);
-```
-
-Se la chiave in NVS **non è mai stata scritta**, il valore che si vede è il
-default del firmware, e un aggiornamento che cambia quel default cambia il
-comportamento del nodo **senza che nessuno tocchi niente**. Fra `v5` e `v10`
-`INTERVALLO_DEFAULT_S` è passato da 60 a 300 s (la cadenza pensata per il nodo a
-batteria), e il nodo a muro se l'è preso. L'altitudine, che era stata impostata
-davvero dalla pagina (29 m), è invece sopravvissuta — perché quella la chiave ce
-l'ha.
-
-**Il punto cattivo è che le due cose sono indistinguibili da fuori**:
-`/api/stato` riporta `intervallo_s: 60` sia quando quel 60 è una scelta salvata
-sia quando è solo il default di quel firmware. Non esiste modo, via rete, di
-sapere quali impostazioni siano davvero in NVS — e quindi quali sopravvivranno
-al prossimo aggiornamento e quali no.
-
-Rimedio applicato: `GET /api/config?intervallo=60`, che **scrive** la chiave e
-rende il valore stabile ai prossimi salti di versione. Rimedio generale, per chi
-aggiorna un nodo in funzione: **dopo un OTA, rileggere `/api/stato` e
-riscrivere esplicitamente i parametri che devono restare come sono** — vale
-anche per `altitudine` e per `sleep`, dove un default cambiato in futuro
-metterebbe a dormire un nodo alimentato da USB, o terrebbe sveglio uno a
-batteria. Lo stesso schema (`Preferences` + default nel codice) è in
-`EnvNode_C3` e in `Timelapse_XIAO`, quindi la trappola non è di questo progetto:
-è del modo in cui tutti questi sketch tengono la configurazione.
+**E qui è saltata fuori una trappola che non è di questo progetto**, quindi sta
+in `CLAUDE.md` ("Aggiornare un nodo: un default nuovo vince su una chiave NVS
+mai scritta") e non qui: dopo il riavvio l'intervallo di misura era **300 s
+invece di 60**, senza che nessuno l'avesse cambiato — `settingsLoad()` legge da
+NVS con i default del **firmware nuovo**, e fra `v5` e `v10`
+`INTERVALLO_DEFAULT_S` è passato da 60 a 300 (la cadenza del nodo a batteria).
+La chiave su quel nodo non era mai stata scritta; l'altitudine, che invece lo
+era, è sopravvissuta. Rimesso a 60 s con `GET /api/config?intervallo=60`, che
+ora lo **scrive**. Da ricordare qui: **dopo ogni OTA su un nodo della stazione,
+ricontrollare intervallo, altitudine e `sleep`** — sono i tre parametri il cui
+default può cambiare, e `sleep` è quello che farebbe il danno peggiore.
 
 ---
 

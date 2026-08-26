@@ -365,6 +365,44 @@ parse fallisce e si vede un errore, che e' la verita'.
 `starters/XIAO_S3_Camera/web_ui.cpp` (foto). Li' e' **peggio**, non uguale: una
 foto da 300 kB sono 220 chunk, e la galleria ne carica decine per volta.
 
+### Aggiornare un nodo: un default nuovo vince su una chiave NVS mai scritta
+
+Tutti gli sketch di questo repo tengono la configurazione con `Preferences`
+(NVS) letta **con i default del firmware**:
+
+```cpp
+s_intervalloS = p.getULong("intervallo", INTERVALLO_DEFAULT_S);
+```
+
+Se quella chiave **non è mai stata scritta** — perché nessuno ha mai toccato
+quel parametro dalla pagina — il valore in uso è il default del codice. Un
+aggiornamento che cambia il default **cambia quindi il comportamento della
+scheda senza che nessuno abbia chiesto niente**, e solo per i parametri che
+l'utente non aveva mai impostato: quelli scritti davvero sopravvivono.
+
+**Da fuori le due cose sono indistinguibili.** `/api/stato` riporta
+`intervallo_s: 60` sia quando quel 60 è una scelta salvata, sia quando è solo
+il default di quel firmware; non c'è modo, via rete, di sapere quali
+impostazioni siano davvero in NVS — cioè quali sopravvivranno al prossimo OTA.
+
+Trovato il 2026-08-26 aggiornando `MeteoNode_C3` da `v5` a `v11` sul nodo a
+muro: l'intervallo di misura è passato da 60 a 300 s da solo, perché fra `v5` e
+`v10` è cambiato `INTERVALLO_DEFAULT_S` (300 s è la cadenza pensata per il nodo
+a **batteria**). L'altitudine, impostata davvero dalla pagina, è invece rimasta.
+
+**Regola operativa**: dopo un OTA su una scheda in funzione, rileggere
+`/api/stato` e **riscrivere esplicitamente** i parametri che devono restare come
+sono — la riscrittura crea la chiave e mette il valore al riparo dai salti di
+versione successivi. Vale la pena farlo anche quando il valore *sembra* giusto:
+è l'unico modo di trasformare un default in una scelta.
+
+Dove pesa di più, oltre all'intervallo: `sleep` in `projects/MeteoNode_C3/`
+(un default cambiato metterebbe a dormire un nodo alimentato da USB, o terrebbe
+sveglio uno a batteria) e `attivo` in `projects/Timelapse_XIAO/`, che oggi ha
+default `true`: se diventasse `false`, una scheda che non l'ha mai salvato
+smetterebbe di scattare dopo un aggiornamento, in silenzio. Lo stesso schema è
+in `projects/EnvNode_C3/settings.cpp` (nome, intervallo, banda comfort, fuso).
+
 ### `Serial.setTxTimeoutMs(0)` — obbligatorio su C3 e S3
 
 Su queste schede la `Serial` dell'USB **non è una UART ma la CDC del chip**. Se
