@@ -1,5 +1,66 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-08-27 (3) - migrare un nodo: prima si dimentica
+
+Trovato spostando il nodo a batteria dall'hub C3 a quello S3, e non e' ovvio:
+**un hub che ha gia' il nodo in registro risponde al suo HELLO anche a finestra
+di associazione CHIUSA.** Sta in `link_peer.cpp`, ed e' deliberato:
+
+```cpp
+} else if (msg.msg_type == LINK_MSG_HELLO) {
+    // Un peer gia' noto che manda di nuovo HELLO ha perso il proprio stato
+    // di pairing (es. riavvio) ... rimandagli il WELCOME
+    welcomePending = true;
+}
+```
+
+Serve a non lasciare bloccato un nodo che si e' riavviato. Ma a un HELLO in
+broadcast rispondono quindi TUTTI gli hub che quel nodo lo conoscono, e vince
+chi arriva primo: al primo tentativo ha vinto EnvNode_C3, che lo aveva in NVS
+dal 23 agosto. Il nodo e' tornato da lui, mentre l'hub S3 - che era in pairing -
+se lo era messo in elenco senza ricevere un solo DATA (vanno in unicast
+all'altro). **Dai due lati la cosa si legge in modo opposto**, ed e' il solito
+guasto silenzioso: l'S3 mostra un nodo, il nodo dice di essere associato, e
+nessuno dei due dice che parlano con qualcun altro.
+
+**Ordine giusto per migrare un nodo**: 1) dimenticarlo sul vecchio hub, 2)
+aprire la finestra sul nuovo, 3) power-cycle del nodo. Il power-cycle serve
+comunque: il MAC dell'hub sta in RTC memory, e senza toglierlo di li' il nodo
+non rifa' HELLO.
+
+**Nota sulla batteria** (misurata a riposo, scollegata: 4,07 V). Dopo i tre
+segmenti di scarica (4,18 / 4,12 / 4,10 / 4,08) la cella e' ancora intorno al
+75-80%: **la pista "tensione che cede sul picco della radio" per i cinque
+risvegli muti si sgonfia**, e resta in piedi quella del canale in RTC memory
+contro un AP che se lo cambia - coerente col fatto che il riavvio dell'uscita
+di sicurezza risolve, visto che riaccende il WiFi e riassocia. Il che vuol dire
+anche che **cambiare hub non lo curera'**: la cura e' la Fase 9.
+
+Contatori letti dal nodo mentre era sveglio: risvegli 31, consegnati 20,
+boot_count 24, fw v10, sleep attivo, intervallo 300 s.
+
+**Esito, al secondo tentativo con l'ordine giusto**: nodo dimenticato su
+EnvNode_C3, finestra aperta sull'S3, power-cycle. Il nodo si e' associato
+all'hub nuovo (`espnow_hub: E0:72:A1:F9:A2:B0`, boot_count 25, POWERON), e il
+primo DATA e' finito in `/nodi/MeteoNode/2026-08-27.csv` con `fonte_ora=NTP` e
+`seq 1`. Finestra di associazione richiusa subito dopo.
+
+**La stazione e' ora tutta su `MeteoHub_S3`**: due nodi, entrambi online,
+registrati su microSD, con web UI e OTA. `EnvNode_C3` e' tornato a fare solo il
+nodo ambientale (`nodi: 0`) e non risponde piu' agli HELLO, non avendo piu'
+nessuno in registro: **il rischio di riprendersi un nodo per sbaglio si e'
+chiuso da se'**.
+
+**Lo storico dei due nodi resta diviso in due**: fino al 27 agosto sulla card di
+`EnvNode_C3` (`/nodi/MeteoEsp32/`, `/nodi/MeteoNode/`), da qui in poi su quella
+dell'S3. Non e' stato unito: servirebbe un lettore di schede, e le due cartelle
+si leggono benissimo separate. Chi guardera' quei grafici fra un mese deve pero'
+saperlo.
+
+**Il trend riparte da zero** su entrambi i nodi (tre ore prima di dire qualcosa
+di sensato): `seedForecastDaSD()` ricostruisce dai CSV di QUESTA card, che oggi
+comincia adesso.
+
 ## Aggiornamento del 2026-08-27 (2) — Fase 3 chiusa: SD, NTP, web UI, OTA
 
 Tutto provato su hardware nella stessa sessione, con la scheda ancora al cavo.

@@ -617,6 +617,28 @@ sveglio pochi secondi per volta è la parte più lunga e più incerta del ciclo,
 tutta a radio accesa. Conservando il MAC dell'hub si registra il peer e si passa
 dritti al DATA.
 
+**Spostare un nodo da un hub a un altro: prima lo si DIMENTICA sul vecchio.**
+Un hub che ha gia' il nodo nel registro gli rimanda il WELCOME anche a finestra
+di pairing **chiusa** (`link_peer.cpp`: un HELLO da un peer noto mette
+`welcomePending = true`, senza guardare il pairing). E' deliberato — serve a
+non lasciare bloccato un nodo che si e' riavviato — ma vuol dire che a un HELLO
+in broadcast rispondono **tutti** gli hub che quel nodo lo conoscono, e se lo
+prende il primo che risponde.
+
+Ordine giusto: **1)** `POST /api/nodi/dimentica?mac=…` sul vecchio hub,
+**2)** finestra di pairing aperta sul nuovo, **3)** power-cycle del nodo. Il
+power-cycle non e' evitabile: il MAC dell'hub sta in RTC memory e finche' e' li'
+il nodo riprende con quello senza mandare HELLO. Un riavvio software non basta,
+perche' la RTC memory sopravvive.
+
+**Sbagliare l'ordine da' un guasto silenzioso e simmetrico**, osservato il
+2026-08-27 spostando `MeteoNode` da `EnvNode_C3` a `MeteoHub_S3`: il nodo torna
+sul vecchio hub, mentre il nuovo — che era in pairing — se lo mette in elenco e
+resta a `pacchetti: 0`. Da un lato una lista con un nodo che non parla,
+dall'altro un nodo convinto di essere associato: **nessuno dei due dice che
+sta parlando con qualcun altro**, e la lettura giusta viene solo dal campo
+`espnow_hub` del nodo confrontato col MAC dell'hub che ci si aspetta.
+
 **Limite noto**: l'unicast ESP-NOW tra un hub ESP32-S3 e un nodo ESP32
 "classico" (Xtensa D0WD) è risultato inaffidabile/lento ad associarsi su
 hardware reale (broadcast sempre ok, WELCOME/unicast spesso perso), coerente
