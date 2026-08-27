@@ -25,4 +25,5 @@ const char* app_fw_version();      // versione del firmware, per /api/stato
 const char* app_hub_nome();        // nome con cui l'hub si presenta ai nodi
 uint32_t    app_righe_scritte();   // righe di CSV scritte da questo avvio
 uint32_t    app_epd_refresh();     // refresh del pannello da questo avvio
-uint32_t    app_epd_ultimo_ms();   // quanto e' costato l'ultimo refresh
+uint32_t    app_epd_ultimo_ms();
+ uint32_t    app_epd_orologio_ms(); // e quanto costa il solo orologio   // quanto e' costato l'ultimo refresh

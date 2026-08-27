@@ -488,6 +488,7 @@ static void handleApiStato() {
 
   j += "\"epd_refresh\":"      + String(app_epd_refresh())    + ",";
   j += "\"epd_ultimo_ms\":"    + String(app_epd_ultimo_ms())  + ",";
+  j += "\"epd_orologio_ms\":"  + String(app_epd_orologio_ms()) + ",";
   j += "\"invii_interrotti\":" + String(s_invii_interrotti)   + ",";
   j += "\"uptime\":" + String(millis() / 1000) + ",";
   j += "\"heap\":"   + String(ESP.getFreeHeap());

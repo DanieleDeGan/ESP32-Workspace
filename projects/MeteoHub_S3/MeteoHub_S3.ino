@@ -74,6 +74,9 @@
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
 #include <Fonts/FreeSansBold24pt7b.h>
+#include <Fonts/FreeSansBold18pt7b.h>
+#include <Fonts/FreeSansBold9pt7b.h>
+#include <Fonts/FreeSans9pt7b.h>
 
 #include "foto_prova.h"   // 15.000 byte usciti da www/dither.html
 
@@ -119,12 +122,14 @@ static const uint32_t PAIRING_MANUALE_S = 120;
 static uint32_t s_righeScritte = 0;
 static uint32_t s_epdRefresh   = 0;
 static uint32_t s_epdUltimoMs  = 0;
+static uint32_t s_epdOrologioMs = 0;   // quanto costa il refresh del solo orologio
 
 const char* app_fw_version()    { return FW_VERSION; }
 const char* app_hub_nome()      { return HUB_NOME; }
 uint32_t    app_righe_scritte() { return s_righeScritte; }
 uint32_t    app_epd_refresh()   { return s_epdRefresh; }
 uint32_t    app_epd_ultimo_ms() { return s_epdUltimoMs; }
+uint32_t    app_epd_orologio_ms() { return s_epdOrologioMs; }
 
 // --- stato della pagina nodi ---
 // Un dato nuovo alza il flag, non ridisegna: il refresh lo decide il loop, che
@@ -133,15 +138,33 @@ uint32_t    app_epd_ultimo_ms() { return s_epdUltimoMs; }
 static bool     s_nodiDirty     = false;
 static uint32_t s_nodiUltimoMs  = 0;
 static uint8_t  s_nodiParziali  = 0;
+static uint32_t s_oraUltimoMs   = 0;   // ultimo refresh del solo orologio
+static uint32_t s_fullUltimoMs  = 0;   // ultimo refresh COMPLETO, per l'alone
 
-// Un dato nuovo si aspetta almeno questo prima di finire sul pannello: i nodi
-// possono parlare a raffica (un DATA per nodo, piu' quelli di chi si associa)
-// e un e-ink non e' un monitor.
-static const uint32_t NODI_MIN_MS = 20000UL;
+// Un dato nuovo si aspetta almeno questo prima di finire sul pannello. Con i
+// nodi a 60 e 300 s la cadenza reale diventa un refresh ogni due minuti: il
+// piano ne chiedeva uno ogni 5-10, i 20 s di prima erano molto piu' aggressivi
+// del necessario e pagavano in ghosting per mostrare numeri che cambiano di un
+// decimo di grado. L'ora dell'ultimo pacchetto, che e' quello che si legge a
+// schermo, non invecchia comunque: e' un istante, non un conto alla rovescia.
+static const uint32_t NODI_MIN_MS = 120000UL;
 // ...e comunque si ridisegna ogni tanto anche senza dati nuovi, o l'eta' dei
 // valori, lo stato "muto" e il conto alla rovescia dell'associazione
 // resterebbero fermi a quello che erano. E' la cadenza del piano.
 static const uint32_t NODI_MAX_MS = 300000UL;
+
+// L'orologio in alto a destra si aggiorna da solo ogni minuto. Costa poco
+// perche' NON ridisegna la pagina: la finestra parziale copre solo il suo
+// rettangolo, poche decine di righe invece di trecento.
+static const uint32_t ORA_MS = 60000UL;
+
+// ...ma un rettangolo riscritto sessanta volte l'ora si sporca, mentre il resto
+// della pagina resta pulito: l'alone diventa una macchia localizzata, ed e' il
+// modo peggiore in cui un e-ink invecchia. Un completo ogni ora lo cancella.
+// E' la cadenza che il piano prevedeva fin dall'inizio e che finora non c'era:
+// il completo arrivava solo contando i parziali, quindi in una giornata calma
+// poteva non arrivare mai.
+static const uint32_t FULL_OGNI_MS = 3600000UL;
 
 // Fuso orario. Costante di compilazione come in Timelapse_XIAO, non
 // un'impostazione da web: questa scheda non viaggia. Senza WiFi l'orologio
@@ -515,11 +538,22 @@ static uint8_t bootEvent()
 // nuovo, completo all'ingresso nella pagina e ogni NODI_FULL_OGNI parziali,
 // altrimenti il ghosting si accumula.
 
-static const int16_t NODI_TOP       = 28;   // sotto l'intestazione
-static const int16_t NODI_BOT       = 266;  // sopra il piede (due righe)
-static const int16_t NODI_RIGA_H    = 59;   // 4 nodi entrano in 238 px
-static const int     NODI_VISIBILI  = 4;    // oltre non c'e' spazio: vedi nota
+static const int16_t NODI_TOP       = 34;   // sotto l'intestazione
+static const int16_t NODI_BOT       = 266;  // sopra il piede
+static const int     NODI_VISIBILI  = 4;    // oltre non c'e' spazio leggibile
 static const uint8_t NODI_FULL_OGNI = 10;
+
+// Fino a due nodi si usa il blocco COMODO: c'e' spazio per la temperatura
+// grande e per il trend scritto per esteso. Da tre in su si passa a quello
+// compatto, che sacrifica il corpo del carattere per farceli stare tutti.
+// Il pannello e' appeso a un muro e si legge da lontano: la dimensione del
+// numero non e' vezzo grafico, e' la distanza a cui la pagina funziona.
+static const int NODI_COMODI_FINO_A = 2;
+
+// Il rettangolo dell'ora, in alto a destra. Sta qui e non dentro le due
+// funzioni che lo usano perche' devono per forza combaciare: se la finestra
+// parziale e il disegno non coincidono, l'ora vecchia resta sotto la nuova.
+static const int16_t ORA_X = 268, ORA_Y = 0, ORA_W = 132, ORA_H = 31;
 
 // Virgola decimale: e' un pannello che sta in casa, non un log da macchina.
 static String fmtNum(float v, int dec)
@@ -552,69 +586,307 @@ static void drawCenter(const String& txt, int16_t xCentro, int16_t yBase)
   display.print(txt);
 }
 
-// "38 s", "12 min", "3 h": un e-ink non fa il cronometro, tre cifre bastano.
-static String fmtEta(uint32_t s)
+// L'ORA dell'ultimo pacchetto, non da quanto tempo e' arrivato. Un istante non
+// invecchia: resta vero anche quando il pannello non si ridisegna da un pezzo,
+// mentre un "38 s fa" diventa una bugia dopo trenta secondi — e su un e-ink
+// che si aggiorna ogni due minuti sarebbe sbagliato quasi sempre.
+static String fmtOra(time_t t)
 {
-  if (s < 90)   return String(s) + " s";
-  if (s < 5400) return String(s / 60) + " min";
-  return String(s / 3600) + " h";
+  char buf[8];
+  if (t <= 0 || !rtctime_format(t, "%H:%M", buf, sizeof(buf))) return String("--:--");
+  return String(buf);
 }
 
-// Un nodo: nome e stato a sinistra, temperatura grande a destra, il resto su
-// una riga sola sotto.
-static void drawNodo(const RemoteNode& n, int16_t y)
+// Il grado: nei font Adafruit GFX non c'e' (coprono 0x20-0x7E), si disegna.
+static void drawGrado(int16_t x, int16_t y, int16_t r)
 {
-  display.setFont(&FreeSansBold12pt7b);
-  display.setCursor(6, y + 18);
-  display.print(n.nome);
+  display.drawCircle(x, y, r, GxEPD_BLACK);
+  if (r > 2) display.drawCircle(x, y, r - 1, GxEPD_BLACK);   // piu' spesso, si vede meglio
+}
 
-  // Il nodo muto e' la diagnostica principale finche' i nodi non hanno il
-  // partitore della batteria: va vista prima dei valori, non dopo. Riquadro
-  // pieno con testo in negativo — su bianco e nero e' l'unico "colore" che c'e'.
-  if (!n.online && n.hasData)
-  {
-    int16_t bx, by; uint16_t bw, bh;
-    display.getTextBounds(n.nome, 6, y + 18, &bx, &by, &bw, &bh);
-    const int16_t x = 6 + (int16_t)bw + 10;
-    display.fillRect(x, y + 2, 62, 20, GxEPD_BLACK);
-    display.setFont(&FreeMonoBold9pt7b);
-    display.setTextColor(GxEPD_WHITE);
-    display.setCursor(x + 6, y + 17);
-    display.print("MUTO");
-    display.setTextColor(GxEPD_BLACK);
+// La freccia del trend barometrico: l'inclinazione E' il dato. Una parola
+// ("in salita lenta") va letta, una freccia si vede da tre metri — ed e' la
+// distanza da cui questo pannello viene guardato di solito.
+static void drawFrecciaTrend(int16_t x, int16_t y, uint8_t trend)
+{
+  // Gradi rispetto all'orizzontale, uno per livello dell'enum forecast_trend_t.
+  static const int8_t ANGOLI[] = {0, -70, -45, -30, -15, 0, 15, 30, 45, 70};
+  if (trend >= sizeof(ANGOLI)) return;
+  if (trend == TREND_IGNOTO) {
+    // Storico insufficiente: un punto interrogativo sarebbe rumore, meglio un
+    // trattino che dice "non lo so ancora" senza somigliare a "stabile".
+    display.drawFastHLine(x - 8, y, 6, GxEPD_BLACK);
+    display.drawFastHLine(x + 2, y, 6, GxEPD_BLACK);
+    return;
   }
 
-  if (!n.hasData)
-  {
-    display.setFont(&FreeMonoBold9pt7b);
-    display.setCursor(6, y + 44);
+  const float rad = (float)ANGOLI[trend] * 3.14159265f / 180.0f;
+  const float dx  = cosf(rad), dy = -sinf(rad);    // y cresce verso il basso
+  const int16_t L = 11;
+
+  const int16_t x0 = x - (int16_t)(dx * L), y0 = y - (int16_t)(dy * L);
+  const int16_t x1 = x + (int16_t)(dx * L), y1 = y + (int16_t)(dy * L);
+
+  // Asta doppia: su un e-ink una linea da un pixel sparisce a distanza.
+  display.drawLine(x0, y0, x1, y1, GxEPD_BLACK);
+  display.drawLine(x0, y0 + 1, x1, y1 + 1, GxEPD_BLACK);
+
+  // Punta: triangolo pieno, ruotato come l'asta.
+  const float px = -dy, py = dx;                   // versore perpendicolare
+  const int16_t bx = x + (int16_t)(dx * (L - 7)),  by = y + (int16_t)(dy * (L - 7));
+  display.fillTriangle(x1, y1,
+                       bx + (int16_t)(px * 5), by + (int16_t)(py * 5),
+                       bx - (int16_t)(px * 5), by - (int16_t)(py * 5),
+                       GxEPD_BLACK);
+}
+
+// Il riquadro in negativo del nodo muto. E' l'unica diagnostica che questa
+// rete ha finche' i nodi non misurano la batteria: va vista prima dei valori,
+// non dopo, e su bianco e nero il negativo e' l'unico "colore" disponibile.
+static void drawBadgeMuto(int16_t x, int16_t y)
+{
+  display.fillRoundRect(x, y, 54, 18, 4, GxEPD_BLACK);
+  display.setFont(&FreeSansBold9pt7b);
+  display.setTextColor(GxEPD_WHITE);
+  display.setCursor(x + 8, y + 14);
+  display.print("MUTO");
+  display.setTextColor(GxEPD_BLACK);
+}
+
+// Riga di dettaglio comune ai due formati: umidita' e pressione, allineate a
+// destra sotto la temperatura.
+static void drawValori(const RemoteNode& n, int16_t yBase)
+{
+  String riga;
+  if (isfinite(n.value[1])) riga += fmtNum(n.value[1], 0) + "%";
+  if (isfinite(n.value[2])) {
+    if (riga.length()) riga += "   ";
+    riga += fmtNum(n.value[2], 1) + " hPa";
+  }
+  if (!riga.length()) return;
+  display.setFont(&FreeSansBold9pt7b);
+  drawRight(riga, 388, yBase);
+}
+
+// --- blocco COMODO: fino a due nodi ---------------------------------------
+static void drawNodoComodo(const RemoteNode& n, int16_t y)
+{
+  display.setFont(&FreeSansBold12pt7b);
+  display.setCursor(12, y + 22);
+  display.print(n.nome);
+
+  if (!n.online && n.hasData) {
+    int16_t bx, by; uint16_t bw, bh;
+    display.getTextBounds(n.nome, 12, y + 22, &bx, &by, &bw, &bh);
+    drawBadgeMuto(12 + (int16_t)bw + 12, y + 6);
+  }
+
+  if (!n.hasData) {
+    display.setFont(&FreeSans9pt7b);
+    display.setCursor(12, y + 48);
     display.print("in attesa del primo dato");
     return;
   }
 
-  // Temperatura in grande. Il simbolo del grado non esiste nei font Adafruit
-  // GFX (coprono 0x20-0x7E): si disegna, un cerchietto costa meno di un font.
-  if (isfinite(n.value[0]))
-  {
+  // Ora dell'ultimo pacchetto, sotto il nome.
+  display.setFont(&FreeSans9pt7b);
+  display.setCursor(12, y + 46);
+  display.print("ultimo alle " + fmtOra(n.ultimoTs));
+
+  // Temperatura in grande: e' il numero per cui la pagina esiste.
+  if (isfinite(n.value[0])) {
     display.setFont(&FreeSansBold24pt7b);
-    drawRight(fmtNum(n.value[0], 1), 366, y + 38);
-    display.drawCircle(374, y + 20, 3, GxEPD_BLACK);
+    drawRight(fmtNum(n.value[0], 1), 352, y + 52);
+    drawGrado(362, y + 26, 4);
     display.setFont(&FreeSansBold12pt7b);
-    display.setCursor(381, y + 38);
+    display.setCursor(370, y + 52);
     display.print("C");
   }
 
-  // Riga di dettaglio: umidita', pressione, eta' del dato, trend. In
-  // FreeMonoBold9pt ci stanno ~36 caratteri, e questi ci stanno tutti.
-  String riga;
-  if (isfinite(n.value[1])) riga += fmtNum(n.value[1], 0) + "%  ";
-  if (isfinite(n.value[2])) riga += fmtNum(n.value[2], 1) + " hPa  ";
-  riga += fmtEta(n.silenzioS) + " fa";
-  if (n.trend != TREND_IGNOTO) riga += String("  ") + remote_trend_label(n.trend);
+  drawValori(n, y + 76);
 
-  display.setFont(&FreeMonoBold9pt7b);
-  display.setCursor(6, y + 55);
-  display.print(riga);
+  // Trend: freccia inclinata piu' la parola, a sinistra.
+  if (n.trend != TREND_IGNOTO || n.hasData) {
+    drawFrecciaTrend(26, y + 72, n.trend);
+    display.setFont(&FreeSans9pt7b);
+    display.setCursor(44, y + 78);
+    display.print(n.trend == TREND_IGNOTO ? "trend: raccolgo dati"
+                                          : remote_trend_label(n.trend));
+  }
+}
+
+// --- blocco COMPATTO: da tre nodi in su -----------------------------------
+static void drawNodoCompatto(const RemoteNode& n, int16_t y)
+{
+  display.setFont(&FreeSansBold12pt7b);
+  display.setCursor(12, y + 20);
+  display.print(n.nome);
+
+  if (!n.online && n.hasData) {
+    int16_t bx, by; uint16_t bw, bh;
+    display.getTextBounds(n.nome, 12, y + 20, &bx, &by, &bw, &bh);
+    drawBadgeMuto(12 + (int16_t)bw + 10, y + 4);
+  }
+
+  if (!n.hasData) {
+    display.setFont(&FreeSans9pt7b);
+    display.setCursor(12, y + 42);
+    display.print("in attesa del primo dato");
+    return;
+  }
+
+  if (isfinite(n.value[0])) {
+    display.setFont(&FreeSansBold18pt7b);
+    drawRight(fmtNum(n.value[0], 1), 356, y + 30);
+    drawGrado(365, y + 12, 3);
+    display.setFont(&FreeSansBold9pt7b);
+    display.setCursor(371, y + 30);
+    display.print("C");
+  }
+
+  display.setFont(&FreeSans9pt7b);
+  display.setCursor(12, y + 44);
+  display.print(fmtOra(n.ultimoTs));
+  drawFrecciaTrend(70, y + 39, n.trend);
+
+  drawValori(n, y + 48);
+}
+
+// Solo l'orologio, su finestra parziale piccola: il resto della pagina non
+// viene nemmeno toccato. Il contenuto dev'essere identico a quello che disegna
+// screenNodi() nella stessa posizione, o al primo refresh grande l'ora
+// "salterebbe" di qualche pixel.
+static void drawOra()
+{
+  char buf[8] = "";
+  if (!rtctime_format(rtctime_now(), "%H:%M", buf, sizeof(buf))) return;
+  display.setFont(&FreeSansBold12pt7b);
+  display.setTextColor(GxEPD_BLACK);
+  drawRight(String(rtctime_isSynced() ? "" : "~") + buf, display.width() - 12, 23);
+}
+
+static void screenOrologio()
+{
+  display.setPartialWindow(ORA_X, ORA_Y, ORA_W, ORA_H);
+  display.firstPage();
+  do
+  {
+    display.fillRect(ORA_X, ORA_Y, ORA_W, ORA_H, GxEPD_WHITE);
+    drawOra();
+  }
+  while (display.nextPage());
+}
+
+static void screenNodi(bool full)
+{
+  const int16_t W = display.width();
+  const int16_t H = display.height();
+
+  if (full) display.setFullWindow();
+  else      display.setPartialWindow(0, 0, W, H);
+
+  display.firstPage();
+  do
+  {
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+
+    // --- intestazione ---
+    display.setFont(&FreeSansBold12pt7b);
+    display.setCursor(12, 23);
+    display.print("STAZIONE METEO");
+
+    // La tilde dentro drawOra() dice che l'ora e' la stima da build-time e non
+    // NTP: senza, un orario preciso e sbagliato sembrerebbe vero.
+    drawOra();
+    display.drawFastHLine(0, 32, W, GxEPD_BLACK);
+    display.drawFastHLine(0, 33, W, GxEPD_BLACK);
+
+    // --- corpo ---
+    const int n = remote_count();
+    if (n == 0)
+    {
+      display.setFont(&FreeSansBold24pt7b);
+      drawCenter("NESSUN NODO", W / 2, 145);
+      display.setFont(&FreeSans9pt7b);
+      if (remote_pairing_active()) {
+        drawCenter("finestra di associazione aperta", W / 2, 180);
+        drawCenter("accendi o riavvia il nodo", W / 2, 200);
+      } else {
+        drawCenter("tieni premuto BOOT", W / 2, 180);
+        drawCenter("per associare un nodo", W / 2, 200);
+      }
+    }
+    else
+    {
+      const int quanti  = (n < NODI_VISIBILI) ? n : NODI_VISIBILI;
+      const bool comodo = (quanti <= NODI_COMODI_FINO_A);
+      const int16_t h   = (NODI_BOT - NODI_TOP) / quanti;
+
+      for (int i = 0; i < quanti; i++)
+      {
+        RemoteNode nodo;
+        if (!remote_get(i, &nodo)) continue;
+        const int16_t y = NODI_TOP + (int16_t)i * h;
+
+        if (comodo) drawNodoComodo(nodo, y);
+        else        drawNodoCompatto(nodo, y);
+
+        // Separatore tratteggiato fra un nodo e l'altro: divide senza pesare
+        // come una riga piena, che su bianco e nero grida.
+        if (i + 1 < quanti) {
+          const int16_t ys = y + h - 6;
+          for (int16_t x = 12; x < W - 12; x += 6) {
+            display.drawFastHLine(x, ys, 3, GxEPD_BLACK);
+          }
+        }
+      }
+    }
+
+    // --- piede ---
+    display.drawFastHLine(0, NODI_BOT + 2, W, GxEPD_BLACK);
+    display.setFont(&FreeSans9pt7b);
+
+    int muti = 0;
+    for (int i = 0; i < n; i++) {
+      RemoteNode nodo;
+      if (remote_get(i, &nodo) && !nodo.online) muti++;
+    }
+    String piede = String(n) + (n == 1 ? " nodo" : " nodi");
+    if (muti > 0)             piede += String(", ") + muti + " muto";
+    if (n > NODI_VISIBILI)    piede += String(" (+") + (n - NODI_VISIBILI) + " non mostrati)";
+    if (net_isConnected())    piede += "   " + WiFi.localIP().toString();
+    else                      piede += "   WiFi assente";
+    display.setCursor(12, 288);
+    display.print(piede);
+
+    // A destra: cio' che sta succedendo adesso, in ordine di urgenza.
+    if (remote_pairing_active()) {
+      const uint32_t r = remote_pairing_remaining_s();
+      char buf[24];
+      snprintf(buf, sizeof(buf), "ASSOCIAZIONE %lu:%02lu",
+               (unsigned long)(r / 60), (unsigned long)(r % 60));
+      drawRight(buf, W - 12, 288);
+    }
+    else if (!remote_ready()) {
+      drawRight("ESP-NOW NON ATTIVO", W - 12, 288);
+    }
+    else if (!sd_mounted()) {
+      // In negativo: senza card i DATA non li registra nessuno, ed e' il
+      // guasto piu' silenzioso che questa scheda possa avere - tutto il resto
+      // continua a funzionare come se niente fosse.
+      display.fillRect(W - 130, 274, 118, 18, GxEPD_BLACK);
+      display.setTextColor(GxEPD_WHITE);
+      drawRight("SD NON MONTATA", W - 16, 288);
+      display.setTextColor(GxEPD_BLACK);
+    }
+    else {
+      char buf[24];
+      snprintf(buf, sizeof(buf), "SD %lu MB", (unsigned long)sd_free_mb());
+      drawRight(buf, W - 12, 288);
+    }
+  }
+  while (display.nextPage());
 }
 
 // ---------------------------------------------------------------------------
@@ -730,133 +1002,6 @@ static void seedForecastDaSD()
   s_nodiDirty = true;
 }
 
-static void screenNodi(bool full)
-{
-  const int16_t W = display.width();
-  const int16_t H = display.height();
-
-  if (full) display.setFullWindow();
-  else      display.setPartialWindow(0, 0, W, H);
-
-  display.firstPage();
-  do
-  {
-    display.fillScreen(GxEPD_WHITE);
-    display.setTextColor(GxEPD_BLACK);
-
-    // --- intestazione ---
-    display.setFont(&FreeSansBold12pt7b);
-    display.setCursor(6, 20);
-    display.print("STAZIONE METEO");
-
-    char ora[8] = "";
-    if (rtctime_format(rtctime_now(), "%H:%M", ora, sizeof(ora)))
-    {
-      // La tilde dice che l'ora e' la stima da build-time e non NTP: senza,
-      // un orario preciso e sbagliato sembrerebbe vero. Sparisce in Fase 3,
-      // quando arriva la rete.
-      display.setFont(&FreeMonoBold9pt7b);
-      drawRight(String(rtctime_isSynced() ? "" : "~") + ora, W - 6, 20);
-    }
-    display.drawLine(0, 26, W, 26, GxEPD_BLACK);
-
-    // --- corpo ---
-    const int n = remote_count();
-    if (n == 0)
-    {
-      display.setFont(&FreeSansBold24pt7b);
-      drawCenter("NESSUN NODO", W / 2, 150);
-      display.setFont(&FreeMonoBold9pt7b);
-      if (remote_pairing_active())
-      {
-        drawCenter("finestra di associazione aperta", W / 2, 182);
-        drawCenter("accendi o riavvia il nodo", W / 2, 200);
-      }
-      else
-      {
-        drawCenter("tieni premuto BOOT", W / 2, 182);
-        drawCenter("per associare un nodo", W / 2, 200);
-      }
-    }
-    else
-    {
-      const int quanti = (n < NODI_VISIBILI) ? n : NODI_VISIBILI;
-      for (int i = 0; i < quanti; i++)
-      {
-        RemoteNode nodo;
-        if (!remote_get(i, &nodo)) continue;
-        const int16_t y = NODI_TOP + (int16_t)i * NODI_RIGA_H;
-        drawNodo(nodo, y);
-        if (i + 1 < quanti) display.drawLine(6, y + NODI_RIGA_H - 4, W - 6,
-                                             y + NODI_RIGA_H - 4, GxEPD_BLACK);
-      }
-    }
-
-    // --- piede ---
-    display.drawLine(0, NODI_BOT + 2, W, NODI_BOT + 2, GxEPD_BLACK);
-    display.setFont(&FreeMonoBold9pt7b);
-
-    int muti = 0;
-    for (int i = 0; i < n; i++)
-    {
-      RemoteNode nodo;
-      if (remote_get(i, &nodo) && !nodo.online) muti++;
-    }
-    String piede = String(n) + (n == 1 ? " nodo" : " nodi");
-    if (muti > 0) piede += String("  ") + muti + " muto";
-    if (n > NODI_VISIBILI) piede += String("  (+") + (n - NODI_VISIBILI) + " non mostrati)";
-    display.setCursor(6, 281);
-    display.print(piede);
-
-    // Seconda riga: rete e microSD. Non e' decorazione — e' l'unico posto in
-    // cui questa scheda dice come sta. Il log seriale non e' leggibile (si
-    // ferma a 256 byte, il buffer della CDC), e la pagina web la si raggiunge
-    // solo sapendo gia' l'IP, che e' scritto qui.
-    display.setCursor(6, 296);
-    if (net_isConnected()) display.print(WiFi.localIP().toString());
-    else                   display.print("WiFi assente");
-
-    if (sd_mounted())
-    {
-      char buf[24];
-      snprintf(buf, sizeof(buf), "SD %lu MB", (unsigned long)sd_free_mb());
-      drawRight(buf, W - 6, 296);
-    }
-    else
-    {
-      // In negativo: senza card i DATA dei nodi non li registra nessuno, ed e'
-      // il guasto piu' silenzioso che questa scheda possa avere — tutto il
-      // resto continua a funzionare come se niente fosse.
-      display.fillRect(W - 116, 285, 110, 14, GxEPD_BLACK);
-      display.setTextColor(GxEPD_WHITE);
-      drawRight("SD NON MONTATA", W - 9, 296);
-      display.setTextColor(GxEPD_BLACK);
-    }
-
-    if (remote_pairing_active())
-    {
-      const uint32_t r = remote_pairing_remaining_s();
-      char buf[24];
-      snprintf(buf, sizeof(buf), "ASSOCIAZIONE %lu:%02lu",
-               (unsigned long)(r / 60), (unsigned long)(r % 60));
-      drawRight(buf, W - 6, 281);
-    }
-    else if (!remote_ready())
-    {
-      // Da qui si distingue "nessun nodo ha ancora parlato" da "questa scheda
-      // non ha nemmeno acceso la radio": senza, le due cose sono la stessa
-      // pagina vuota. E il log seriale non e' un posto su cui contare — con
-      // setTxTimeoutMs(0) le righe si buttano appena nessuno legge.
-      drawRight("ESP-NOW NON ATTIVO", W - 6, 281);
-    }
-    else
-    {
-      drawRight(String("canale ") + net_channel(), W - 6, 281);
-    }
-  }
-  while (display.nextPage());
-}
-
 enum Page : uint8_t
 {
   PAGE_NODI = 0,    // i nodi della stazione: la pagina per cui l'hub esiste
@@ -894,6 +1039,12 @@ static void onDatoNodo(const RemoteNode* n)
 {
   if (n == nullptr) return;
   s_nodiDirty = true;
+
+  // Il PRIMO pacchetto di un nodo salta l'''attesa dei due minuti: dopo un
+  // riavvio dell'''hub il pannello mostrerebbe "in attesa del primo dato" per
+  // tutto quel tempo, pur avendo gia''' i valori in mano. Vale solo qui, dove
+  // il ritardo si vedrebbe come uno schermo che non sa niente.
+  if (n->pacchetti <= 1) s_nodiUltimoMs = millis() - NODI_MIN_MS;
 
   // Prima del primo sync NTP l'orologio riporta l'ora di COMPILAZIONE, che e'
   // identica ad ogni riavvio: righe cosi' non datano niente, e il CSV di un
@@ -962,7 +1113,9 @@ static void showPage(uint8_t p)
 
   display.hibernate();
   s_epdRefresh++;
-  s_epdUltimoMs = millis() - t0;
+  s_epdUltimoMs   = millis() - t0;
+  s_fullUltimoMs  = millis();   // il cambio pagina e' sempre un completo
+  s_oraUltimoMs   = millis();
   Serial.printf("[epd] pagina %s: %lu ms\n", PAGE_NAMES[p],
                 (unsigned long)s_epdUltimoMs);
 }
@@ -1134,13 +1287,30 @@ void loop()
 
   if (s_page == PAGE_NODI)
   {
+    // L'orologio per primo: e' il refresh piu' economico e il piu' frequente.
+    // Se scatta anche quello della pagina intera, quello ridisegna comunque
+    // l'ora e rimette a zero questo timer, quindi non si sovrappongono.
+    if (millis() - s_oraUltimoMs >= ORA_MS)
+    {
+      const uint32_t t0 = millis();
+      screenOrologio();
+      display.hibernate();
+      s_oraUltimoMs  = millis();
+      s_epdRefresh++;
+      s_epdOrologioMs = millis() - t0;
+    }
+
     const uint32_t da = millis() - s_nodiUltimoMs;
     const bool perDato   = s_nodiDirty && da >= NODI_MIN_MS;
     const bool perTempo  = da >= NODI_MAX_MS;
     if (!perDato && !perTempo) return;
 
     // Parziale spesso, completo ogni tanto: senza, il ghosting si accumula.
-    const bool full = (s_nodiParziali >= NODI_FULL_OGNI);
+    // Il tempo conta quanto il conteggio — in una giornata senza novita' i
+    // parziali sono pochi e il completo non arriverebbe mai, mentre l'orologio
+    // continua a riscrivere il suo angolo ogni minuto.
+    const bool full = (s_nodiParziali >= NODI_FULL_OGNI) ||
+                      (millis() - s_fullUltimoMs >= FULL_OGNI_MS);
     const uint32_t t0 = millis();
     screenNodi(full);
     display.hibernate();
@@ -1148,6 +1318,8 @@ void loop()
     s_nodiParziali = full ? 0 : s_nodiParziali + 1;
     s_nodiDirty    = false;
     s_nodiUltimoMs = millis();
+    s_oraUltimoMs  = millis();     // l'ora e' appena stata ridisegnata con tutto il resto
+    if (full) s_fullUltimoMs = millis();
     s_epdRefresh++;
     s_epdUltimoMs  = millis() - t0;
     Serial.printf("[epd] nodi %s (%s): %lu ms\n",

@@ -1522,9 +1522,12 @@ le cinque pagine di prova sono ancora tutte li', in coda a quella dei nodi.
   via USB**: la cattura si ferma a 256 byte (il buffer TX della CDC), l'host
   finisce di enumerare la porta un paio di secondi dopo il reset e con
   `Serial.setTxTimeoutMs(0)` il resto viene buttato.
-- **Refresh**: parziale quando arriva un DATA (non piu' spesso di 20 s) e
-  comunque ogni 5 minuti (eta' dei valori e stato "muto" invecchiano da soli),
-  completo ogni 10 parziali e ad ogni cambio pagina. `hibernate()` dopo ognuno.
+- **Refresh**: tre cadenze — orologio ogni 60 s su finestra piccola, pagina in
+  parziale ad ogni dato nuovo (min 120 s) e comunque ogni 5 min, completo ogni
+  10 parziali **o ogni ora**. Piu' un completo ad ogni cambio pagina e un
+  parziale immediato al primo pacchetto di un nodo. `hibernate()` dopo ognuno.
+  Misurati: completo ~2,2 s, parziale intero ~980 ms, solo orologio ~810 ms —
+  **l'area conta poco, il tempo lo detta la waveform**.
 - **Testo centrato**: usare `drawCenter()`, che misura con `getTextBounds()`.
   Allineare a destra con un offset stimato a occhio taglia le stringhe larghe
   sul bordo sinistro, dove il cursore va a coordinate negative e Adafruit_GFX

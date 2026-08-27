@@ -1037,10 +1037,57 @@ senza di loro si somiglierebbero (schermo che non cambia).
 - **Lo storico del trend si ricostruisce dai CSV** al primo sync NTP
   (`seedForecastDaSD()`), leggendo solo la **coda** dei file: senza, ogni
   riavvio — e ogni OTA — costerebbe tre ore di previsione "non ancora nota".
-- **Refresh del pannello**: parziale quando arriva un DATA (non più spesso di
-  20 s) e comunque ogni 5 minuti, completo ogni 10 parziali e ad ogni cambio
-  pagina, `hibernate()` dopo ognuno. Misurati su hardware: **completo ~2,2 s
-  (4,8 s il primo dopo l'accensione), parziale ~1 s**.
+- **Refresh del pannello — tre cadenze, non una**:
+
+  | refresh | quando | area |
+  |---|---|---|
+  | orologio | ogni 60 s | solo il suo rettangolo (132x31) |
+  | pagina, parziale | dato nuovo (min 120 s) o comunque ogni 5 min | tutta |
+  | pagina, completo | ogni 10 parziali **oppure ogni ora** | tutta |
+
+  Piu' un completo obbligatorio ad ogni cambio pagina (la precedente e' ancora
+  nella memoria del controller e un parziale la lascerebbe sotto), e un
+  parziale immediato al **primo** pacchetto di un nodo — senza, dopo un riavvio
+  il pannello direbbe "in attesa del primo dato" per due minuti pur avendo gia'
+  i valori. `hibernate()` dopo ognuno.
+
+  **Il completo a tempo (ogni ora) e' la contropartita dell'orologio**: un
+  rettangolo riscritto sessanta volte l'ora accumula un alone li' e solo li',
+  che e' il modo peggiore in cui un e-ink invecchia. Prima il completo
+  dipendeva solo dal conteggio dei parziali, quindi in una giornata senza
+  novita' poteva non arrivare mai.
+
+  **Tempi misurati su hardware**: completo **~2,2 s** (4,8 s il primo dopo
+  l'accensione, che include il power-on del controller), parziale su tutta la
+  pagina **~980 ms**, parziale sul solo orologio **~810 ms**.
+
+  **Quel 810 contro 980 e' il numero da ricordare**: ridurre l'area a un decimo
+  fa risparmiare il 17% del tempo, non il 90%. Il costo di un refresh e-ink e'
+  dominato dalla sequenza di pilotaggio (power-on, waveform, attesa del BUSY,
+  power-off), non dai byte mandati sull'SPI. La finestra piccola conviene lo
+  stesso, ma **per il ghosting, non per la velocita'**: stressa solo i pixel che
+  contiene. Conseguenza per il futuro: tre areette aggiornate al minuto
+  costerebbero ~2,4 s, e converrebbe un solo parziale su tutta la pagina.
+
+- **L'ora la disegna una funzione sola** (`drawOra()`), usata sia dal refresh
+  piccolo sia da quello della pagina intera: se fossero due disegni distinti
+  divergerebbero di qualche pixel, e l'ora "salterebbe" ad ogni refresh grande.
+
+- **Layout adattivo**: fino a due nodi si usa il blocco comodo (temperatura a
+  24pt, trend scritto per esteso), da tre in su quello compatto (18pt). Il
+  pannello si legge da lontano, quindi il corpo del carattere non e' un vezzo
+  grafico: e' la distanza a cui la pagina funziona.
+
+- **Si mostra l'ORA dell'ultimo pacchetto, non da quanto tempo e' arrivato.** Un
+  istante non invecchia: resta vero anche quando il pannello non si ridisegna
+  da un pezzo, mentre un "38 s fa" diventa falso dopo trenta secondi — e su un
+  e-ink che si aggiorna ogni due minuti sarebbe sbagliato quasi sempre.
+
+- **Il trend e' una freccia disegnata, non una parola**: l'inclinazione segue i
+  nove livelli di `forecast.h` (da -70 gradi per il crollo a +70 per la salita
+  forte). Una parola va letta, un'inclinazione si vede da tre metri. Quando lo
+  storico non basta si disegnano due trattini: "non lo so ancora" non deve
+  somigliare a "stabile".
 - **Testo centrato**: usare `drawCenter()`, che misura con `getTextBounds()`.
   Allineare a destra con un offset stimato a occhio taglia le stringhe larghe
   sul bordo sinistro, dove il cursore va a coordinate negative e Adafruit_GFX
