@@ -1,5 +1,49 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-08-27 (2) — Fase 3 chiusa: SD, NTP, web UI, OTA
+
+Tutto provato su hardware nella stessa sessione, con la scheda ancora al cavo.
+
+**La microSD e l'e-ink convivono sul bus SPI.** Era il rischio rimasto in
+sospeso dal bring-up (fatto senza la scheda Sense, quindi con il bus tutto del
+pannello). Con la Sense montata: card montata, 14.901 MB liberi su 14.902, e il
+pannello continua a disegnare. Due accortezze, entrambe nel codice: il CS della
+card (GPIO21) alzato **prima** di toccare il bus, e `sd_begin()` che **non**
+chiama `SPI.begin()` — lo ha già fatto il `.ino` per il display, sugli stessi
+pin. Regge perché tutto gira in `loop()`; con un task proprio quel bus andrebbe
+protetto.
+
+**Quello che ora funziona**, misurato: WiFi (192.168.1.73, canale 1, RSSI -78),
+NTP, pagina di stato con i nodi, `/update`, CSV dei nodi su card. Il primo DATA
+del DOIT è finito in `/nodi/MeteoEsp32/2026-08-27.csv` con `fonte_ora=NTP`,
+seq 32, e i valori giusti. **Lo storico del DOIT, interrotto stamattina con la
+migrazione, riprende da qui.**
+
+**L'OTA funziona su questa scheda**: 1.263.312 byte in **6,5 s** (193 kB/s),
+risposta `OK`, riavvio, e dopo il riavvio SD montata, NTP sincronizzato e il
+nodo rientrato **da solo** dal registro in NVS, a finestra di associazione
+chiusa. Da adesso l'hub si aggiorna via rete.
+
+**Canale ESP-NOW: si torna a `ESPNOW_LINK_CHANNEL_CURRENT` (0).** Prima della
+Fase 3 qui c'era il numero fisso 1, perché senza WiFi nessuno imponeva il
+canale; ora la scheda sta su un AP e forzarlo chiamerebbe
+`esp_wifi_set_channel()` su una STA connessa. `remote_begin()` va dopo
+`net_begin()`.
+
+**La finestra di associazione resta chiusa all'avvio**, al contrario di
+`EnvNode_C3`, e la pagina lo dice: i nodi noti stanno in NVS e rientrano
+comunque, mentre un hub in ascolto si porterebbe via il primo nodo che si
+riavvia in casa.
+
+**Refresh del pannello, misurati**: completo ~2,2 s (4,8 s il primo dopo
+l'accensione, che include il power-on del controller), parziale ~1 s.
+
+**Cosa resta**: `ventilation.h` e il confronto dentro/fuori (serve un secondo
+nodo posizionato fuori), le pagine immagine (Fase 5) e le pagine extra
+(Fase 6). E il nodo a batteria è ancora su `EnvNode_C3`: ha senso spostarlo
+qui adesso che questo hub registra e si aggiorna da solo, ma va fatto con un
+power-cycle e la finestra aperta — e chiude anche il doppio hub acceso.
+
 ## Aggiornamento del 2026-08-27 — l'hub S3 riceve, e il DOIT ci si e' trasferito
 
 **`MeteoHub_S3` non e' piu' solo il bring-up del pannello: e' un hub.** Trapiantati

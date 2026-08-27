@@ -77,10 +77,18 @@
 
 #include "foto_prova.h"   // 15.000 byte usciti da www/dither.html
 
+#include <WiFi.h>          // solo per WiFi.localIP(), da mostrare sul pannello
+#include <EspNowLink.h>    // ESPNOW_LINK_CHANNEL_CURRENT
 #include "remote_nodes.h"  // hub ESP-NOW, trapiantato da projects/EnvNode_C3/
 #include "forecast.h"      // i nomi TREND_*: remote_nodes.h non lo include
 
 #include "rtc_time.h"      // serve a remote_nodes per datare i DATA
+#include "sd_logger.h"     // microSD della Sense: i CSV dei nodi
+#include "net_ota.h"       // WiFi + ArduinoOTA + /update + WebServer condiviso
+#include "web_ui.h"        // pagina di stato e API, registrate su net_server()
+#include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
+
+static const char FW_VERSION[] = "v2";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -88,32 +96,52 @@
 // Nome con cui questa scheda si presenta ai nodi.
 static const char HUB_NOME[] = "MeteoHub";
 
-// Canale ESP-NOW. Qui va un numero ESPLICITO, al contrario di EnvNode_C3 che
-// usa ESPNOW_LINK_CHANNEL_CURRENT (0): quella scheda sta su un access point e
-// il canale glielo impone il router, questa (finche' non ha il WiFi, Fase 3)
-// non ha nessuno che glielo imponga.
+// Canale ESP-NOW: ESPNOW_LINK_CHANNEL_CURRENT (0), mai un numero esplicito.
+// Da quando c'e' il WiFi (Fase 3) questa scheda sta su un access point, quindi
+// il canale glielo impone il router e forzarlo chiamerebbe
+// esp_wifi_set_channel() su una STA connessa, facendo cadere la connessione.
+// Con lo 0 i peer sono registrati sul "canale corrente" e seguono l'AP da
+// soli. Conseguenza da non dimenticare, ed e' il motivo per cui /api/nodi lo
+// riporta: i nodi devono stare sul canale dell'AP, e uno che dorme senza WiFi
+// dovra' impostarlo esplicitamente.
 //
-// 1 = il canale dell'access point di casa (verificato il 2026-08-27 su
-// /api/stato dei nodi, campo "canale"). Ci vuole quello e non il 6 di
-// Link_Init(), perche' i nodi veri stanno la': il DOIT e' connesso al WiFi e
-// il canale glielo impone il router.
-//
-// IL ROVESCIO, da tenere a mente: un nodo tiene un hub solo, e chi lo adotta
-// e' il primo hub in finestra di associazione che risponde al suo HELLO. Il
-// nodo a batteria fa HELLO ad ogni power-cycle — e si riavvia da solo, cinque
-// volte in tre giorni (uscita di sicurezza dei cinque risvegli muti) — mentre
-// EnvNode_C3 ha la finestra normalmente CHIUSA. Un hub di sviluppo lasciato in
-// pairing su questo canale se lo porterebbe via insieme al suo log su SD, che
-// qui ancora non c'e'. Per questo la finestra NON si apre da sola all'avvio:
-// si apre a mano, col tasto BOOT, e solo per il tempo che serve.
-//
-// Per provare invece con examples/Link_Node_Demo/, che usa Link_Init() e
-// quindi ESPNOW_LINK_CHANNEL: mettere 6 qui. Se hub e nodo non sono sullo
-// stesso canale non si sentono, e il guasto e' silenzioso da entrambe le parti.
-static const uint8_t HUB_CANALE = 1;
+// Prima della Fase 3 qui c'era un numero fisso (1, l'AP di casa) perche' senza
+// WiFi nessuno lo imponeva. Per provare con examples/Link_Node_Demo/, che usa
+// Link_Init() e quindi il canale 6, serve ancora un numero: si passa 6 a
+// remote_begin() invece della costante qui sotto.
+static const uint8_t HUB_CANALE = ESPNOW_LINK_CHANNEL_CURRENT;
 
-// Durata della finestra aperta a mano col tasto BOOT.
 static const uint32_t PAIRING_MANUALE_S = 120;
+
+// Contatori mostrati da /api/stato e dal pannello. Stanno in RAM: sono "da
+// quando questa scheda e' accesa", e scriverli in NVS costerebbe un'erase per
+// pacchetto.
+static uint32_t s_righeScritte = 0;
+static uint32_t s_epdRefresh   = 0;
+static uint32_t s_epdUltimoMs  = 0;
+
+const char* app_fw_version()    { return FW_VERSION; }
+const char* app_hub_nome()      { return HUB_NOME; }
+uint32_t    app_righe_scritte() { return s_righeScritte; }
+uint32_t    app_epd_refresh()   { return s_epdRefresh; }
+uint32_t    app_epd_ultimo_ms() { return s_epdUltimoMs; }
+
+// --- stato della pagina nodi ---
+// Un dato nuovo alza il flag, non ridisegna: il refresh lo decide il loop, che
+// sa anche da quanto non si disegna. Cosi' due nodi che parlano insieme
+// costano un refresh, non due.
+static bool     s_nodiDirty     = false;
+static uint32_t s_nodiUltimoMs  = 0;
+static uint8_t  s_nodiParziali  = 0;
+
+// Un dato nuovo si aspetta almeno questo prima di finire sul pannello: i nodi
+// possono parlare a raffica (un DATA per nodo, piu' quelli di chi si associa)
+// e un e-ink non e' un monitor.
+static const uint32_t NODI_MIN_MS = 20000UL;
+// ...e comunque si ridisegna ogni tanto anche senza dati nuovi, o l'eta' dei
+// valori, lo stato "muto" e il conto alla rovescia dell'associazione
+// resterebbero fermi a quello che erano. E' la cadenza del piano.
+static const uint32_t NODI_MAX_MS = 300000UL;
 
 // Fuso orario. Costante di compilazione come in Timelapse_XIAO, non
 // un'impostazione da web: questa scheda non viaggia. Senza WiFi l'orologio
@@ -488,8 +516,8 @@ static uint8_t bootEvent()
 // altrimenti il ghosting si accumula.
 
 static const int16_t NODI_TOP       = 28;   // sotto l'intestazione
-static const int16_t NODI_BOT       = 272;  // sopra il piede
-static const int16_t NODI_RIGA_H    = 61;   // 4 nodi entrano in 244 px
+static const int16_t NODI_BOT       = 266;  // sopra il piede (due righe)
+static const int16_t NODI_RIGA_H    = 59;   // 4 nodi entrano in 238 px
 static const int     NODI_VISIBILI  = 4;    // oltre non c'e' spazio: vedi nota
 static const uint8_t NODI_FULL_OGNI = 10;
 
@@ -589,6 +617,119 @@ static void drawNodo(const RemoteNode& n, int16_t y)
   display.print(riga);
 }
 
+// ---------------------------------------------------------------------------
+// Ricostruzione dello storico di pressione dopo un riavvio
+// ---------------------------------------------------------------------------
+// Copiata da projects/EnvNode_C3/. Il trend a tre ore lo calcola l'hub, ma il
+// suo storico vive in RAM: senza questo, ogni riavvio - e ogni OTA, che qui
+// saranno frequenti - costerebbe tre ore di "non ancora noto", cioe' lo stesso
+// guasto che si sta togliendo al nodo, spostato di una scheda. I dati per
+// rifarlo ci sono gia': sono i CSV che questo stesso hub scrive.
+static bool s_seedFatto = false;
+
+// Una riga dal File senza allocare String: su un CSV di un giorno intero
+// sarebbero migliaia di allocazioni in un colpo solo.
+static size_t leggiRiga(File& f, char* buf, size_t cap)
+{
+  size_t n = 0;
+  while (f.available() && n < cap - 1)
+  {
+    const char c = (char)f.read();
+    if (c == '\n') break;
+    if (c != '\r') buf[n++] = c;
+  }
+  buf[n] = '\0';
+  return n;
+}
+
+// Colonne: ts_iso,ts_unix,fonte_ora,mac,seq,temp_c,hum_pct,press_hpa,batt_mv
+static void seedNodoDaCsv(const RemoteNode* n, const char* giorno, time_t minTs, int* righe)
+{
+  File f = sd_open_remote_day(n->nome, giorno);
+  if (!f) return;
+
+  // Solo la coda del file: le tre ore che servono sono al massimo qualche
+  // migliaio di byte, mentre un giorno intero a cadenza fitta ne fa oltre
+  // centomila. Leggerlo tutto bloccherebbe loop() - e con lui web server, OTA
+  // e raccolta dei DATA - per secondi, ad ogni avvio.
+  const size_t size = f.size();
+  const size_t CODA = 65536;
+  if (size > CODA)
+  {
+    f.seek(size - CODA);
+    char scarto[160];
+    leggiRiga(f, scarto, sizeof(scarto));   // la prima riga e' tagliata a meta'
+  }
+
+  char buf[160];
+  while (leggiRiga(f, buf, sizeof(buf)) > 0)
+  {
+    char* campo[9];
+    int nc = 0;
+    campo[nc++] = buf;
+    for (char* p = buf; *p && nc < 9; p++)
+    {
+      if (*p == ',') { *p = '\0'; campo[nc++] = p + 1; }
+    }
+    if (nc < 8) continue;
+
+    // L'intestazione cade da sola: "ts_unix" non e' un numero, strtoul da' 0 e
+    // remote_seed_pressure scarta i timestamp non validi.
+    const time_t ts = (time_t)strtoul(campo[1], nullptr, 10);
+    if (ts < minTs) continue;
+    if (campo[7][0] == '\0') continue;   // campo vuoto = valore non finito
+
+    remote_seed_pressure(n->mac, ts, atof(campo[7]));
+    (*righe)++;
+  }
+  f.close();
+}
+
+static void seedForecastDaSD()
+{
+  if (s_seedFatto) return;
+
+  // Serve l'orologio VERO: qui i timestamp non datano una riga, compongono il
+  // NOME del file da aprire. Con l'ora di compilazione si leggerebbe il CSV di
+  // un giorno sbagliato.
+  if (!rtctime_isSynced() || !sd_mounted()) return;
+  if (remote_count() == 0) return;
+
+  s_seedFatto = true;
+
+  const time_t ora   = rtctime_now();
+  const time_t minTs = ora - (time_t)(3 * 3600 + 900);   // 3 h + tolleranza
+
+  char giornoOggi[12] = "", giornoPrima[12] = "";
+  rtctime_format(ora,   "%Y-%m-%d", giornoOggi,  sizeof(giornoOggi));
+  rtctime_format(minTs, "%Y-%m-%d", giornoPrima, sizeof(giornoPrima));
+
+  int totale = 0;
+  for (int i = 0; i < remote_count(); i++)
+  {
+    RemoteNode n;
+    if (!remote_get(i, &n)) continue;
+
+    int righe = 0;
+    // I DATA veri arrivano anche prima che il seeding parta (aspetta NTP, i
+    // nodi no) e l'anello rifiuta i campioni fuori ordine: senza azzerarlo, il
+    // seeding girerebbe senza errori e senza seminare niente.
+    remote_seed_begin(n.mac);
+
+    // In ordine cronologico: ieri PRIMA di oggi, e il file di ieri si apre solo
+    // se la finestra di tre ore ci cade davvero dentro.
+    if (strcmp(giornoPrima, giornoOggi) != 0) seedNodoDaCsv(&n, giornoPrima, minTs, &righe);
+    seedNodoDaCsv(&n, giornoOggi, minTs, &righe);
+
+    if (righe > 0)
+      Serial.printf("[trend] %s: storico ricostruito da SD, %d campioni\n", n.nome, righe);
+    totale += righe;
+  }
+
+  if (totale == 0) Serial.println("[trend] nessuno storico da ricostruire");
+  s_nodiDirty = true;
+}
+
 static void screenNodi(bool full)
 {
   const int16_t W = display.width();
@@ -664,8 +805,33 @@ static void screenNodi(bool full)
     String piede = String(n) + (n == 1 ? " nodo" : " nodi");
     if (muti > 0) piede += String("  ") + muti + " muto";
     if (n > NODI_VISIBILI) piede += String("  (+") + (n - NODI_VISIBILI) + " non mostrati)";
-    display.setCursor(6, 292);
+    display.setCursor(6, 281);
     display.print(piede);
+
+    // Seconda riga: rete e microSD. Non e' decorazione — e' l'unico posto in
+    // cui questa scheda dice come sta. Il log seriale non e' leggibile (si
+    // ferma a 256 byte, il buffer della CDC), e la pagina web la si raggiunge
+    // solo sapendo gia' l'IP, che e' scritto qui.
+    display.setCursor(6, 296);
+    if (net_isConnected()) display.print(WiFi.localIP().toString());
+    else                   display.print("WiFi assente");
+
+    if (sd_mounted())
+    {
+      char buf[24];
+      snprintf(buf, sizeof(buf), "SD %lu MB", (unsigned long)sd_free_mb());
+      drawRight(buf, W - 6, 296);
+    }
+    else
+    {
+      // In negativo: senza card i DATA dei nodi non li registra nessuno, ed e'
+      // il guasto piu' silenzioso che questa scheda possa avere — tutto il
+      // resto continua a funzionare come se niente fosse.
+      display.fillRect(W - 116, 285, 110, 14, GxEPD_BLACK);
+      display.setTextColor(GxEPD_WHITE);
+      drawRight("SD NON MONTATA", W - 9, 296);
+      display.setTextColor(GxEPD_BLACK);
+    }
 
     if (remote_pairing_active())
     {
@@ -673,7 +839,7 @@ static void screenNodi(bool full)
       char buf[24];
       snprintf(buf, sizeof(buf), "ASSOCIAZIONE %lu:%02lu",
                (unsigned long)(r / 60), (unsigned long)(r % 60));
-      drawRight(buf, W - 6, 292);
+      drawRight(buf, W - 6, 281);
     }
     else if (!remote_ready())
     {
@@ -681,11 +847,11 @@ static void screenNodi(bool full)
       // non ha nemmeno acceso la radio": senza, le due cose sono la stessa
       // pagina vuota. E il log seriale non e' un posto su cui contare — con
       // setTxTimeoutMs(0) le righe si buttano appena nessuno legge.
-      drawRight("ESP-NOW NON ATTIVO", W - 6, 292);
+      drawRight("ESP-NOW NON ATTIVO", W - 6, 281);
     }
     else
     {
-      drawRight(String("canale ") + HUB_CANALE, W - 6, 292);
+      drawRight(String("canale ") + net_channel(), W - 6, 281);
     }
   }
   while (display.nextPage());
@@ -713,30 +879,40 @@ static uint32_t s_next     = 0;   // prossimo aggiornamento del contatore
 static uint32_t s_n        = 0;
 static uint32_t s_partials = 0;
 
-// --- stato della pagina nodi ---
-// Un dato nuovo alza il flag, non ridisegna: il refresh lo decide il loop, che
-// sa anche da quanto non si disegna. Cosi' due nodi che parlano insieme
-// costano un refresh, non due.
-static bool     s_nodiDirty     = false;
-static uint32_t s_nodiUltimoMs  = 0;
-static uint8_t  s_nodiParziali  = 0;
-
-// Un dato nuovo si aspetta almeno questo prima di finire sul pannello: i nodi
-// possono parlare a raffica (un DATA per nodo, piu' quelli di chi si associa)
-// e un e-ink non e' un monitor.
-static const uint32_t NODI_MIN_MS = 20000UL;
-// ...e comunque si ridisegna ogni tanto anche senza dati nuovi, o l'eta' dei
-// valori, lo stato "muto" e il conto alla rovescia dell'associazione
-// resterebbero fermi a quello che erano. E' la cadenza del piano.
-static const uint32_t NODI_MAX_MS = 300000UL;
-
 // Chiamata da remote_loop() quando un nodo consegna un DATA. Gira nel contesto
 // di loop(), non in un callback della radio: dentro remote_nodes il lavoro
 // sulla coda ESP-NOW e' gia' stato fatto.
+// La finestra di grazia dell'orologio, come su EnvNode_C3 e Timelapse_XIAO.
+static const uint32_t ORARIO_GRAZIA_MS = 5UL * 60UL * 1000UL;
+
+static bool orario_registrabile()
+{
+  return rtctime_isSynced() || millis() >= ORARIO_GRAZIA_MS;
+}
+
 static void onDatoNodo(const RemoteNode* n)
 {
   if (n == nullptr) return;
   s_nodiDirty = true;
+
+  // Prima del primo sync NTP l'orologio riporta l'ora di COMPILAZIONE, che e'
+  // identica ad ogni riavvio: righe cosi' non datano niente, e il CSV di un
+  // nodo remoto e' l'unico posto dove quella lettura esiste. Meglio un buco,
+  // che il salto di seq rende comunque visibile, di una riga che si spaccia
+  // per un istante sbagliato. Passati cinque minuti si registra lo stesso, con
+  // fonte_ora=STIMA: un hub rimasto senza rete che smette di registrare per
+  // sempre sarebbe un guasto peggiore di un orario impreciso.
+  if (!orario_registrabile()) return;
+
+  char mac[18];
+  snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+           n->mac[0], n->mac[1], n->mac[2], n->mac[3], n->mac[4], n->mac[5]);
+
+  if (sd_log_remote(n->nome, mac, n->ultimoTs, rtctime_source(),
+                    n->seq, n->value, n->batteria_mv))
+  {
+    s_righeScritte++;
+  }
   Serial.printf("[hub] %s  %.1f C  %.0f %%  %.1f hPa  seq %lu%s\n",
                 n->nome, n->value[0], n->value[1], n->value[2],
                 (unsigned long)n->seq, n->online ? "" : "  (era muto)");
@@ -785,8 +961,10 @@ static void showPage(uint8_t p)
   }
 
   display.hibernate();
+  s_epdRefresh++;
+  s_epdUltimoMs = millis() - t0;
   Serial.printf("[epd] pagina %s: %lu ms\n", PAGE_NAMES[p],
-                (unsigned long)(millis() - t0));
+                (unsigned long)s_epdUltimoMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -840,9 +1018,39 @@ void setup()
   // modulo che parte con l'orologio a zero attribuisce il primo pacchetto al
   // 1970. Senza WiFi resta la stima da __DATE__/__TIME__ — imprecisa ma
   // monotona, che e' quello che serve per misurare la cadenza dei nodi.
+  // La microSD: da qui in poi il bus SPI ha due padroni. Il CS del pannello lo
+  // gestisce GxEPD2, quello della card la libreria SD, e ognuno apre la sua
+  // transazione — ma il bus e' uno solo, quindi una scrittura su card e un
+  // refresh non possono sovrapporsi. Non e' un problema finche' tutto gira in
+  // loop(), che e' il caso: qui non ci sono task propri.
+  if (sd_begin())
+  {
+    Serial.printf("[sd] montata: %lu MB liberi su %lu\n",
+                  (unsigned long)sd_free_mb(), (unsigned long)sd_total_mb());
+  }
+  else
+  {
+    // Non si ferma niente: il pannello e i nodi funzionano lo stesso, e il
+    // guasto si legge sul pannello (riquadro "SD NON MONTATA"). Ma i DATA non
+    // vengono registrati da nessuna parte, ed e' il motivo per cui quella
+    // scritta e' in negativo invece che in grigetto.
+    Serial.printf("[sd] NON montata: %s\n", sd_last_error());
+  }
+
   rtctime_begin(TZ_POSIX);
   rtctime_seedFromBuild();
 
+  // Rete: net_begin() e' bloccante per al massimo 15 s, poi ritenta in
+  // background. Il pannello e' gia' stato inizializzato ma non ancora
+  // disegnato: la prima pagina esce dopo, cosi' porta gia' IP e ora.
+  net_begin();
+  web_ui_begin();
+  if (net_isConnected()) rtctime_onWifiConnected();
+
+  // DOPO net_begin(): non perche' serva la connessione (Link_InitEx sta su col
+  // solo driver WiFi avviato), ma perche' il canale dei peer e' quello dell'AP
+  // — e con ESPNOW_LINK_CHANNEL_CURRENT lo si prende da chi ha gia' configurato
+  // la radio.
   remote_on_data(onDatoNodo);
   if (remote_begin(HUB_NOME, HUB_CANALE))
   {
@@ -853,7 +1061,7 @@ void setup()
     // bisogno: sono in NVS e il driver li riconosce a finestra chiusa.
     remote_pairing_close();
     Serial.printf("[hub] in ascolto come %s sul canale %u, %d nodi noti\n",
-                  HUB_NOME, (unsigned)HUB_CANALE, remote_count());
+                  HUB_NOME, (unsigned)net_channel(), remote_count());
     Serial.println("[hub] associazione CHIUSA: tieni premuto BOOT per aprirla.");
   }
   else
@@ -865,17 +1073,36 @@ void setup()
 
   Serial.println("[epd] BOOT: pagina successiva. L'ultima e' la bianca.");
   showPage(s_page);
-  Serial.printf("[hub] pronto: ESP-NOW %s, canale %u, %d nodi noti\n",
+  Serial.printf("[hub] pronto: ESP-NOW %s, canale %u, %d nodi, SD %s, http://%s.local/\n",
                 remote_ready() ? "attivo" : "NON attivo",
-                (unsigned)HUB_CANALE, remote_count());
+                (unsigned)net_channel(), remote_count(),
+                sd_mounted() ? "ok" : "assente", OTA_HOSTNAME);
 }
 
 void loop()
 {
+  // net_loop() PRIMA di tutto e ad ogni giro: e' quella che serve il web server
+  // e fa avanzare l'OTA. Se salta un giro, un aggiornamento via rete si pianta
+  // a meta' — ed e' l'unico modo di aggiornare questa scheda una volta montata.
+  net_loop();
+
+  // Riconnessione WiFi: il sync NTP va rilanciato ad OGNI ritorno della rete,
+  // non solo al primo. Senza, una scheda che perde l'AP per un giorno resta con
+  // l'orologio alla deriva anche dopo che la rete e' tornata.
+  {
+    static bool s_eraConnesso = false;
+    const bool ora = net_isConnected();
+    if (ora && !s_eraConnesso) { rtctime_onWifiConnected(); s_nodiDirty = true; }
+    s_eraConnesso = ora;
+  }
+
   // Sempre, su qualunque pagina: i nodi non aspettano che si stia guardando la
   // loro. remote_loop() preleva i DATA dal driver — se non gira, i pacchetti
   // arrivano alla radio e nessuno li raccoglie.
   remote_loop();
+
+  // Aspetta il primo sync NTP e poi gira una volta sola.
+  seedForecastDaSD();
 
   const uint8_t ev = bootEvent();
   if (ev == BOOT_LUNGO)
@@ -921,6 +1148,8 @@ void loop()
     s_nodiParziali = full ? 0 : s_nodiParziali + 1;
     s_nodiDirty    = false;
     s_nodiUltimoMs = millis();
+    s_epdRefresh++;
+    s_epdUltimoMs  = millis() - t0;
     Serial.printf("[epd] nodi %s (%s): %lu ms\n",
                   full ? "COMPLETO" : "parziale",
                   perDato ? "dato nuovo" : "cadenza",

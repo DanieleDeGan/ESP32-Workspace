@@ -57,8 +57,13 @@ toccare) vedi `docs/FILES.md`. Per il pinout/hardware della board AMOLED vedi
 | `projects/MeteoNode_C3/rtc_time.h/.cpp` | copia di quello di `EnvNode_C3`: stima da build-time, poi NTP |
 | `projects/MeteoNode_C3/net_ota.h/.cpp` | WiFi + ArduinoOTA + `/update`, con watchdog di riconnessione — di norma non si tocca |
 | `projects/MeteoNode_C3/web_ui.h/.cpp` | pagina di stato con grafici SVG, comandi e interruttore del deep sleep |
-| `projects/MeteoHub_S3/` | **progetto** (XIAO ESP32-S3 Sense): hub della stazione meteo — riceve i nodi via ESP-NOW e li mostra su un pannello **e-ink WeAct 4.2\"** (SSD1683). Mancano microSD, NTP, web UI e OTA (Fase 3) — vedi `docs/FILES.md` e `docs/Stazione-Meteo.md` |
-| `projects/MeteoHub_S3/MeteoHub_S3.ino` | pagine del pannello, tasto BOOT a due gesti, hub ESP-NOW — qui va la logica applicativa |
+| `projects/MeteoHub_S3/` | **progetto** (XIAO ESP32-S3 Sense): hub della stazione meteo — riceve i nodi via ESP-NOW, li mostra su un pannello **e-ink WeAct 4.2\"** (SSD1683) e ne registra i CSV su microSD, con orario NTP, web UI e OTA — vedi sezione dedicata |
+| `projects/MeteoHub_S3/MeteoHub_S3.ino` | pagine del pannello, tasto BOOT a due gesti, hub ESP-NOW, logging dei nodi — qui va la logica applicativa |
+| `projects/MeteoHub_S3/remote_nodes.h/.cpp` | copia da `EnvNode_C3`: registro nodi, cadenza appresa, nodo muto, trend, NVS |
+| `projects/MeteoHub_S3/sd_logger.h/.cpp` | copia da `EnvNode_C3` adattata alla microSD **SPI della Sense** (CS 21, bus condiviso con l'e-ink) |
+| `projects/MeteoHub_S3/net_ota.h/.cpp` | WiFi + ArduinoOTA + `/update`, variante con `net_server()` condiviso |
+| `projects/MeteoHub_S3/web_ui.h/.cpp` | pagina di stato dell'hub + API dei nodi, gli stessi endpoint di `EnvNode_C3` |
+| `projects/MeteoHub_S3/secrets.h.example` | credenziali: si copia in `secrets.h`, **gitignorato** |
 | `projects/MeteoHub_S3/www/dither.html` | ritaglio + dithering nel browser, **non compilata**: produce i `.bin` da 15.000 byte del pannello |
 | `projects/Timelapse_XIAO/` | **progetto** (XIAO ESP32-S3 Sense): camera timelapse a intervallo, archivio per giorno su microSD, galleria web con riproduzione, NTP + OTA — vedi sezione dedicata |
 | `projects/Timelapse_XIAO/Timelapse_XIAO.ino` | timer degli scatti, gestione dello spazio, impostazioni — qui va la logica applicativa |
@@ -943,6 +948,70 @@ la RAM ad ogni risveglio, quindi il suo storico **non può** stare su di lui.
   risposta — pagina vuota per colpa di un solo sensore guasto su un solo nodo.
   E i NaN arrivano davvero, perché un nodo che non riesce a leggere il sensore
   trasmette lo stesso.
+
+## `projects/MeteoHub_S3/` — hub della stazione meteo (progetto reale)
+
+Cresciuto dal bring-up del pannello e-ink, oggi è l'hub vero della stazione:
+
+```
+nodi ESP-NOW -> hub S3 -> pannello e-ink 4.2" + CSV su microSD + web UI/OTA
+```
+
+Le cinque pagine di prova del bring-up sono ancora in coda a quella dei nodi:
+servono a distinguere un guasto del pannello da un guasto della radio, che
+senza di loro si somiglierebbero (schermo che non cambia).
+
+**Vincoli e scelte da conoscere**:
+
+- **Il pannello e la microSD condividono il bus SPI** (SCK GPIO7/D8, MOSI
+  GPIO9/D10; l'e-ink non usa MISO, gli basta un CS separato). Due conseguenze:
+  il CS della card (**GPIO21**) va pilotato **ALTO prima di toccare il bus**,
+  anche quando la card non si monta, e `sd_begin()` qui **non chiama
+  `SPI.begin()`** — lo fa il `.ino` per il display, sugli stessi pin.
+  Verificato su hardware il 2026-08-27: card montata (14,9 GB) e pannello che
+  disegna, insieme, senza arbitraggio. Regge perché tutto gira in `loop()`:
+  **se un giorno qualcosa passasse su un task proprio, quel bus andrebbe
+  protetto**.
+- **Il canale ESP-NOW è `ESPNOW_LINK_CHANNEL_CURRENT` (0), mai un numero.**
+  Da quando c'è il WiFi la scheda sta su un AP e il canale lo impone il router:
+  forzarlo chiamerebbe `esp_wifi_set_channel()` su una STA connessa. Prima
+  della Fase 3 qui c'era un numero fisso, perché senza WiFi non c'era nessuno
+  a imporlo. `remote_begin()` va chiamata **dopo** `net_begin()`.
+- **La finestra di associazione NON si apre da sola all'avvio**, al contrario
+  di `EnvNode_C3`: `remote_begin()` la apre e il `setup()` la richiude subito.
+  Un nodo tiene un hub solo e lo adotta il primo che risponde al suo HELLO, e
+  i nodi veri fanno HELLO ad ogni power-cycle. I nodi già noti stanno in NVS e
+  rientrano comunque. Si apre da `/` o tenendo premuto **BOOT** (1,2 s) per 2
+  minuti; BOOT breve cambia pagina.
+- **La diagnostica sta sul pannello, non sulla seriale.** Il piede della pagina
+  NODI porta IP e spazio libero della card, e in negativo `SD NON MONTATA`.
+  Serve perché il log di boot di questa scheda **non è osservabile via USB**:
+  ogni cattura si ferma a 256 byte (il buffer TX della CDC), l'host finisce di
+  enumerare la porta un paio di secondi dopo il reset e `setTxTimeoutMs(0)`
+  butta il resto. Da fuori sembra un `setup()` che si interrompe a metà.
+- **Un DATA che arriva prima del primo sync NTP non si registra**
+  (`orario_registrabile()`, finestra di grazia 5 minuti): il CSV di un nodo
+  remoto è l'unico posto dove quella lettura esiste, e una riga datata con
+  l'ora di compilazione — identica ad ogni riavvio — non è un dato salvato ma
+  un dato falsificato. Il buco si vede comunque dal salto di `seq`.
+- **Lo storico del trend si ricostruisce dai CSV** al primo sync NTP
+  (`seedForecastDaSD()`), leggendo solo la **coda** dei file: senza, ogni
+  riavvio — e ogni OTA — costerebbe tre ore di previsione "non ancora nota".
+- **Refresh del pannello**: parziale quando arriva un DATA (non più spesso di
+  20 s) e comunque ogni 5 minuti, completo ogni 10 parziali e ad ogni cambio
+  pagina, `hibernate()` dopo ognuno. Misurati su hardware: **completo ~2,2 s
+  (4,8 s il primo dopo l'accensione), parziale ~1 s**.
+- **Testo centrato**: usare `drawCenter()`, che misura con `getTextBounds()`.
+  Allineare a destra con un offset stimato a occhio taglia le stringhe larghe
+  sul bordo sinistro, dove il cursore va a coordinate negative e Adafruit_GFX
+  non protesta — successo davvero, e sul pannello si leggeva "ESSUN NODO".
+- **Compilazione**: serve `--libraries libraries` (usa `EspNowLink`) e il FQBN
+  della XIAO S3 **senza** `CDCOnBoot`, che su questa board è invertito.
+
+**Dove scrivere la logica**: nel `.ino` (pagine, tasto, colla fra i moduli).
+`remote_nodes.*`, `forecast.h`, `rtc_time.*`, `sd_logger.*`, `net_ota.*`,
+`web_ui.*` sono boilerplate per compito — e i primi quattro sono **copie** di
+`EnvNode_C3`, da tenere allineate a mano.
 
 ## `projects/MeteoNode_C3/` — nodo meteo a batteria (progetto reale)
 

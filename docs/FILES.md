@@ -1473,14 +1473,18 @@ camera, o le due schede si contendono lo stesso nome mDNS.
 
 ### `projects/MeteoHub_S3/` — hub della stazione meteo (XIAO ESP32-S3 Sense)
 
-Riceve i DATA dei nodi via ESP-NOW e li mostra su un pannello **e-ink WeAct
-4.2" 400x300** (SSD1683). Cresciuto dal bring-up del solo pannello: le cinque
-pagine di prova sono ancora tutte li', in coda a quella dei nodi. Mancano
-microSD, orario NTP, web UI e OTA — e' la Fase 3 di `docs/Stazione-Meteo.md`.
+Riceve i DATA dei nodi via ESP-NOW, li mostra su un pannello **e-ink WeAct
+4.2" 400x300** (SSD1683) e ne registra i CSV su microSD, con orario NTP, web UI
+e OTA (Fase 3 chiusa il 2026-08-27). Cresciuto dal bring-up del solo pannello:
+le cinque pagine di prova sono ancora tutte li', in coda a quella dei nodi.
 
 | File | Ruolo |
 |---|---|
-| `MeteoHub_S3.ino` | pagine del pannello, tasto BOOT, hub ESP-NOW — qui va la logica applicativa |
+| `MeteoHub_S3.ino` | pagine del pannello, tasto BOOT, hub ESP-NOW, logging dei nodi — qui va la logica applicativa |
+| `sd_logger.h/.cpp` | copia da `EnvNode_C3` adattata alla microSD SPI della Sense: CS 21, nessuna `SPI.begin()` propria |
+| `net_ota.h/.cpp` | WiFi + ArduinoOTA + `/update` + watchdog di riconnessione, con `net_server()` condiviso |
+| `web_ui.h/.cpp` | pagina di stato dell'hub e API dei nodi: gli stessi endpoint di `EnvNode_C3` |
+| `secrets.h.example` | si copia in `secrets.h` (gitignorato): WiFi, `OTA_HOSTNAME` `meteohub-s3`, credenziali web |
 | `remote_nodes.h/.cpp` | copia da `EnvNode_C3`: registro nodi, cadenza appresa, nodo muto, trend, NVS |
 | `forecast.h` | copia da `EnvNode_C3`: trend a 3 h con isteresi, header-only e pura |
 | `rtc_time.h/.cpp` | copia da `EnvNode_C3`: stima da build-time, poi NTP (che qui non c'e' ancora) |
