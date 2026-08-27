@@ -1,5 +1,57 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-08-27 — l'hub S3 riceve, e il DOIT ci si e' trasferito
+
+**`MeteoHub_S3` non e' piu' solo il bring-up del pannello: e' un hub.** Trapiantati
+da `projects/EnvNode_C3/` senza modifiche `remote_nodes.*`, `forecast.h` e
+`rtc_time.*` (unica aggiunta: un overload `remote_begin(nome, canale)`, perche'
+questa scheda non sta ancora su un AP e il canale deve sceglierselo). Sopra ci
+sono la **pagina 1/6 NODI** — nome, temperatura in grande, umidita', pressione,
+eta' del dato, trend, badge MUTO in negativo — e due cose nuove:
+
+- **Il tasto BOOT fa due gesti**: breve cambia pagina, lungo (1,2 s) apre o
+  chiude la finestra di associazione per 2 minuti. Finche' non c'e' la Fase 3
+  quel tasto e' l'unica interfaccia dell'hub.
+- **La finestra NON si apre da sola all'avvio**, al contrario di `EnvNode_C3`.
+  Un nodo tiene un hub solo e lo adotta il primo che risponde al suo HELLO; il
+  nodo a batteria fa HELLO ad ogni power-cycle e si riavvia da solo circa una
+  volta ogni 14 ore, mentre `EnvNode_C3` ha la finestra normalmente chiusa. Un
+  hub di sviluppo lasciato in pairing sul canale di casa se lo porterebbe via
+  insieme al log su SD, che qui ancora non esiste.
+
+**Il DOIT (`MeteoEsp32`) e' passato all'hub S3.** Power-cycle con la finestra
+aperta: `boot_count` 10 → 11, `reset_reason` POWERON, `espnow_hub` da
+`AC:A7:04:BF:11:48` (EnvNode_C3) a `E0:72:A1:F9:A2:B0` (la XIAO S3), primo DATA
+`inviati: 1, falliti: 0`.
+
+**Cade il limite noto dell'unicast hub-S3 ↔ nodo classico** (issue
+arduino-esp32 #10895): rifatta esattamente quella combinazione, il pairing e'
+stato immediato. Con il core 3.3.10 non si ripresenta. Aggiornato anche
+CLAUDE.md, dove la raccomandazione diceva il contrario.
+
+**Il log di boot di questa scheda non e' osservabile via USB.** Ogni cattura si
+ferma a **256 byte esatti** — il buffer TX della CDC. All'apertura del monitor
+la scheda si resetta, l'host completa l'enumerazione un paio di secondi dopo, e
+con `Serial.setTxTimeoutMs(0)` tutto quello che eccede il buffer viene buttato:
+le righe dell'hub, stampate subito dopo quelle del display, non arrivano mai.
+Sembra un setup che si interrompe a meta'. E' la stessa forma delle altre
+trappole di questo progetto — lo strumento con cui si vorrebbe guardare e' cio'
+che impedisce di vedere — e il rimedio e' lo stesso: **la diagnostica sta sul
+pannello**, non sulla seriale. Il piede della pagina NODI dice "canale 1" se la
+radio e' su e "ESP-NOW NON ATTIVO" se l'init e' fallita, cosi' le due cose non
+sono piu' la stessa pagina vuota.
+
+**Quello che questo aggiornamento costa, e va chiuso presto**: da adesso i dati
+del DOIT arrivano a una scheda che **non li salva** — niente microSD montata,
+niente orario NTP, niente web UI ne' OTA. Il suo storico in
+`/nodi/MeteoEsp32/*.csv` si ferma qui. La **Fase 3 diventa la priorita'**, e
+finche' non e' fatta il nodo a batteria resta dov'e', su `EnvNode_C3`, che
+continua a loggarlo.
+
+Da fare subito dopo: **dimenticare `MeteoEsp32` su `EnvNode_C3`**
+(`POST /api/nodi/dimentica?mac=70:4B:CA:82:9E:70`), o restera' in elenco come
+nodo muto per sempre, cioe' un allarme falso permanente.
+
 ## Aggiornamento del 2026-08-26 — il terzo segmento, due riavvii in più, e la co-locazione finita
 
 **Segmento 3 della misura di scarica, chiuso.** Stessa cella, `v10`, cadenza

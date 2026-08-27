@@ -1471,6 +1471,55 @@ camera, o le due schede si contendono lo stesso nome mDNS.
 
 ---
 
+### `projects/MeteoHub_S3/` — hub della stazione meteo (XIAO ESP32-S3 Sense)
+
+Riceve i DATA dei nodi via ESP-NOW e li mostra su un pannello **e-ink WeAct
+4.2" 400x300** (SSD1683). Cresciuto dal bring-up del solo pannello: le cinque
+pagine di prova sono ancora tutte li', in coda a quella dei nodi. Mancano
+microSD, orario NTP, web UI e OTA — e' la Fase 3 di `docs/Stazione-Meteo.md`.
+
+| File | Ruolo |
+|---|---|
+| `MeteoHub_S3.ino` | pagine del pannello, tasto BOOT, hub ESP-NOW — qui va la logica applicativa |
+| `remote_nodes.h/.cpp` | copia da `EnvNode_C3`: registro nodi, cadenza appresa, nodo muto, trend, NVS |
+| `forecast.h` | copia da `EnvNode_C3`: trend a 3 h con isteresi, header-only e pura |
+| `rtc_time.h/.cpp` | copia da `EnvNode_C3`: stima da build-time, poi NTP (che qui non c'e' ancora) |
+| `foto_prova.h` | 15.000 byte usciti da `www/dither.html`, per la pagina foto |
+| `www/dither.html` | ritaglio + dithering nel browser, **non compilata**: produce i `.bin` del pannello |
+
+**Cose da sapere prima di metterci le mani**:
+
+- **Il pannello e la microSD condividono il bus SPI** (SCK GPIO7/D8, MOSI
+  GPIO9/D10; l'e-ink non usa MISO). Il CS della card (**GPIO21**) va pilotato
+  **ALTO prima di toccare il bus**, anche quando la card non si monta:
+  flottante, la card puo' rispondere insieme al pannello. Pin dedicati
+  dell'e-ink: CS GPIO2/D1, DC GPIO3/D2, RST GPIO4/D3, BUSY GPIO1/D0.
+- **`remote_begin(nome, canale)`** e' un overload aggiunto qui: `EnvNode_C3` usa
+  la forma corta perche' sta su un AP e il canale glielo impone il router,
+  questa scheda (finche' non ha il WiFi) deve sceglierselo. `HUB_CANALE` va
+  tenuto sul canale dell'AP di casa, dove parlano i nodi.
+- **La finestra di associazione non si apre da sola all'avvio**, al contrario di
+  `EnvNode_C3`: `remote_begin()` la apre e il `setup()` la richiude subito. Un
+  nodo tiene un hub solo e lo adotta il primo che risponde al suo HELLO, quindi
+  un hub di sviluppo in pairing sul canale di casa si porterebbe via un nodo
+  vero — e con lui il suo log su SD, che qui non c'e'. Si apre a mano tenendo
+  premuto **BOOT** (1,2 s), per 2 minuti; BOOT breve cambia pagina.
+- **La diagnostica sta sul pannello, non sulla seriale**: il piede della pagina
+  NODI dice `canale N` se la radio e' su, `ESP-NOW NON ATTIVO` se l'init e'
+  fallita. Serve perche' il log di boot di questa scheda **non e' osservabile
+  via USB**: la cattura si ferma a 256 byte (il buffer TX della CDC), l'host
+  finisce di enumerare la porta un paio di secondi dopo il reset e con
+  `Serial.setTxTimeoutMs(0)` il resto viene buttato.
+- **Refresh**: parziale quando arriva un DATA (non piu' spesso di 20 s) e
+  comunque ogni 5 minuti (eta' dei valori e stato "muto" invecchiano da soli),
+  completo ogni 10 parziali e ad ogni cambio pagina. `hibernate()` dopo ognuno.
+- **Testo centrato**: usare `drawCenter()`, che misura con `getTextBounds()`.
+  Allineare a destra con un offset stimato a occhio taglia le stringhe larghe
+  sul bordo sinistro, dove il cursore va a coordinate negative e Adafruit_GFX
+  non protesta.
+- **Serve `--libraries libraries`** (usa `EspNowLink`), e il FQBN della XIAO S3
+  **senza** `CDCOnBoot`: su questa board quel flag e' invertito.
+
 ## File a livello repository
 
 ### `README.md`

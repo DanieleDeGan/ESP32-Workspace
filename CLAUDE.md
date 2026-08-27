@@ -57,6 +57,9 @@ toccare) vedi `docs/FILES.md`. Per il pinout/hardware della board AMOLED vedi
 | `projects/MeteoNode_C3/rtc_time.h/.cpp` | copia di quello di `EnvNode_C3`: stima da build-time, poi NTP |
 | `projects/MeteoNode_C3/net_ota.h/.cpp` | WiFi + ArduinoOTA + `/update`, con watchdog di riconnessione — di norma non si tocca |
 | `projects/MeteoNode_C3/web_ui.h/.cpp` | pagina di stato con grafici SVG, comandi e interruttore del deep sleep |
+| `projects/MeteoHub_S3/` | **progetto** (XIAO ESP32-S3 Sense): hub della stazione meteo — riceve i nodi via ESP-NOW e li mostra su un pannello **e-ink WeAct 4.2\"** (SSD1683). Mancano microSD, NTP, web UI e OTA (Fase 3) — vedi `docs/FILES.md` e `docs/Stazione-Meteo.md` |
+| `projects/MeteoHub_S3/MeteoHub_S3.ino` | pagine del pannello, tasto BOOT a due gesti, hub ESP-NOW — qui va la logica applicativa |
+| `projects/MeteoHub_S3/www/dither.html` | ritaglio + dithering nel browser, **non compilata**: produce i `.bin` da 15.000 byte del pannello |
 | `projects/Timelapse_XIAO/` | **progetto** (XIAO ESP32-S3 Sense): camera timelapse a intervallo, archivio per giorno su microSD, galleria web con riproduzione, NTP + OTA — vedi sezione dedicata |
 | `projects/Timelapse_XIAO/Timelapse_XIAO.ino` | timer degli scatti, gestione dello spazio, impostazioni — qui va la logica applicativa |
 | `projects/Timelapse_XIAO/storage.h/.cpp` | microSD SPI organizzata per giorno: `/timelapse/<giorno>/<ora>.JPG` + CSV giornaliero |
@@ -624,6 +627,20 @@ letta al contrario di come era scritta: il problema sta nella combinazione con
 un **hub S3**, e un ESP32 classico è un nodo perfettamente valido se l'hub è un
 C3. Resta aperto se lo stesso valga per un hub S3 con le versioni attuali del
 core — quella prova non è stata rifatta.
+
+**Aggiornamento del 2026-08-27 — il limite non si è ripresentato, e la prova
+rimasta aperta è chiusa.** Rifatta esattamente la combinazione sospetta: hub
+**ESP32-S3** (`projects/MeteoHub_S3/`, XIAO S3 Sense) e nodo ESP32 "classico"
+(lo stesso DOIT DevKit v1, MAC `70:4B:CA:82:9E:70`), core 3.3.10, canale 1.
+Power-cycle del nodo con la finestra di associazione aperta sull'hub:
+HELLO → WELCOME → primo DATA unicast **consegnato al primo tentativo**
+(`espnow_inviati: 1, espnow_falliti: 0`), nodo adottato in pochi secondi.
+
+Quindi **la raccomandazione qui sopra non vale più con il core attuale**: la
+combinazione hub S3 ↔ nodo classico funziona. Resta scritta perché il guasto
+era reale quando è stato osservato, e sapere che *poteva* presentarsi aiuta a
+riconoscerlo se tornasse: il sintomo era broadcast che passa e unicast no, cioè
+un nodo che si vede annunciare e non si riesce ad associare.
 
 ## `starters/C3_OLED_OTA/` — ESP32-C3 Supermini + OLED + OTA
 

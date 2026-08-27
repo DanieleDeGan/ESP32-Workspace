@@ -1,38 +1,50 @@
 /*
  * MeteoHub_S3 — hub della stazione meteo e-ink (Seeed XIAO ESP32-S3 Sense)
  * ---------------------------------------------------------------------------
- * STATO: bring-up del SOLO pannello e-ink. Della stazione meteo vera qui non
- * c'e' ancora niente (nessun ESP-NOW, nessuna microSD, nessuna web UI, nessun
- * OTA): questo sketch serve a dimostrare tre cose, prima di costruirci sopra —
- * che il WeAct 4.2" e' cablato bene, che la classe GxEPD2 scelta e' quella
- * giusta per questo pannello, e che il refresh parziale funziona davvero.
- * Il piano completo del progetto sta in docs/Stazione-Meteo.md (Fase 2).
+ * STATO: hub ESP-NOW + pannello e-ink. Riceve i DATA dei nodi meteo e li
+ * mostra sulla pagina 1/6; restano da fare microSD, orario NTP, web UI e OTA
+ * (Fase 3 del piano). Le cinque pagine di prova del bring-up sono ancora tutte
+ * qui, in coda: servono a distinguere un guasto del pannello da un guasto
+ * della radio, che senza di loro si somiglierebbero (schermo che non cambia).
+ * Il piano completo del progetto sta in docs/Stazione-Meteo.md (Fasi 2 e 3).
+ *
+ * I NODI SI ASSOCIANO A UN HUB SOLO. Un nodo tiene un unico peer (s_hub_peer
+ * in libraries/EspNowLink/src/link_node.cpp) e manda i DATA in unicast: finche'
+ * i nodi veri sono associati a projects/EnvNode_C3/, questa scheda NON li vede,
+ * per quanto sia sul canale giusto e in finestra di associazione. Per provarla
+ * serve un nodo che si associ a lei — examples/Link_Node_Demo/ su una board
+ * qualsiasi, oppure un nodo vero riacceso mentre EnvNode_C3 ha la finestra
+ * chiusa, sapendo che da quel momento smette di scrivere sulla SD dell'altro.
  *
  * COME SI USA: all'accensione stampa su Serial cosa dichiara il driver di se
  * stesso (dimensioni dopo la rotazione, fast partial update, tempi nominali) e
  * disegna la prima pagina. Poi ogni pressione del TASTO BOOT (GPIO0, quello
  * piccolo accanto al reset) passa alla successiva, cronometrando il disegno:
  *
- *   1/5  GEOMETRIA — cornice, quattro tacche DIVERSE agli angoli (cosi' una
+ *   1/6  NODI — i nodi della stazione: nome, temperatura in grande, umidita',
+ *        pressione, eta' dell'ultimo dato, trend. Si ridisegna da sola quando
+ *        arriva un DATA (non piu' spesso di 20 s) e comunque ogni 5 minuti,
+ *        perche' l'eta' dei valori e lo stato "muto" invecchiano da soli.
+ *   2/6  GEOMETRIA — cornice, quattro tacche DIVERSE agli angoli (cosi' una
  *        rotazione o uno specchio non possono sembrare giusti), diagonale,
  *        tre corpi di testo, barre di retino 100/50/25/6%. Verifica
  *        orientamento, geometria e resa dei font.
- *   2/5  FORMATO-PROGETTO — un framebuffer da 15.000 byte costruito a mano bit
+ *   3/6  FORMATO-PROGETTO — un framebuffer da 15.000 byte costruito a mano bit
  *        per bit (1 bpp, MSB-first, 1 = bianco) e spinto con drawImage(). E' il
  *        contratto fra www/dither.html e il firmware, verificato prima che
  *        esista una riga di web UI: se i bit fossero impacchettati al
  *        contrario il righello a passo 8 px scivola rispetto alla cornice, se
  *        il passo riga non fosse 50 byte la diagonale si spezza a scaletta.
- *   3/5  CONTATORE — si aggiorna da solo ogni 20 s in refresh PARZIALE, con un
+ *   4/6  CONTATORE — si aggiorna da solo ogni 20 s in refresh PARZIALE, con un
  *        completo ogni 10: la politica antighosting del piano (parziale
  *        spesso, completo di tanto in tanto), accelerata per vederla lavorare
  *        in pochi minuti invece che in un'ora.
- *   4/5  FOTO — una foto vera passata da www/dither.html e incollata in
+ *   5/6  FOTO — una foto vera passata da www/dither.html e incollata in
  *        foto_prova.h. Chiude la catena browser -> pannello senza che esistano
  *        ancora ne' la microSD ne' la web UI: il firmware riceve 15.000 byte
  *        gia' impacchettati e li spinge, che e' esattamente quello che fara'
  *        leggendoli da /images/<nome>.bin.
- *   5/5  BIANCA — pulita, nessun aggiornamento. Dopo questa si ricomincia da
+ *   6/6  BIANCA — pulita, nessun aggiornamento. Dopo questa si ricomincia da
  *        1/5, cosi' smettere di premere lascia sempre il pannello pulito: un
  *        e-ink e' bistabile, l'ultima immagine resta li' anche a scheda spenta,
  *        e il bianco e' lo stato in cui conviene lasciarlo per non favorire gli
@@ -48,11 +60,13 @@
  *   Partition Scheme: Default 8MB with spiffs (3MB APP/1.5MB SPIFFS)
  *   USB CDC On Boot:  Enabled  (e' gia' il default di questa board)
  *
- * Da riga di comando, dalla radice del repo (niente --libraries: per ora
- * questo sketch non usa nulla di libraries/):
- *   arduino-cli compile --fqbn "esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=default_8MB" projects/MeteoHub_S3
+ * Da riga di comando, dalla radice del repo. Ora --libraries SERVE: da quando
+ * c'e' l'hub, questo sketch include libraries/EspNowLink.
+ *   arduino-cli compile --fqbn "esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=default_8MB" --libraries libraries projects/MeteoHub_S3
  *
  * Dipendenze (Library Manager): GxEPD2 (che tira dentro Adafruit GFX).
+ * Locali: libraries/EspNowLink. Trapiantati da projects/EnvNode_C3/ e da
+ * tenere allineati a mano: remote_nodes.*, forecast.h, rtc_time.*.
  */
 
 #include <SPI.h>
@@ -62,6 +76,57 @@
 #include <Fonts/FreeSansBold24pt7b.h>
 
 #include "foto_prova.h"   // 15.000 byte usciti da www/dither.html
+
+#include "remote_nodes.h"  // hub ESP-NOW, trapiantato da projects/EnvNode_C3/
+#include "forecast.h"      // i nomi TREND_*: remote_nodes.h non lo include
+
+#include "rtc_time.h"      // serve a remote_nodes per datare i DATA
+
+// ---------------------------------------------------------------------------
+// Hub ESP-NOW
+// ---------------------------------------------------------------------------
+// Nome con cui questa scheda si presenta ai nodi.
+static const char HUB_NOME[] = "MeteoHub";
+
+// Canale ESP-NOW. Qui va un numero ESPLICITO, al contrario di EnvNode_C3 che
+// usa ESPNOW_LINK_CHANNEL_CURRENT (0): quella scheda sta su un access point e
+// il canale glielo impone il router, questa (finche' non ha il WiFi, Fase 3)
+// non ha nessuno che glielo imponga.
+//
+// 1 = il canale dell'access point di casa (verificato il 2026-08-27 su
+// /api/stato dei nodi, campo "canale"). Ci vuole quello e non il 6 di
+// Link_Init(), perche' i nodi veri stanno la': il DOIT e' connesso al WiFi e
+// il canale glielo impone il router.
+//
+// IL ROVESCIO, da tenere a mente: un nodo tiene un hub solo, e chi lo adotta
+// e' il primo hub in finestra di associazione che risponde al suo HELLO. Il
+// nodo a batteria fa HELLO ad ogni power-cycle — e si riavvia da solo, cinque
+// volte in tre giorni (uscita di sicurezza dei cinque risvegli muti) — mentre
+// EnvNode_C3 ha la finestra normalmente CHIUSA. Un hub di sviluppo lasciato in
+// pairing su questo canale se lo porterebbe via insieme al suo log su SD, che
+// qui ancora non c'e'. Per questo la finestra NON si apre da sola all'avvio:
+// si apre a mano, col tasto BOOT, e solo per il tempo che serve.
+//
+// Per provare invece con examples/Link_Node_Demo/, che usa Link_Init() e
+// quindi ESPNOW_LINK_CHANNEL: mettere 6 qui. Se hub e nodo non sono sullo
+// stesso canale non si sentono, e il guasto e' silenzioso da entrambe le parti.
+static const uint8_t HUB_CANALE = 1;
+
+// Durata della finestra aperta a mano col tasto BOOT.
+static const uint32_t PAIRING_MANUALE_S = 120;
+
+// Fuso orario. Costante di compilazione come in Timelapse_XIAO, non
+// un'impostazione da web: questa scheda non viaggia. Senza WiFi l'orologio
+// resta alla stima da __DATE__/__TIME__, che basta a datare i DATA in modo
+// relativo; l'ora vera arriva con NTP in Fase 3.
+static const char TZ_POSIX[] = "CET-1CEST,M3.5.0,M10.5.0/3";
+
+// CS della microSD della scheda di espansione Sense. Non si monta la card (e'
+// Fase 3), ma il pin va comunque pilotato ALTO prima di parlare con l'e-ink:
+// lasciato flottante, la card puo' rispondere sul bus condiviso e sporcare i
+// byte destinati al pannello. E' il prezzo di avere due periferiche sullo
+// stesso SPI, ed e' una riga.
+static const int8_t PIN_SD_CS = 21;
 
 // ---------------------------------------------------------------------------
 // Quale pannello
@@ -360,11 +425,21 @@ static void screenBlank()
 // Ritorna true una volta sola per ogni pressione. Antirimbalzo a 40 ms.
 // Nota: durante un refresh (mezzo secondo abbondante) il loop e' fermo dentro
 // GxEPD2 e una pressione si perde. Va bene per un tasto premuto a mano.
-static bool bootPressed()
+// Il tasto BOOT fa due cose: premuto e rilasciato cambia pagina, tenuto giu'
+// apre (o chiude) la finestra di associazione. Serve un secondo gesto perche'
+// l'hub, a differenza di EnvNode_C3, non ha una pagina web da cui comandarlo:
+// finche' non c'e' la Fase 3 questo tasto e' l'unica interfaccia.
+enum BootEvt : uint8_t { BOOT_NULLA = 0, BOOT_BREVE, BOOT_LUNGO };
+
+static const uint32_t BOOT_LUNGO_MS = 1200;
+
+static uint8_t bootEvent()
 {
-  static bool     s_stable = HIGH;
-  static bool     s_last   = HIGH;
-  static uint32_t s_since  = 0;
+  static bool     s_stable      = HIGH;
+  static bool     s_last        = HIGH;
+  static uint32_t s_since       = 0;
+  static uint32_t s_giu         = 0;
+  static bool     s_lungoFatto  = false;
 
   const bool raw = digitalRead(PIN_BOOT);
   if (raw != s_last)
@@ -375,9 +450,24 @@ static bool bootPressed()
   if (millis() - s_since > 40 && raw != s_stable)
   {
     s_stable = raw;
-    if (s_stable == LOW) return true;   // fronte di discesa = premuto
+    if (s_stable == LOW)            // fronte di discesa: parte il cronometro
+    {
+      s_giu        = millis();
+      s_lungoFatto = false;
+      return BOOT_NULLA;
+    }
+    // rilascio: se la lunga e' gia' scattata, il rilascio non vale niente
+    return s_lungoFatto ? BOOT_NULLA : BOOT_BREVE;
   }
-  return false;
+
+  // La pressione lunga scatta mentre il tasto e' ancora giu', non al rilascio:
+  // cosi' il pannello reagisce e si sa quando lasciare, invece di indovinare.
+  if (s_stable == LOW && !s_lungoFatto && millis() - s_giu >= BOOT_LUNGO_MS)
+  {
+    s_lungoFatto = true;
+    return BOOT_LUNGO;
+  }
+  return BOOT_NULLA;
 }
 
 // ---------------------------------------------------------------------------
@@ -387,9 +477,224 @@ static bool bootPressed()
 // che servira' in Fase 6. Ogni pressione di BOOT avanza di una, l'ultima e' la
 // pagina bianca, e dopo quella si ricomincia — cosi' fermarsi lascia sempre il
 // pannello pulito. Il cambio pagina e' un refresh completo, come da piano.
+// ---------------------------------------------------------------------------
+// Pagina NODI — quello per cui l'hub esiste
+// ---------------------------------------------------------------------------
+// Disegnata a mano con Adafruit_GFX, non come immagine: e' l'unica pagina che
+// cambia da sola, e ridisegnarla deve costare un refresh, non una conversione.
+//
+// Politica di refresh (quella del piano): parziale quando arriva un dato
+// nuovo, completo all'ingresso nella pagina e ogni NODI_FULL_OGNI parziali,
+// altrimenti il ghosting si accumula.
+
+static const int16_t NODI_TOP       = 28;   // sotto l'intestazione
+static const int16_t NODI_BOT       = 272;  // sopra il piede
+static const int16_t NODI_RIGA_H    = 61;   // 4 nodi entrano in 244 px
+static const int     NODI_VISIBILI  = 4;    // oltre non c'e' spazio: vedi nota
+static const uint8_t NODI_FULL_OGNI = 10;
+
+// Virgola decimale: e' un pannello che sta in casa, non un log da macchina.
+static String fmtNum(float v, int dec)
+{
+  if (!isfinite(v)) return String("--");
+  String t(v, dec);
+  t.replace('.', ',');
+  return t;
+}
+
+// Testo allineato a destra: xRight e' il bordo destro, non l'inizio.
+static void drawRight(const String& txt, int16_t xRight, int16_t yBase)
+{
+  int16_t bx, by; uint16_t bw, bh;
+  display.getTextBounds(txt, 0, 0, &bx, &by, &bw, &bh);
+  display.setCursor(xRight - (int16_t)bw - bx, yBase);
+  display.print(txt);
+}
+
+// Testo centrato su xCentro. Serve una misura vera: allineare a destra con un
+// offset stimato a occhio taglia le stringhe larghe sul bordo sinistro, dove
+// il cursore finisce a coordinate negative e Adafruit_GFX non se ne lamenta.
+static void drawCenter(const String& txt, int16_t xCentro, int16_t yBase)
+{
+  int16_t bx, by; uint16_t bw, bh;
+  display.getTextBounds(txt, 0, 0, &bx, &by, &bw, &bh);
+  int16_t x = xCentro - (int16_t)bw / 2 - bx;
+  if (x < 2) x = 2;                      // meglio storto che tagliato
+  display.setCursor(x, yBase);
+  display.print(txt);
+}
+
+// "38 s", "12 min", "3 h": un e-ink non fa il cronometro, tre cifre bastano.
+static String fmtEta(uint32_t s)
+{
+  if (s < 90)   return String(s) + " s";
+  if (s < 5400) return String(s / 60) + " min";
+  return String(s / 3600) + " h";
+}
+
+// Un nodo: nome e stato a sinistra, temperatura grande a destra, il resto su
+// una riga sola sotto.
+static void drawNodo(const RemoteNode& n, int16_t y)
+{
+  display.setFont(&FreeSansBold12pt7b);
+  display.setCursor(6, y + 18);
+  display.print(n.nome);
+
+  // Il nodo muto e' la diagnostica principale finche' i nodi non hanno il
+  // partitore della batteria: va vista prima dei valori, non dopo. Riquadro
+  // pieno con testo in negativo — su bianco e nero e' l'unico "colore" che c'e'.
+  if (!n.online && n.hasData)
+  {
+    int16_t bx, by; uint16_t bw, bh;
+    display.getTextBounds(n.nome, 6, y + 18, &bx, &by, &bw, &bh);
+    const int16_t x = 6 + (int16_t)bw + 10;
+    display.fillRect(x, y + 2, 62, 20, GxEPD_BLACK);
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setTextColor(GxEPD_WHITE);
+    display.setCursor(x + 6, y + 17);
+    display.print("MUTO");
+    display.setTextColor(GxEPD_BLACK);
+  }
+
+  if (!n.hasData)
+  {
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setCursor(6, y + 44);
+    display.print("in attesa del primo dato");
+    return;
+  }
+
+  // Temperatura in grande. Il simbolo del grado non esiste nei font Adafruit
+  // GFX (coprono 0x20-0x7E): si disegna, un cerchietto costa meno di un font.
+  if (isfinite(n.value[0]))
+  {
+    display.setFont(&FreeSansBold24pt7b);
+    drawRight(fmtNum(n.value[0], 1), 366, y + 38);
+    display.drawCircle(374, y + 20, 3, GxEPD_BLACK);
+    display.setFont(&FreeSansBold12pt7b);
+    display.setCursor(381, y + 38);
+    display.print("C");
+  }
+
+  // Riga di dettaglio: umidita', pressione, eta' del dato, trend. In
+  // FreeMonoBold9pt ci stanno ~36 caratteri, e questi ci stanno tutti.
+  String riga;
+  if (isfinite(n.value[1])) riga += fmtNum(n.value[1], 0) + "%  ";
+  if (isfinite(n.value[2])) riga += fmtNum(n.value[2], 1) + " hPa  ";
+  riga += fmtEta(n.silenzioS) + " fa";
+  if (n.trend != TREND_IGNOTO) riga += String("  ") + remote_trend_label(n.trend);
+
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(6, y + 55);
+  display.print(riga);
+}
+
+static void screenNodi(bool full)
+{
+  const int16_t W = display.width();
+  const int16_t H = display.height();
+
+  if (full) display.setFullWindow();
+  else      display.setPartialWindow(0, 0, W, H);
+
+  display.firstPage();
+  do
+  {
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+
+    // --- intestazione ---
+    display.setFont(&FreeSansBold12pt7b);
+    display.setCursor(6, 20);
+    display.print("STAZIONE METEO");
+
+    char ora[8] = "";
+    if (rtctime_format(rtctime_now(), "%H:%M", ora, sizeof(ora)))
+    {
+      // La tilde dice che l'ora e' la stima da build-time e non NTP: senza,
+      // un orario preciso e sbagliato sembrerebbe vero. Sparisce in Fase 3,
+      // quando arriva la rete.
+      display.setFont(&FreeMonoBold9pt7b);
+      drawRight(String(rtctime_isSynced() ? "" : "~") + ora, W - 6, 20);
+    }
+    display.drawLine(0, 26, W, 26, GxEPD_BLACK);
+
+    // --- corpo ---
+    const int n = remote_count();
+    if (n == 0)
+    {
+      display.setFont(&FreeSansBold24pt7b);
+      drawCenter("NESSUN NODO", W / 2, 150);
+      display.setFont(&FreeMonoBold9pt7b);
+      if (remote_pairing_active())
+      {
+        drawCenter("finestra di associazione aperta", W / 2, 182);
+        drawCenter("accendi o riavvia il nodo", W / 2, 200);
+      }
+      else
+      {
+        drawCenter("tieni premuto BOOT", W / 2, 182);
+        drawCenter("per associare un nodo", W / 2, 200);
+      }
+    }
+    else
+    {
+      const int quanti = (n < NODI_VISIBILI) ? n : NODI_VISIBILI;
+      for (int i = 0; i < quanti; i++)
+      {
+        RemoteNode nodo;
+        if (!remote_get(i, &nodo)) continue;
+        const int16_t y = NODI_TOP + (int16_t)i * NODI_RIGA_H;
+        drawNodo(nodo, y);
+        if (i + 1 < quanti) display.drawLine(6, y + NODI_RIGA_H - 4, W - 6,
+                                             y + NODI_RIGA_H - 4, GxEPD_BLACK);
+      }
+    }
+
+    // --- piede ---
+    display.drawLine(0, NODI_BOT + 2, W, NODI_BOT + 2, GxEPD_BLACK);
+    display.setFont(&FreeMonoBold9pt7b);
+
+    int muti = 0;
+    for (int i = 0; i < n; i++)
+    {
+      RemoteNode nodo;
+      if (remote_get(i, &nodo) && !nodo.online) muti++;
+    }
+    String piede = String(n) + (n == 1 ? " nodo" : " nodi");
+    if (muti > 0) piede += String("  ") + muti + " muto";
+    if (n > NODI_VISIBILI) piede += String("  (+") + (n - NODI_VISIBILI) + " non mostrati)";
+    display.setCursor(6, 292);
+    display.print(piede);
+
+    if (remote_pairing_active())
+    {
+      const uint32_t r = remote_pairing_remaining_s();
+      char buf[24];
+      snprintf(buf, sizeof(buf), "ASSOCIAZIONE %lu:%02lu",
+               (unsigned long)(r / 60), (unsigned long)(r % 60));
+      drawRight(buf, W - 6, 292);
+    }
+    else if (!remote_ready())
+    {
+      // Da qui si distingue "nessun nodo ha ancora parlato" da "questa scheda
+      // non ha nemmeno acceso la radio": senza, le due cose sono la stessa
+      // pagina vuota. E il log seriale non e' un posto su cui contare — con
+      // setTxTimeoutMs(0) le righe si buttano appena nessuno legge.
+      drawRight("ESP-NOW NON ATTIVO", W - 6, 292);
+    }
+    else
+    {
+      drawRight(String("canale ") + HUB_CANALE, W - 6, 292);
+    }
+  }
+  while (display.nextPage());
+}
+
 enum Page : uint8_t
 {
-  PAGE_GFX = 0,     // geometria, font, retini
+  PAGE_NODI = 0,    // i nodi della stazione: la pagina per cui l'hub esiste
+  PAGE_GFX,         // geometria, font, retini
   PAGE_RAW,         // 15.000 byte grezzi nel formato del progetto
   PAGE_COUNTER,     // contatore che si aggiorna in parziale ogni 20 s
   PAGE_PHOTO,       // una foto vera, uscita da dither.html
@@ -399,14 +704,43 @@ enum Page : uint8_t
 
 static const char* const PAGE_NAMES[PAGE_COUNT] =
 {
-  "1/5 geometria", "2/5 formato-progetto", "3/5 contatore",
-  "4/5 foto", "5/5 bianca"
+  "1/6 nodi", "2/6 geometria", "3/6 formato-progetto", "4/6 contatore",
+  "5/6 foto", "6/6 bianca"
 };
 
-static uint8_t  s_page     = PAGE_GFX;
+static uint8_t  s_page     = PAGE_NODI;
 static uint32_t s_next     = 0;   // prossimo aggiornamento del contatore
 static uint32_t s_n        = 0;
 static uint32_t s_partials = 0;
+
+// --- stato della pagina nodi ---
+// Un dato nuovo alza il flag, non ridisegna: il refresh lo decide il loop, che
+// sa anche da quanto non si disegna. Cosi' due nodi che parlano insieme
+// costano un refresh, non due.
+static bool     s_nodiDirty     = false;
+static uint32_t s_nodiUltimoMs  = 0;
+static uint8_t  s_nodiParziali  = 0;
+
+// Un dato nuovo si aspetta almeno questo prima di finire sul pannello: i nodi
+// possono parlare a raffica (un DATA per nodo, piu' quelli di chi si associa)
+// e un e-ink non e' un monitor.
+static const uint32_t NODI_MIN_MS = 20000UL;
+// ...e comunque si ridisegna ogni tanto anche senza dati nuovi, o l'eta' dei
+// valori, lo stato "muto" e il conto alla rovescia dell'associazione
+// resterebbero fermi a quello che erano. E' la cadenza del piano.
+static const uint32_t NODI_MAX_MS = 300000UL;
+
+// Chiamata da remote_loop() quando un nodo consegna un DATA. Gira nel contesto
+// di loop(), non in un callback della radio: dentro remote_nodes il lavoro
+// sulla coda ESP-NOW e' gia' stato fatto.
+static void onDatoNodo(const RemoteNode* n)
+{
+  if (n == nullptr) return;
+  s_nodiDirty = true;
+  Serial.printf("[hub] %s  %.1f C  %.0f %%  %.1f hPa  seq %lu%s\n",
+                n->nome, n->value[0], n->value[1], n->value[2],
+                (unsigned long)n->seq, n->online ? "" : "  (era muto)");
+}
 
 static void showPage(uint8_t p)
 {
@@ -414,6 +748,14 @@ static void showPage(uint8_t p)
 
   switch (p)
   {
+    case PAGE_NODI:
+      // Sempre completo entrando: la pagina precedente e' ancora nella memoria
+      // del controller e un parziale la lascerebbe sotto.
+      screenNodi(true);
+      s_nodiParziali = 0;
+      s_nodiDirty    = false;
+      s_nodiUltimoMs = millis();
+      break;
     case PAGE_GFX:
       screenGfx();
       break;
@@ -464,8 +806,14 @@ void setup()
 
   pinMode(PIN_BOOT, INPUT_PULLUP);
 
+  // PRIMA di toccare il bus: la microSD della Sense e' sullo stesso SPI e il
+  // suo CS, lasciato flottante, la lascerebbe libera di rispondere insieme al
+  // pannello. Va alzato anche se la card non si monta (Fase 3).
+  pinMode(PIN_SD_CS, OUTPUT);
+  digitalWrite(PIN_SD_CS, HIGH);
+
   Serial.println();
-  Serial.println("=== MeteoHub_S3 — bring-up pannello e-ink ===");
+  Serial.println("=== MeteoHub_S3 — hub della stazione meteo ===");
   Serial.printf("[epd] driver: %s\n", EPD_DRIVER_NAME);
 
   // Pin SPI espliciti: sono gia' i default della XIAO, ma scriverli qui rende
@@ -488,16 +836,95 @@ void setup()
                 (unsigned)EPD_DRIVER::full_refresh_time,
                 (unsigned)EPD_DRIVER::partial_refresh_time);
 
+  // Orologio prima dell'hub: remote_nodes data i DATA con rtctime_now(), e un
+  // modulo che parte con l'orologio a zero attribuisce il primo pacchetto al
+  // 1970. Senza WiFi resta la stima da __DATE__/__TIME__ — imprecisa ma
+  // monotona, che e' quello che serve per misurare la cadenza dei nodi.
+  rtctime_begin(TZ_POSIX);
+  rtctime_seedFromBuild();
+
+  remote_on_data(onDatoNodo);
+  if (remote_begin(HUB_NOME, HUB_CANALE))
+  {
+    // remote_begin() apre da sola una finestra di associazione all'avvio: su
+    // EnvNode_C3 e' quello che fa rientrare i nodi gia' noti dopo un riavvio,
+    // qui sarebbe un hub di sviluppo che adotta il primo nodo che si riavvia
+    // in casa (vedi la nota su HUB_CANALE). I nodi gia' adottati non ne hanno
+    // bisogno: sono in NVS e il driver li riconosce a finestra chiusa.
+    remote_pairing_close();
+    Serial.printf("[hub] in ascolto come %s sul canale %u, %d nodi noti\n",
+                  HUB_NOME, (unsigned)HUB_CANALE, remote_count());
+    Serial.println("[hub] associazione CHIUSA: tieni premuto BOOT per aprirla.");
+  }
+  else
+  {
+    // Stessa regola della microSD altrove nel repo: un pezzo che non parte non
+    // ferma la scheda. Il pannello resta utile anche senza radio.
+    Serial.println("[hub] ESP-NOW non attivo: il pannello funziona lo stesso.");
+  }
+
   Serial.println("[epd] BOOT: pagina successiva. L'ultima e' la bianca.");
   showPage(s_page);
+  Serial.printf("[hub] pronto: ESP-NOW %s, canale %u, %d nodi noti\n",
+                remote_ready() ? "attivo" : "NON attivo",
+                (unsigned)HUB_CANALE, remote_count());
 }
 
 void loop()
 {
-  if (bootPressed())
+  // Sempre, su qualunque pagina: i nodi non aspettano che si stia guardando la
+  // loro. remote_loop() preleva i DATA dal driver — se non gira, i pacchetti
+  // arrivano alla radio e nessuno li raccoglie.
+  remote_loop();
+
+  const uint8_t ev = bootEvent();
+  if (ev == BOOT_LUNGO)
+  {
+    if (remote_pairing_active()) remote_pairing_close();
+    else                         remote_pairing_open(PAIRING_MANUALE_S);
+    Serial.printf("[hub] associazione %s\n",
+                  remote_pairing_active() ? "APERTA" : "chiusa");
+    // Si va sulla pagina nodi e si ridisegna subito: un comando che non si
+    // vede sul pannello e' un comando di cui non si sa se e' arrivato.
+    s_page = PAGE_NODI;
+    showPage(s_page);
+    return;
+  }
+  if (ev == BOOT_BREVE)
   {
     s_page = (uint8_t)((s_page + 1) % PAGE_COUNT);
     showPage(s_page);
+    return;
+  }
+
+  // La finestra scade da sola: quando succede, il pannello mostrerebbe ancora
+  // il conto alla rovescia fino al refresh di cadenza (5 minuti dopo).
+  {
+    static bool s_pairingPrec = false;
+    const bool ora = remote_pairing_active();
+    if (ora != s_pairingPrec) { s_pairingPrec = ora; s_nodiDirty = true; }
+  }
+
+  if (s_page == PAGE_NODI)
+  {
+    const uint32_t da = millis() - s_nodiUltimoMs;
+    const bool perDato   = s_nodiDirty && da >= NODI_MIN_MS;
+    const bool perTempo  = da >= NODI_MAX_MS;
+    if (!perDato && !perTempo) return;
+
+    // Parziale spesso, completo ogni tanto: senza, il ghosting si accumula.
+    const bool full = (s_nodiParziali >= NODI_FULL_OGNI);
+    const uint32_t t0 = millis();
+    screenNodi(full);
+    display.hibernate();
+
+    s_nodiParziali = full ? 0 : s_nodiParziali + 1;
+    s_nodiDirty    = false;
+    s_nodiUltimoMs = millis();
+    Serial.printf("[epd] nodi %s (%s): %lu ms\n",
+                  full ? "COMPLETO" : "parziale",
+                  perDato ? "dato nuovo" : "cadenza",
+                  (unsigned long)(millis() - t0));
     return;
   }
 
