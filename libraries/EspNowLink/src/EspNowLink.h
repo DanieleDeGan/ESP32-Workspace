@@ -142,6 +142,31 @@ bool Link_Init(link_node_type_t self_type, const char *self_name);
  */
 bool Link_InitEx(link_node_type_t self_type, const char *self_name, uint8_t channel);
 
+/**
+ * Cambia il canale radio DOPO l'init, e riallinea tutti i peer gia'
+ * registrati. Ritorna false se il canale non e' valido (1..13) o se la radio
+ * lo rifiuta.
+ *
+ * A cosa serve: hub e nodi devono stare sullo stesso canale, e un nodo in
+ * deep sleep quel canale se lo porta dietro in RTC memory. Se l'access point
+ * lo cambia da solo — cosa che fa, per scansare le reti dei vicini — l'hub lo
+ * segue riassociandosi e il nodo che dorme no: diventa muto senza accorgersene,
+ * perche' l'ACK che non arriva e' l'unico sintomo. Con questa funzione il nodo
+ * puo' provare gli altri canali dentro lo stesso risveglio, invece di
+ * aspettare che una rete di sicurezza lo riavvii.
+ *
+ * ATTENZIONE: chiamarla su un dispositivo CONNESSO a un access point fa
+ * cadere la connessione — la radio e' una sola e il canale lo detta l'AP. E'
+ * pensata per chi sta su ESP-NOW e basta (nodo a batteria, WiFi spento).
+ * Un hub connesso all'AP non deve usarla: gli basta seguire l'AP con
+ * ESPNOW_LINK_CHANNEL_CURRENT.
+ */
+bool Link_SetChannel(uint8_t channel);
+
+/** Canale su cui si sta parlando davvero. 0 = "canale corrente", cioe' quello
+ *  deciso da chi ha configurato la radio (tipicamente l'associazione all'AP). */
+uint8_t Link_GetChannel(void);
+
 /** Registra la callback opzionale per ogni messaggio valido ricevuto. */
 void Link_OnMessage(Link_MessageCb cb);
 
@@ -209,6 +234,22 @@ uint32_t Link_Node_GetSeq(void);
  * tentativo fallisce.
  */
 bool Link_Node_SendData(link_message_t *msg);
+
+/**
+ * Rimanda l'ULTIMO DATA gia' inviato con Link_Node_SendData(), senza toccare
+ * il contatore di sequenza e con tentativi/timeout scelti dal chiamante.
+ *
+ * Serve alla ricerca del canale (vedi Link_SetChannel): se un DATA non viene
+ * consegnato perche' l'hub e' altrove, lo si rimanda altrove — ma dev'essere
+ * LO STESSO messaggio, con lo stesso seq. Richiamare Link_Node_SendData()
+ * incrementerebbe il seq ad ogni tentativo, e l'hub leggerebbe quei numeri
+ * saltati come pacchetti persi sulla tratta radio: buchi inventati in un
+ * registro che serve proprio a contare i buchi veri.
+ *
+ * false se non c'e' ancora un ultimo messaggio, se non si e' associati, o se
+ * la consegna non e' stata confermata.
+ */
+bool Link_Node_ResendLast(int max_attempts, uint32_t ack_timeout_ms);
 
 /* ---------------------------------------------------------------------- */
 /* Ruolo hub/master                                                        */

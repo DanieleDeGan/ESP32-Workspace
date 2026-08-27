@@ -95,3 +95,25 @@ bool hub_send_measure(float tempC, float humPct, float pressHpa, uint16_t batter
 // radio ha smesso di consegnare mentre tutto il resto sembra a posto.
 uint32_t hub_sent_ok();
 uint32_t hub_sent_fail();
+
+// Cerca l'hub sugli ALTRI canali, rimandando l'ultimo DATA tale e quale.
+// Ritorna il canale su cui la consegna e' riuscita, 0 se nessuno risponde (e
+// in quel caso il canale di partenza viene ripristinato).
+//
+// Perche' esiste: l'access point cambia canale da solo per scansare le reti
+// dei vicini. Chi e' connesso lo segue riassociandosi; un nodo che dorme no —
+// si porta il canale in RTC memory e diventa muto senza accorgersene, perche'
+// l'ACK che non arriva e' l'unico sintomo. Prima di questa funzione l'unica
+// reazione era la rete di sicurezza: cinque risvegli muti, poi riavvio e
+// cinque minuti di WiFi acceso, ~7 mAh e 25 minuti di dati persi. La
+// scansione costa ~1 s di radio e recupera DENTRO lo stesso risveglio.
+//
+// UN tentativo per canale, con timeout corto: il caso peggiore (nessun canale
+// risponde, perche' l'hub e' davvero giu') deve restare a pochi secondi, o si
+// mangia il vantaggio. Sotto resta la rete di sicurezza, che serve ancora —
+// questa funzione risolve il canale cambiato, non l'hub spento.
+uint8_t hub_scan_channels();
+
+// Quante volte la scansione ha ritrovato l'hub, da sempre (NVS, gestito dal
+// .ino): dice se l'AP sta cambiando canale davvero e quanto spesso.
+

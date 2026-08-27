@@ -175,6 +175,7 @@ svg{width:100%;height:110px;display:block;overflow:visible}
 <tr><td>Canale (anche ESP-NOW)</td><td id="ch">&mdash;</td></tr>
 <tr><td>ESP-NOW</td><td id="en">&mdash;</td></tr>
 <tr><td>DATA inviati / falliti</td><td id="ent">&mdash;</td></tr>
+<tr><td>Hub ritrovato su altro canale</td><td id="ech">&mdash;</td></tr>
 <tr><td>Acceso da</td><td id="up">&mdash;</td></tr>
 <tr><td>Boot totali &mdash; causa ultimo</td><td id="bt">&mdash;</td></tr>
 <tr><td>Deep sleep</td><td id="ds">&mdash;</td></tr>
@@ -337,6 +338,13 @@ function aggiorna(){
     else if(!d.espnow_paired) si('en',"in cerca dell'hub (canale "+d.espnow_canale+")",'warn');
     else                      si('en','associato a '+d.espnow_hub+' (canale '+d.espnow_canale+')','ok');
     si('ent', d.espnow_inviati+' / '+d.espnow_falliti, d.espnow_falliti?'warn':'');
+    // Quante volte l'hub e' stato ritrovato su un altro canale. Zero non e'
+    // un guasto: vuol dire che l'access point non si e' mai spostato.
+    if (d.scansioni_ok !== undefined) {
+      si('ech', d.scansioni_ok
+           ? (d.scansioni_ok+' (ultimo canale buono: '+d.canale_noto+')')
+           : 'mai servita', d.scansioni_ok?'warn':'');
+    }
     si('up', durata(d.uptime));
     // Un riavvio non si vede dai contatori qui sopra, che ripartono da zero:
     // e' questa riga a dirlo. SW resta neutro perche' e' voluto (OTA riuscito
@@ -472,6 +480,8 @@ static void handleStato() {
   j += F(",\"power_cycles\":");  j += s.power_cycles;
   j += F(",\"boot_count\":");    j += app_boot_count();
   j += F(",\"sleep\":");         j += app_sleep_enabled() ? F("true") : F("false");
+  j += F(",\"canale_noto\":");   j += app_canale_noto();
+  j += F(",\"scansioni_ok\":");  j += app_scan_ok_count();
   j += F(",\"risvegli\":");      j += app_wake_count();
   j += F(",\"risvegli_ok\":");   j += app_wake_ok_count();
   j += F(",\"reset_reason\":\""); j += app_reset_reason();  j += F("\"");
@@ -627,6 +637,12 @@ static void handleComando() {
     app_cmd_toggle_power();
     net_server().send(200, F("text/plain; charset=utf-8"),
                       F("accensione/spegnimento accodato: guarda la riga Alimentazione qui sopra"));
+  } else if (c == "prova-canale") {
+    app_cmd_prova_canale();
+    net_server().send(200, F("text/plain; charset=utf-8"),
+                      F("prova armata: al prossimo sonno il nodo usera' un canale sbagliato. "
+                        "Se la ricerca funziona, il DATA arriva lo stesso all'hub e il "
+                        "contatore \"Hub ritrovato su altro canale\" sale di uno."));
   } else if (c == "sleep") {
     // Eseguito subito, non accodato: vedi la nota su app_cmd_toggle_sleep().
     app_cmd_toggle_sleep();

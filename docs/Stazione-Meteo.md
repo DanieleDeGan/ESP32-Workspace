@@ -1,5 +1,83 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-08-27 (4) - Fase 9 fatta: il nodo cerca il canale
+
+Scritta, compilata su tutti e sei gli sketch che usano `EspNowLink`, e caricata
+sul nodo a batteria via OTA (`v10` -> `v12`, 1,2 MB in 7,4 s, impostazioni
+sopravvissute: `sleep` true, intervallo 300 s, altitudine 29 m).
+
+**Nella libreria condivisa**: `Link_SetChannel(ch)` sposta la radio e riallinea
+i peer gia' registrati, iterando il registro del driver invece dei peer dei due
+ruoli - cosi' non deve sapere se gira su un hub o su un nodo, e prende anche il
+peer broadcast. Ed e' documentata come **vietata a chi e' connesso a un AP**.
+
+**`Link_Node_ResendLast()` e' l'aggiunta che non era nel piano**, ed e' quella
+che ha cambiato il disegno: `Link_Node_SendData()` incrementa il `seq` ad ogni
+chiamata, quindi riprovare lo stesso campione su tre canali avrebbe prodotto
+tre numeri di sequenza. L'hub li avrebbe letti come pacchetti persi sulla
+tratta radio: **buchi inventati dentro il registro che serve a contare i buchi
+veri**, e per giunta proprio nei momenti in cui si sta indagando su una
+perdita. Il rinvio manda lo stesso identico messaggio.
+
+**Nel nodo**: `hub_scan_channels()` prova 1, 6, 11 e poi gli altri dieci, un
+tentativo per canale, 200 ms di timeout. Al primo che risponde salva il canale
+in RTC memory e in NVS. Se nessuno risponde si torna al canale di partenza -
+non all'ultimo provato, che e' scelto a caso e ha appena fallito. La rete di
+sicurezza dei cinque risvegli muti resta sotto: la ricerca risolve il canale
+cambiato, non l'hub spento.
+
+**Il canale ora sta anche in NVS**: la RTC memory la cancella il power-cycle,
+cioe' l'operazione con cui si recupera un nodo che non torna. Al boot senza AP
+si riparte dall'ultimo canale buono invece che dal canale fisso della libreria.
+
+**E' stato aggiunto un modo di provarla**: `GET /api/comando?c=prova-canale`
+arma UN risveglio con il canale volutamente sbagliato. Senza, la Fase 9 sarebbe
+rimasta non verificata finche' l'access point non si fosse spostato da solo -
+giorni o settimane - e il momento della scoperta sarebbe stato esattamente
+quello in cui serviva funzionante. Resta come strumento diagnostico.
+
+**Contatore `scansioni_ok`** (NVS, su `/api/stato` e in pagina, riga "Hub
+ritrovato su altro canale"): misura quanto spesso l'AP si sposta sotto il naso
+di un nodo che dorme. **Zero non e' un guasto.**
+
+### Provata sul campo, e funziona (2026-08-27, 19:08)
+
+Prova armata dalla pagina, nodo addormentato **sul canale 11** con l'hub sul
+**canale 1**. Al risveglio delle 19:07 il DATA e' arrivato lo stesso:
+
+```
+19:08:03  pacchetti 6 -> 7, seq 2
+/nodi/Meteo-7EAE0C/2026-08-27.csv  ->  NTP, 27.49 C, 58.78 %, 1014.00 hPa
+```
+
+Con il firmware di prima quel pacchetto sarebbe andato perso, e con lui altri
+quattro prima che la rete di sicurezza riavviasse la scheda: 25 minuti di buco
+e ~7 mAh. Qui il campione **non e' stato perso**, ed e' stato recuperato dentro
+lo stesso risveglio.
+
+**Riserva, per onesta'**: e' la prova del risultato (il DATA e' arrivato dove
+non doveva arrivare), non la lettura del contatore. `scansioni_ok` dovrebbe
+essere a 1 e `canale_noto` a 1, ma stanno dentro un nodo che dorme. Si leggono
+al prossimo power-cycle. Il sabotaggio e' codice deterministico e il flag vive
+in RTC memory, che il deep sleep conserva, quindi "non e' stato sabotato
+affatto" e' molto improbabile - ma finche' quel numero non si legge resta
+un'inferenza, non una misura.
+
+### Effetto collaterale dell'aggiornamento: il nodo si e' rinominato
+
+Passando da `v10` a `v12` il nodo a batteria e' diventato **`Meteo-7EAE0C`**
+invece di `MeteoNode`. E' la trappola gia' documentata in CLAUDE.md - **un
+default nuovo vince su una chiave NVS mai scritta**: quel nome era il default
+del firmware, non una scelta salvata, e da `v11` il default e' "derivato dal
+MAC".
+
+Sull'hub il nodo **non si e' sdoppiato** (l'identita' e' il MAC), ma i suoi CSV
+proseguono in `/nodi/Meteo-7EAE0C/` mentre lo storico fino a oggi resta in
+`/nodi/MeteoNode/`. Decisione presa: **si lascia cosi' fino alla messa in
+servizio**, quando i nodi prenderanno nomi parlanti - e quei nomi andranno
+**scritti dalla pagina**, perche' solo cosi' finiscono in NVS e nessun
+aggiornamento futuro potra' piu' cambiarli da sotto.
+
 ## Aggiornamento del 2026-08-27 (3) - migrare un nodo: prima si dimentica
 
 Trovato spostando il nodo a batteria dall'hub C3 a quello S3, e non e' ovvio:

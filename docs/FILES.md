@@ -432,6 +432,14 @@ qualunque altro `msg_type`/`node_type`) e si ferma al primo: non ci si
   "classico" (Xtensa D0WD) è risultato inaffidabile/lento ad associarsi
   (broadcast sempre ok, WELCOME/unicast spesso perso), coerente con
   [espressif/arduino-esp32#10895](https://github.com/espressif/arduino-esp32/issues/10895).
+
+- **`Link_SetChannel(ch)` / `Link_GetChannel()`** (2026-08-27): cambio di canale
+  a caldo, con riallineamento dei peer gia' registrati. **Solo per dispositivi
+  non connessi a un AP** — la radio e' una sola e il canale lo detta l'access
+  point. Serve al nodo a batteria che si risveglia sul canale sbagliato.
+- **`Link_Node_ResendLast(tentativi, timeout)`**: rimanda l'ultimo DATA senza
+  toccare il `seq`. Riprovare con `Link_Node_SendData()` incrementerebbe il
+  contatore ad ogni canale, e l'hub leggerebbe quei salti come perdite radio.
   Con nodi ESP32-C3 il pairing è immediato. Per nuovi nodi preferire S2/S3/C3/C6.
 - **Quanto blocca**: `sendReliable()` è sincrona, con default `max_attempts=3` e
   `ack_timeout_ms=300`. Il caso peggiore (tre tentativi tutti in timeout) è

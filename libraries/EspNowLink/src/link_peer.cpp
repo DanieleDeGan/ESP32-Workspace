@@ -1,4 +1,6 @@
 #include "link_peer.h"
+#include <esp_wifi.h>
+#include <esp_now.h>
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -187,4 +189,38 @@ bool Link_InitEx(link_node_type_t self_type, const char *self_name, uint8_t chan
         link_node_start();
     }
     return true;
+}
+
+bool Link_SetChannel(uint8_t channel)
+{
+    if (channel < 1 || channel > 13) {
+        return false;
+    }
+    if (channel == g_link_channel) {
+        return true;   // gia' li': non si tocca la radio per niente
+    }
+
+    if (esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) {
+        return false;
+    }
+    g_link_channel = channel;
+
+    // I peer gia' registrati portano dentro il driver il canale VECCHIO, e un
+    // invio userebbe quello: spostare la radio senza spostare loro non
+    // servirebbe a niente. Si itera il registro del driver invece dei peer
+    // dei due ruoli, cosi' questa funzione non deve sapere se gira su un hub
+    // o su un nodo — e prende anche il peer broadcast.
+    esp_now_peer_info_t info;
+    bool from_head = true;
+    while (esp_now_fetch_peer(from_head, &info) == ESP_OK) {
+        from_head = false;
+        info.channel = channel;
+        esp_now_mod_peer(&info);
+    }
+    return true;
+}
+
+uint8_t Link_GetChannel(void)
+{
+    return g_link_channel;
 }

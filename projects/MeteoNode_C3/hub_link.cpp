@@ -1,4 +1,5 @@
 #include "hub_link.h"
+#include <esp_wifi.h>
 
 #include <WiFi.h>
 #include <string.h>
@@ -122,3 +123,56 @@ uint32_t hub_seq_get()             { return Link_Node_GetSeq(); }
 
 uint32_t hub_sent_ok()   { return s_ok; }
 uint32_t hub_sent_fail() { return s_fail; }
+
+// I tre non sovrapposti per primi: e' dove sta la quasi totalita' dei router
+// domestici, quindi nel caso normale la ricerca finisce in un colpo o due. Gli
+// altri dieci restano in coda perche' un AP puo' comunque finirci, e provarli
+// costa solo quando i primi tre hanno gia' fallito.
+static const uint8_t CANALI_PROVA[] = {1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13};
+
+// Timeout per tentativo. L'ACK di ESP-NOW e' di livello radio: se il peer e'
+// su quel canale risponde in millisecondi, se non c'e' non risponde affatto.
+// 200 ms sono larghi per il primo caso e corti abbastanza da tenere il caso
+// peggiore (13 canali, hub spento) sotto i tre secondi.
+static const uint32_t SCAN_ACK_MS = 200;
+
+uint8_t hub_scan_channels() {
+  if (!s_ready || !Link_Node_IsPaired()) return 0;
+
+  // Il canale da cui si parte, per poterci tornare. Con
+  // ESPNOW_LINK_CHANNEL_CURRENT (0) il numero non lo sa la libreria: lo si
+  // chiede alla radio, o al ripristino si passerebbe uno zero non valido.
+  uint8_t partenza = Link_GetChannel();
+  if (partenza == 0) {
+    uint8_t primario = 0;
+    wifi_second_chan_t secondario;
+    if (esp_wifi_get_channel(&primario, &secondario) == ESP_OK) partenza = primario;
+  }
+
+  for (size_t i = 0; i < sizeof(CANALI_PROVA); i++) {
+    const uint8_t c = CANALI_PROVA[i];
+    if (c == partenza) continue;              // gia' provato: e' quello fallito
+    if (!Link_SetChannel(c)) continue;
+
+    // Lo STESSO messaggio, non uno nuovo: Link_Node_SendData incrementerebbe
+    // il seq ad ogni tentativo e l'hub leggerebbe quei salti come pacchetti
+    // persi sulla tratta radio.
+    if (Link_Node_ResendLast(1, SCAN_ACK_MS)) {
+      s_channel = c;
+      s_ok++;
+      Serial.printf("[canale] hub ritrovato sul canale %u (era %u)\n", c, partenza);
+      return c;
+    }
+  }
+
+  // Nessuno risponde: l'hub non e' altrove, e' giu'. Si torna da dove si era
+  // partiti, o il prossimo risveglio comincerebbe dall'ultimo canale provato -
+  // scelto a caso, e per giunta quello meno probabile visto che ha appena
+  // fallito.
+  if (partenza >= 1 && partenza <= 13) {
+    Link_SetChannel(partenza);
+    s_channel = partenza;
+  }
+  Serial.println(F("[canale] nessun canale risponde: l'hub sembra giu'"));
+  return 0;
+}

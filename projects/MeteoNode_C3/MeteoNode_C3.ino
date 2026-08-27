@@ -134,7 +134,7 @@
 //   v2  2026-08-22  storico 24 h in RAM + grafici, previsione dal trend
 //                   barometrico a 3 ore, intervallo e altitudine da pagina web
 //   v1  2026-08-22  bring-up del sensore, web UI, OTA
-static const char FW_VERSION[] = "v11";
+static const char FW_VERSION[] = "v12";
 
 // ---------------------------------------------------------------------
 //  Nome del nodo
@@ -313,6 +313,22 @@ RTC_DATA_ATTR static uint32_t s_rtcErrors  = 0;
 RTC_DATA_ATTR static uint32_t s_rtcSent    = 0;
 RTC_DATA_ATTR static uint32_t s_rtcFail    = 0;
 RTC_DATA_ATTR static uint8_t  s_rtcChannel = 0;
+
+// Ultimo canale su cui l'hub ha davvero risposto, e quante volte la ricerca
+// l'ha ritrovato altrove. Vivono in NVS e non in RTC memory di proposito: la
+// RTC memory la cancella il power-cycle, cioe' proprio l'operazione con cui si
+// recupera un nodo che non torna - la prova sparirebbe quando serve. E' la
+// stessa ragione per cui ci stanno i contatori dei risvegli.
+static uint8_t  s_canaleNoto = 0;
+static uint32_t s_scanOk     = 0;
+
+// Prova della ricerca del canale: quando e' attivo, al momento di dormire si
+// scrive in RTC memory un canale VOLUTAMENTE sbagliato. Al risveglio il nodo
+// si trova muto per davvero e deve ritrovare l'hub da solo — che e' l'unico
+// modo di verificare la Fase 9 senza aspettare che l'access point si sposti,
+// cosa che fa ogni tanto e mai quando si sta guardando. Si consuma da se':
+// vale per UN risveglio, poi torna tutto normale.
+RTC_DATA_ATTR static bool s_rtcProvaCanale = false;
 RTC_DATA_ATTR static bool     s_rtcTimeOk  = false;
 
 // Il MAC dell'hub, imparato dal WELCOME la prima volta. Averlo qui e' cio' che
@@ -439,6 +455,8 @@ static void settingsLoad() {
   s_sleepOn     = p.getBool("sleep", false);
   s_wakeTot     = p.getULong("w_tot", 0);
   s_wakeOk      = p.getULong("w_ok", 0);
+  s_canaleNoto  = (uint8_t)p.getULong("canale", 0);
+  s_scanOk      = p.getULong("ch_scan", 0);
 
   // Il nome impostato a mano vince su tutto. Se la chiave non c'e' o il
   // valore non e' valido, s_nome resta vuoto e nodeName() ricade sul fisso
@@ -1057,6 +1075,8 @@ bool app_set_nome(const char* nome) {
   return true;
 }
 
+uint8_t  app_canale_noto()   { return s_canaleNoto; }
+uint32_t app_scan_ok_count() { return s_scanOk; }
 uint32_t app_wake_count()    { return s_wakeTot; }
 uint32_t app_wake_ok_count() { return s_wakeOk; }
 
@@ -1065,6 +1085,11 @@ uint32_t app_wake_ok_count() { return s_wakeOk; }
 // veglia scada. Una putBool in NVS costa pochi millisecondi, non il quasi
 // secondo di una scansione I2C, quindi non c'e' il rischio che la nota in
 // web_ui.h descrive (richieste che si accavallano finche' una va in timeout).
+void app_cmd_prova_canale() {
+  s_rtcProvaCanale = true;
+  Serial.println(F("[canale] prova armata: al prossimo sonno il canale sara' sbagliato"));
+}
+
 void app_cmd_toggle_sleep() {
   s_sleepOn = !s_sleepOn;
   Preferences p;
@@ -1197,7 +1222,25 @@ static void vaiADormire() {
   s_rtcErrors = s_readErrors;
   s_rtcSent   = s_rtcSent + hub_sent_ok();
   s_rtcFail   = s_rtcFail + hub_sent_fail();
-  if (hub_channel() != 0) s_rtcChannel = hub_channel();
+  if (hub_channel() != 0) {
+    s_rtcChannel = hub_channel();
+    // In NVS solo quando cambia davvero: il canale di casa cambia qualche
+    // volta all'anno, e una scrittura per risveglio sarebbe un'erase ogni
+    // cinque minuti per niente.
+    if (s_rtcChannel != s_canaleNoto) canaleSalva(s_rtcChannel);
+  }
+
+  // Prova richiesta dalla pagina: si va a dormire con un canale sbagliato, per
+  // vedere se al risveglio il nodo sa ritrovarsi. Dopo il salvataggio di
+  // quello buono, cosi' il canale vero resta comunque in NVS e la prova non
+  // puo' perderlo.
+  if (s_rtcProvaCanale) {
+    s_rtcProvaCanale = false;
+    const uint8_t sbagliato = (s_rtcChannel == 11) ? 6 : 11;
+    Serial.printf("[canale] PROVA: dormo sul canale %u invece di %u\n",
+                  sbagliato, s_rtcChannel);
+    s_rtcChannel = sbagliato;
+  }
   if (rtctime_isSynced()) s_rtcTimeOk  = true;
 
   s_rtcSeq = hub_seq_get();   // la sequenza deve proseguire dopo il sonno
@@ -1273,6 +1316,18 @@ static void vaiADormire() {
 
 // Percorso corto del risveglio: solo cio' che serve a produrre un dato e
 // consegnarlo. Non ritorna mai - finisce dentro vaiADormire().
+// Salva canale e contatore delle ricerche riuscite. Chiamata solo quando il
+// canale cambia davvero o quando la ricerca ha funzionato: sono eventi rari,
+// non c'e' motivo di consumare cicli di erase ad ogni risveglio.
+static void canaleSalva(uint8_t canale) {
+  Preferences p;
+  if (!p.begin("meteonode", false)) return;
+  p.putULong("canale", canale);
+  p.putULong("ch_scan", s_scanOk);
+  p.end();
+  s_canaleNoto = canale;
+}
+
 static void cicloRisveglio() {
   s_reads      = s_rtcReads;      // i contatori proseguono da prima del sonno
   s_readErrors = s_rtcErrors;
@@ -1318,7 +1373,24 @@ static void cicloRisveglio() {
   // Ha consegnato davvero? E' l'unica domanda che conta, e la risposta va
   // messa da parte: alla prossima veglia sara' l'unico modo di sapere cosa
   // e' successo stanotte.
-  const bool consegnato = (hub_sent_ok() > 0);
+  bool consegnato = (hub_sent_ok() > 0);
+
+  // Non consegnato non vuol dire per forza "hub giu'": molto piu' spesso
+  // l'access point ha cambiato canale e questo nodo, che dormiva, e' rimasto
+  // sull'altro. Prima di rassegnarsi alla rete di sicurezza - cinque risvegli
+  // muti, poi riavvio e cinque minuti di WiFi, ~7 mAh e 25 minuti di dati
+  // persi - si prova a cercarlo altrove: costa ~1 s di radio e recupera
+  // dentro questo stesso risveglio, senza perdere il campione.
+  if (!consegnato) {
+    const uint8_t trovato = hub_scan_channels();
+    if (trovato != 0) {
+      consegnato   = true;
+      s_rtcChannel = trovato;        // il prossimo risveglio parte da qui
+      s_scanOk++;
+      canaleSalva(trovato);          // e sopravvive anche a un power-cycle
+    }
+  }
+
   const bool primoKO    = (!consegnato && s_rtcFailRun == 0);
   if (consegnato) {
     s_wakeOk++;
@@ -1439,7 +1511,11 @@ void setup() {
 
   // ESP-NOW dopo net_begin(): il canale dipende dall'essere connessi o meno
   // all'AP (vedi hub_link.h). Non blocca e non e' fatale se fallisce.
-  hub_begin(nodeName());
+  // Con l'AP connesso il canale lo detta lui (0 = "quello corrente"); senza
+  // AP, invece del canale fisso della libreria si riparte dall'ultimo su cui
+  // l'hub ha davvero risposto. E' molto piu' probabile di un default, e se
+  // sbaglia c'e' comunque la ricerca al primo invio fallito.
+  hub_begin_ex(nodeName(), (WiFi.status() == WL_CONNECTED) ? 0 : s_canaleNoto);
 
   printHelp();
 }

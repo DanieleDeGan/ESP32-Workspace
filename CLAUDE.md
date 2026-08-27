@@ -617,6 +617,24 @@ sveglio pochi secondi per volta è la parte più lunga e più incerta del ciclo,
 tutta a radio accesa. Conservando il MAC dell'hub si registra il peer e si passa
 dritti al DATA.
 
+**Il canale si puo' cambiare a caldo** (da `v12` del nodo meteo, 2026-08-27):
+`Link_SetChannel(ch)` sposta la radio **e riallinea i peer gia' registrati**
+(itera il registro del driver con `esp_now_fetch_peer`/`esp_now_mod_peer`, cosi'
+non deve sapere se gira su un hub o su un nodo). Prima il canale si sceglieva
+solo a `Link_InitEx()`.
+
+**Vietata a chi e' connesso a un access point**: la radio e' una sola e il
+canale lo detta l'AP, quindi cambiarlo fa cadere la connessione. Serve a un
+nodo che sta su ESP-NOW e basta — tipicamente uno a batteria, con il WiFi
+spento, che si e' portato il canale in RTC memory.
+
+Insieme c'e' `Link_Node_ResendLast(tentativi, timeout)`, che rimanda l'ultimo
+DATA **senza incrementare il `seq`**. Non e' un dettaglio: `Link_Node_SendData()`
+il seq lo incrementa ad ogni chiamata, quindi riprovare lo stesso campione su
+piu' canali produrrebbe salti di numerazione, e l'hub li conta come pacchetti
+persi sulla tratta radio — **buchi inventati dentro il registro che serve
+proprio a contare i buchi veri**.
+
 **Spostare un nodo da un hub a un altro: prima lo si DIMENTICA sul vecchio.**
 Un hub che ha gia' il nodo nel registro gli rimanda il WELCOME anche a finestra
 di pairing **chiusa** (`link_peer.cpp`: un HELLO da un peer noto mette
@@ -1115,6 +1133,44 @@ float è quello del nodo meteo, un sensore di altro tipo richiede lavoro
 sull'hub. E **rinominare un nodo già associato** non lo fa sparire (per l'hub
 l'identità è il MAC, e l'anagrafica si aggiorna al primo messaggio), ma da lì
 in poi il suo storico prosegue in una cartella nuova.
+
+### La ricerca del canale (da `v12`, 2026-08-27)
+
+L'access point cambia canale da solo, per scansare le reti dei vicini. Chi e'
+connesso lo segue riassociandosi; **un nodo che dorme no**: si porta il canale
+in RTC memory e diventa muto senza accorgersene, perche' l'unico sintomo e'
+l'ACK che non arriva. Prima l'unica reazione era la piu' cara: cinque risvegli
+muti, poi riavvio e cinque minuti di WiFi acceso.
+
+Ora, se il DATA non viene consegnato, `hub_scan_channels()` prova gli altri
+canali — **1, 6, 11 per primi**, poi gli altri dieci — con **un solo tentativo
+per canale** e 200 ms di timeout, rimandando lo STESSO messaggio
+(`Link_Node_ResendLast`, vedi sopra: il `seq` non deve avanzare). Al primo che
+risponde salva il canale in RTC memory **e in NVS**, e torna a dormire.
+
+| | rete di sicurezza | ricerca del canale |
+|---|---|---|
+| radio accesa | 5 min di WiFi | ~1 s (peggio: ~2,6 s) |
+| carica spesa | ~7 mAh | ~0,03 mAh |
+| dati persi | 25 minuti | nessuno, recupera nello stesso risveglio |
+
+**Non sostituisce la rete di sicurezza**, che resta sotto: la ricerca risolve
+il canale cambiato, non l'hub spento. Se nessun canale risponde si torna a
+quello di partenza — non all'ultimo provato, che e' scelto a caso e per giunta
+ha appena fallito.
+
+**Il canale sta anche in NVS**, non solo in RTC memory: quella la cancella il
+power-cycle, cioe' proprio l'operazione con cui si recupera un nodo che non
+torna. Al boot senza AP si riparte dall'ultimo canale su cui l'hub ha davvero
+risposto, invece che dal canale fisso della libreria.
+
+**Come si prova senza aspettare l'AP**: `GET /api/comando?c=prova-canale` arma
+**un** risveglio con un canale volutamente sbagliato. Serve perche' altrimenti
+la funzione resta non verificata per settimane, e il momento in cui si scopre
+che non va sarebbe esattamente quello in cui serviva. Il contatore
+`scansioni_ok` (in NVS, visibile su `/api/stato` e in pagina) dice quante volte
+l'hub e' stato ritrovato altrove: **zero non e' un guasto**, vuol dire che
+l'access point non si e' mai spostato.
 
 **Dove scrivere la logica**: nel `.ino` (misura, previsione, ciclo di sonno).
 `forecast.h`, `hub_link.*`, `rtc_time.*`, `net_ota.*`, `web_ui.*` sono

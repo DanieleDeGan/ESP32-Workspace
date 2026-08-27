@@ -17,6 +17,11 @@
 static LinkPeer *s_broadcast_peer = nullptr;
 static LinkPeer *s_hub_peer = nullptr;
 static bool s_paired = false;
+
+// Ultimo DATA timbrato e spedito, conservato per poterlo rimandare tale e
+// quale su un altro canale (vedi Link_Node_ResendLast).
+static link_message_t s_last_data = {};
+static bool s_has_last = false;
 static uint32_t s_last_hello_ms = 0;
 static uint32_t s_seq = 0;
 
@@ -121,5 +126,16 @@ bool Link_Node_SendData(link_message_t *msg)
     strncpy(msg->name, g_link_self_name, LINK_NAME_LEN - 1);
     msg->name[LINK_NAME_LEN - 1] = '\0';
     msg->seq = s_seq++;
+    s_last_data = *msg;      // per Link_Node_ResendLast(): stesso seq, altro canale
+    s_has_last  = true;
     return s_hub_peer->sendReliable(*msg);
+}
+
+bool Link_Node_ResendLast(int max_attempts, uint32_t ack_timeout_ms)
+{
+    if (!s_has_last || !s_paired || s_hub_peer == nullptr) {
+        return false;
+    }
+    // Volutamente NON si tocca s_seq: e' lo stesso messaggio, mandato altrove.
+    return s_hub_peer->sendReliable(s_last_data, max_attempts, ack_timeout_ms);
 }

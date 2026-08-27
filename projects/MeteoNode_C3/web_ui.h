@@ -160,7 +160,18 @@ uint32_t    app_boot_count();
 bool     app_sleep_enabled();
 uint32_t app_wake_count();      // risvegli da quando c'e' corrente
 uint32_t app_wake_ok_count();   // di questi, quanti hanno consegnato all'hub
+
+// Ricerca del canale (Fase 9): l'ultimo canale su cui l'hub ha risposto e
+// quante volte lo si e' ritrovato altrove. Il secondo numero e' la misura di
+// quanto spesso l'access point cambia canale sotto il naso di un nodo che
+// dorme: se resta a zero per settimane, quel problema qui non c'e'.
+uint8_t  app_canale_noto();
+uint32_t app_scan_ok_count();
 void     app_cmd_toggle_sleep();
+
+// Arma la prova della ricerca del canale: UN risveglio con il canale
+// sbagliato, per verificare che il nodo sappia ritrovare l'hub da solo.
+void     app_cmd_prova_canale();
 
 // Da quanti secondi risale l'ultima lettura. Con l'intervallo configurabile
 // fino a un'ora, un numero senza eta' sarebbe ambiguo: la pagina deve poter
