@@ -1023,6 +1023,16 @@ senza di loro si somiglierebbero (schermo che non cambia).
   i nodi veri fanno HELLO ad ogni power-cycle. I nodi già noti stanno in NVS e
   rientrano comunque. Si apre da `/` o tenendo premuto **BOOT** (1,2 s) per 2
   minuti; BOOT breve cambia pagina.
+- **La dashboard personalizzata su SD c'è anche qui** (da `v3`, 2026-08-28),
+  identica a quella di `EnvNode_C3`: `/` serve `/www/dashboard.html` dalla card
+  se esiste, `/dashboard-upload` la carica, `/dashboard-ripristina` torna al
+  default. Le funzioni `sd_*_dashboard()` erano già in `sd_logger.cpp` (che è
+  una copia di quello del C3) e stavano lì inutilizzate: è costato solo
+  l'aggancio. **La pagina di upload sta sempre in PROGMEM**, mai sulla card che
+  può sostituire — altrimenti una dashboard rotta chiuderebbe fuori proprio chi
+  deve rimpiazzarla, e qui il rientro sarebbe andare a staccare la microSD.
+  Vale la stessa avvertenza del C3: il file nel repo è **solo un sorgente**, la
+  scheda serve la copia sulla card e ricompilare il firmware non la cambia.
 - **La diagnostica sta sul pannello, non sulla seriale.** Il piede della pagina
   NODI porta IP e spazio libero della card, e in negativo `SD NON MONTATA`.
   Serve perché il log di boot di questa scheda **non è osservabile via USB**:

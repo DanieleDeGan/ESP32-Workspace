@@ -91,7 +91,7 @@
 #include "web_ui.h"        // pagina di stato e API, registrate su net_server()
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v2";
+static const char FW_VERSION[] = "v3";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW

@@ -5,8 +5,9 @@
  * projects/EnvNode_C3/web_ui.cpp e sono presi tali e quali: l'hub espone gli
  * STESSI endpoint (/api/nodi, /api/pairing, /api/nodi/*), cosi' quello che si
  * sa fare con una scheda vale anche con l'altra. Non e' stato portato tutto
- * cio' che riguardava il sensore locale del C3 (dashboard su SD, /api/giorno,
- * min/max): questa scheda non misura niente di suo, riceve.
+ * cio' che riguardava il sensore locale del C3 (/api/giorno, min/max): questa
+ * scheda non misura niente di suo, riceve. La dashboard personalizzata su SD
+ * invece c'è anche qui, ed è identica a quella del C3.
  *
  * Nuovo qui: /api/stato, che parla dell'hub e non di un sensore, e la card in
  * cima alla pagina che lo mostra. Se la microSD non e' montata i dati dei nodi
@@ -326,6 +327,7 @@ static const char HUB_PAGE[] PROGMEM = R"HTML(
 </div>
 <div id="lista"></div>
 <p class="muted"><a href="/update">aggiornamento firmware (OTA)</a> &mdash;
+ <a href="/dashboard-upload">dashboard personalizzata</a> &mdash;
  i registri dei nodi stanno su microSD, un file per giorno per nodo.</p>
 <script>
 const E=document.getElementById.bind(document);
@@ -496,8 +498,140 @@ static void handleApiStato() {
   net_server().send(200, "application/json", j);
 }
 
+// ---------------------------------------------------------------------
+//  Dashboard personalizzata su microSD — stesso meccanismo di
+//  projects/EnvNode_C3/, e le funzioni sd_* che servono erano gia' qui
+//  (sd_logger.cpp e' una copia di quello del C3): si carica un .html
+//  self-contained, finisce in /www/dashboard.html e da li' in poi e' lui
+//  a rispondere su "/".
+//
+//  Questa pagina di upload sta in PROGMEM ed e' servita SEMPRE da qui,
+//  qualunque cosa ci sia sulla card: e' la via di recupero se la
+//  dashboard caricata a mano risulta rotta. Se dipendesse dalla SD, una
+//  pagina sbagliata chiuderebbe fuori proprio chi deve sostituirla — e
+//  su questa scheda il rientro sarebbe andare a staccare la card.
+// ---------------------------------------------------------------------
+static const char DASH_UPLOAD_PAGE[] PROGMEM = R"HTML(
+<!doctype html><html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MeteoHub-S3 &mdash; Dashboard personalizzata</title><style>
+ body{font-family:system-ui,Arial,sans-serif;background:#111;color:#eee;margin:0;padding:2rem;display:flex;justify-content:center}
+ .card{max-width:460px;width:100%;background:#1c1c1c;border:1px solid #333;border-radius:12px;padding:1.5rem}
+ h1{font-size:1.05rem;margin:0 0 1rem}
+ input[type=file]{width:100%;margin:.5rem 0 1rem;color:#ccc}
+ button{width:100%;padding:.7rem;border:0;border-radius:8px;background:#3987e5;color:#fff;font-size:1rem;cursor:pointer;margin-top:.5rem}
+ button.dan{background:#b91c1c}
+ button:disabled{background:#555}
+ progress{width:100%;height:1rem;margin-top:1rem}
+ .muted{color:#8a8a8a;font-size:.8rem;margin-top:1rem;line-height:1.5}
+ code{color:#9aa}
+ a{color:#3987e5}
+</style></head><body><div class="card">
+ <h1>Dashboard personalizzata</h1>
+ <p class="muted">Carica un file <code>.html</code> self-contained (CSS e JS
+ inline, nessuna richiesta esterna: la scheda non ha internet da offrire) per
+ sostituire la pagina di default dell'hub. Viene salvato sulla microSD in
+ <code>/www/dashboard.html</code> e servito su <code>/</code>.</p>
+ <p class="muted">I dati si leggono dalle stesse API che usa la pagina di
+ default: <code>/api/stato</code> (hub, pannello, SD),
+ <code>/api/nodi</code> (nodi con valori, trend e previsione),
+ <code>/api/nodi/giorni</code> e <code>/api/nodi/scarica</code> (CSV).</p>
+ <p class="muted">Questa pagina resta SEMPRE raggiungibile qui, anche se la
+ dashboard caricata non funziona o la card viene tolta &mdash; in quel caso
+ torna in uso quella di default.</p>
+ <form id="f"><input type="file" name="dashboard" accept=".html,.htm" required>
+ <button type="submit" id="b">Carica</button>
+ <progress id="p" value="0" max="100" hidden></progress></form>
+ <p class="muted" id="s"></p>
+ <button id="br" class="dan">Ripristina dashboard di default</button>
+ <p class="muted"><a href="/">&larr; torna alla dashboard</a></p>
+<script>
+const f=document.getElementById('f'),b=document.getElementById('b'),p=document.getElementById('p'),s=document.getElementById('s'),br=document.getElementById('br');
+f.addEventListener('submit',e=>{e.preventDefault();const fd=new FormData(f),x=new XMLHttpRequest();
+ x.open('POST','/dashboard-upload');p.hidden=false;b.disabled=true;
+ x.upload.onprogress=ev=>{if(ev.lengthComputable){const pc=Math.round(ev.loaded/ev.total*100);p.value=pc;s.textContent='Caricamento '+pc+'%';}};
+ x.onload=()=>{s.textContent=(x.status==200)?'OK! Vai alla dashboard per vederla.':('Errore: '+x.responseText);b.disabled=false;};
+ x.onerror=()=>{s.textContent='Errore di rete';b.disabled=false;};
+ x.send(fd);});
+br.addEventListener('click',()=>{
+ if(!confirm("Ripristinare la dashboard di default? La versione personalizzata verra' eliminata dalla SD."))return;
+ fetch('/dashboard-ripristina',{method:'POST'}).then(r=>r.text()).then(t=>{s.textContent=t;});
+});
+</script></div></body></html>
+)HTML";
+
+// Il file arriva a blocchi dal WebServer: si scrive man mano, senza tenerlo
+// in RAM. Stessa forma dell'upload di /update in net_ota.cpp.
+static File s_dashUploadFile;
+static bool s_dashUploadOk = false;
+
+static void handleDashboardUploadPage() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  net_server().send_P(200, "text/html", DASH_UPLOAD_PAGE);
+}
+
+static void handleDashboardUploadDone() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  net_server().sendHeader("Connection", "close");
+  net_server().send(s_dashUploadOk ? 200 : 500, "text/plain",
+                    s_dashUploadOk ? "OK"
+                                   : "Caricamento fallito (SD non disponibile o scrittura fallita)");
+}
+
+static void handleDashboardUploadChunk() {
+  HTTPUpload& up = net_server().upload();
+  switch (up.status) {
+    case UPLOAD_FILE_START:
+      if (!net_webAuthOk()) { s_dashUploadOk = false; return; }
+      s_dashUploadFile = sd_open_dashboard_for_write();
+      s_dashUploadOk   = (bool)s_dashUploadFile;
+      break;
+
+    case UPLOAD_FILE_WRITE:
+      if (s_dashUploadOk) {
+        s_dashUploadOk = (s_dashUploadFile.write(up.buf, up.currentSize) == up.currentSize);
+      }
+      break;
+
+    case UPLOAD_FILE_END:
+      if (s_dashUploadFile) s_dashUploadFile.close();
+      break;
+
+    // Un upload interrotto a meta' lascia il file aperto e mezzo scritto:
+    // si chiude e si dichiara fallito, cosi' la prossima volta si riparte
+    // da un troncamento pulito invece che da un handle appeso. E' la stessa
+    // disciplina che in net_ota.cpp vuole Update.abort() su questo caso.
+    case UPLOAD_FILE_ABORTED:
+      if (s_dashUploadFile) s_dashUploadFile.close();
+      s_dashUploadOk = false;
+      break;
+
+    default:
+      break;
+  }
+}
+
+static void handleDashboardRipristina() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  const bool ok = sd_delete_dashboard();
+  net_server().send(ok ? 200 : 500, "text/plain",
+                    ok ? "Ripristinata la dashboard di default." : "Cancellazione fallita.");
+}
+
 static void handleRoot() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+
+  // Dashboard personalizzata sulla card, se c'è (vedi /dashboard-upload):
+  // altrimenti quella incorporata nel firmware. Passa da
+  // streamFileLimitato() come ogni file servito da qui: un client che se
+  // ne va a metà non deve tenere fermo il loop(), che nel frattempo non
+  // preleverebbe i DATA dei nodi.
+  File custom = sd_open_dashboard();
+  if (custom) {
+    streamFileLimitato(net_server(), custom, "text/html");
+    custom.close();
+    return;
+  }
   net_server().send_P(200, "text/html", HUB_PAGE);
 }
 
@@ -511,4 +645,10 @@ void web_ui_begin() {
   srv.on("/api/nodi/altitudine", HTTP_POST, handleApiNodiAltitudine);
   srv.on("/api/nodi/giorni",     HTTP_GET,  handleApiNodiGiorni);
   srv.on("/api/nodi/scarica",    HTTP_GET,  handleApiNodiScarica);
+
+  // Dashboard personalizzata: la pagina di upload e il ripristino stanno
+  // sempre nel firmware, mai sulla card che possono sostituire.
+  srv.on("/dashboard-upload",     HTTP_GET,  handleDashboardUploadPage);
+  srv.on("/dashboard-upload",     HTTP_POST, handleDashboardUploadDone, handleDashboardUploadChunk);
+  srv.on("/dashboard-ripristina", HTTP_POST, handleDashboardRipristina);
 }
