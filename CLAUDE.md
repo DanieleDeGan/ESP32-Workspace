@@ -1219,6 +1219,21 @@ che non va sarebbe esattamente quello in cui serviva. Il contatore
 l'hub e' stato ritrovato altrove: **zero non e' un guasto**, vuol dire che
 l'access point non si e' mai spostato.
 
+**Verificata sul campo il 2026-08-28**, e non da una prova armata: nelle 23,7 h
+successive l'AP è passato **dal canale 1 al 13** per conto suo e il nodo a
+batteria non ha perso un pacchetto — 285 campioni su 285, gap fra 299 e 302 s,
+zero salti di `seq`, **zero interventi della rete di sicurezza** (nei tre giorni
+prima erano cinque, uno ogni ~14 h). Il 13 **non** è fra i tre canali provati
+per primi, quindi la scansione è arrivata agli altri dieci restando dentro lo
+stesso risveglio: il caso peggiore della tabella qui sopra è reale, non teorico.
+
+**La conferma si legge sui CSV dell'hub, non sul nodo.** `scansioni_ok` direbbe
+quante volte la ricerca è servita, ma sta dentro una scheda che dorme e non ha
+IP: si legge solo nei 5 minuti di veglia dopo un power-cycle — cioè dopo aver
+azzerato in RTC memory proprio lo stato che si voleva guardare (il contatore in
+NVS sopravvive). La prova che conta è l'assenza di buchi in
+`/api/nodi/scarica`, che non richiede di toccare il nodo.
+
 **Dove scrivere la logica**: nel `.ino` (misura, previsione, ciclo di sonno).
 `forecast.h`, `hub_link.*`, `rtc_time.*`, `net_ota.*`, `web_ui.*` sono
 boilerplate per compito.
