@@ -1185,6 +1185,31 @@ senza di loro si somiglierebbero (schermo che non cambia).
   cioè far passare tutte le funzioni di disegno per un `Adafruit_GFX&` invece
   che per il `display` globale. È un refactor meccanico ma vero, non un
   aggancio: valutato il 2026-08-28 e **non fatto**.
+- **La fascia del messaggio sulla pagina nodi** (da `v11`, 2026-08-28,
+  interruttore in `/pannello`): 70 px in fondo con il messaggio attivo, e
+  compare **solo se un messaggio c'è** — acceso l'interruttore ma senza
+  messaggi, la pagina resta identica a prima.
+  - **È un baratto, non un miglioramento**, ed è per questo che lo decide
+    l'utente: il corpo dei nodi scende da 232 a 162 px, quindi con due nodi si
+    passa dal blocco comodo (24pt) a quello compatto (18pt). Si guadagna il
+    messaggio sempre sotto gli occhi, si perde corpo sui numeri — e il corpo è
+    la distanza da cui la pagina funziona.
+  - **Immagine + altro invece NON si fa**, e non è una questione di gusto: il
+    `.bin` è 400×300 a 1 bit **già retinato**, quindi rimpicciolirlo a bordo
+    ricampiona un pattern e produce moiré. Se serve una foto con una scritta,
+    la strada giusta è comporla **dentro l'immagine nel browser**
+    (`www/dither.html` lavora già su un canvas): costo zero per il firmware e
+    tipografia libera.
+  - **Su e-ink il tempo è la dimensione in più**: per "vedere tutto" c'è la
+    rotazione, che alterna pagine intere e leggibili invece di comprimerne tre
+    in 400×300.
+  - L'impostazione sta nel **byte `riservato`** che il blob NVS di `pages.cpp`
+    aveva già: nessuna migrazione, le configurazioni salvate restano leggibili.
+    Vale come esempio — quando si aggiunge un flag a un blob persistito,
+    guardare prima se c'è del padding da spendere.
+  - Cambiare l'interruttore **fa ridisegnare il pannello subito** (la web UI
+    chiama `/api/pannello/refresh` dopo il salvataggio): cambia il layout, e
+    senza resterebbe quello vecchio fino al refresh di cadenza.
 - **Refresh del pannello — tre cadenze, non una**:
 
   | refresh | quando | area |
