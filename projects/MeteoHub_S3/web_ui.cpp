@@ -841,7 +841,6 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
    <select id="sda"></select><span class="muted" style="margin:0">alle</span><select id="sa"></select>
   </div>
  </div>
- <button class="full" id="bs" style="margin-top:12px">Salva</button>
  <div class="esito" id="ss"></div>
  <p class="muted">Con una sola pagina attiva non ruota: non c'&egrave; dove andare, e un
  cambio &egrave; sempre un refresh completo (~2,2 s, e lampeggia).</p>
@@ -903,7 +902,7 @@ function optDur(v){
  if(!visto)o='<option value="'+v+'" selected>'+Math.round(v/60)+' min</option>'+o;
  return o;
 }
-for(let h=0;h<24;h++){const t=('0'+h)+':00';
+for(let h=0;h<24;h++){const t=('0'+h).slice(-2)+':00';
  E('sda').insertAdjacentHTML('beforeend','<option value="'+h+'">'+t+'</option>');
  E('sa').insertAdjacentHTML('beforeend','<option value="'+h+'">'+t+'</option>');}
 
@@ -928,7 +927,12 @@ function render(d){
   box.appendChild(el);
   if(p.corrente) E('oraNome').textContent = p.tipo + (p.param? ' — '+p.param : '');
  });
- E('rot').checked=d.rotazione; E('sda').value=d.silenzio_da; E('sa').value=d.silenzio_a;
+ // Il polling non tocca i campi mentre un salvataggio e' in volo: senza
+ // questo, la risposta di una richiesta partita prima riscriverebbe quello
+ // che si sta impostando adesso.
+ if(!salvaTimer){
+  E('rot').checked=d.rotazione; E('sda').value=d.silenzio_da; E('sa').value=d.silenzio_a;
+ }
 
  box.querySelectorAll('[data-a]').forEach(c=>c.onchange=()=>
    post('/api/pannello/pagina?i='+c.dataset.a+'&attiva='+(c.checked?1:0)).then(r=>r.json()).then(render));
@@ -989,8 +993,28 @@ function caricaImmagini(){
     post('/api/immagini/elimina?nome='+encodeURIComponent(b.dataset.del)).then(caricaImmagini);});
  });}
 
-E('bs').onclick=()=>post('/api/pannello?rotazione='+(E('rot').checked?1:0)+'&sil_da='+E('sda').value+'&sil_a='+E('sa').value)
- .then(r=>r.json()).then(d=>{render(d);flash(E('ss'),'Salvato');});
+// Rotazione e ore di silenzio si salvano al tocco, come tutto il resto della
+// pagina. Prima stavano dietro un pulsante "Salva", e non era solo
+// un'incoerenza: la pagina si rilegge da sola ogni 15 s e render() riscrive i
+// campi con i valori del server, quindi una modifica non salvata in tempo
+// tornava indietro DA SOLA, senza dire niente. Da fuori sembrava che la
+// scheda avesse rifiutato il comando.
+//
+// Le due tendine delle ore aspettano 800 ms prima di partire: cosi' spostare
+// "dalle 23 alle 7" costa UNA scrittura in NVS invece di due.
+var salvaTimer = null;
+function salvaRotazione(ritardo){
+ clearTimeout(salvaTimer);
+ salvaTimer = setTimeout(()=>{
+  const q='/api/pannello?rotazione='+(E('rot').checked?1:0)+'&sil_da='+E('sda').value+'&sil_a='+E('sa').value;
+  salvaTimer=null;
+  post(q).then(r=>r.json()).then(d=>{render(d);flash(E('ss'),'Salvato');})
+   .catch(()=>flash(E('ss'),'Non salvato: hub non raggiungibile',1));
+ }, ritardo);
+}
+E('rot').onchange=()=>salvaRotazione(0);
+E('sda').onchange=()=>salvaRotazione(800);
+E('sa').onchange=()=>salvaRotazione(800);
 E('brf').onclick=()=>post('/api/pannello/refresh').then(()=>flash(E('srf'),'Refresh in coda&hellip;'));
 E('bm').onclick=()=>{
  if(!E('txt').value.trim()){flash(E('sm'),'Scrivi qualcosa',1);return;}
