@@ -727,134 +727,220 @@ static void handleApiPannelloRimuovi() {
 // ---------------------------------------------------------------------
 static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
 <!doctype html><html lang="it"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
 <title>MeteoHub-S3 &mdash; Pannello</title><style>
- body{font-family:system-ui,Arial,sans-serif;background:#111;color:#eee;margin:0;padding:1rem;display:flex;justify-content:center}
- .wrap{max-width:720px;width:100%}
- h1{font-size:1.05rem;margin:0 0 .8rem}
- h2{font-size:.95rem;margin:0 0 .6rem}
- .card{background:#1c1c1c;border:1px solid #333;border-radius:12px;padding:1rem;margin-bottom:1rem}
- .row{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:.4rem 0}
- button{padding:.5rem .85rem;border:0;border-radius:8px;background:#3987e5;color:#fff;font-size:.88rem;cursor:pointer}
- button.sec{background:#2a2a2a;border:1px solid #444;color:#ccc}
- button.dan{background:#b91c1c}
- input,select,textarea{padding:.45rem;border-radius:6px;border:1px solid #444;background:#161616;color:#eee;font-family:inherit}
- textarea{width:100%;font-size:.95rem;resize:vertical}
- input[type=number]{width:5rem}
- table{width:100%;border-collapse:collapse;font-size:.88rem}
- td,th{padding:.45rem .3rem;border-bottom:1px solid #2a2a2a;text-align:left}
- th{color:#8a8a8a;font-weight:500;font-size:.78rem}
- .cur{color:#3fb950;font-weight:600}
- .muted{color:#8a8a8a;font-size:.8rem;line-height:1.5;margin:.4rem 0}
- .arch{font-size:.82rem;color:#bbb;border-left:2px solid #333;padding:.25rem .6rem;margin:.35rem 0;cursor:pointer}
- .arch:hover{border-left-color:#3987e5;color:#eee}
- a{color:#3987e5}
+ :root{
+  --bg:#0e0e10; --card:#1a1a1d; --card2:#212125; --bordo:#2e2e33;
+  --txt:#ececee; --dim:#8e8e96; --acc:#3987e5; --ok:#3fb950; --dan:#c9342d;
+  --r:14px;
+ }
+ *{box-sizing:border-box}
+ body{font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:var(--bg);
+  color:var(--txt);margin:0;padding:12px 12px calc(20px + env(safe-area-inset-bottom));
+  -webkit-text-size-adjust:100%}
+ .wrap{max-width:760px;margin:0 auto}
+ h1{font-size:1.15rem;margin:.2rem 0 1rem;display:flex;align-items:center;gap:.5rem}
+ h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);
+  margin:1.4rem 0 .6rem;font-weight:600}
+ .card{background:var(--card);border:1px solid var(--bordo);border-radius:var(--r);
+  padding:14px;margin-bottom:10px}
+ .muted{color:var(--dim);font-size:.82rem;line-height:1.5;margin:.5rem 0 0}
+
+ /* --- tocco: nulla sotto i 44 px, e 16px sugli input o iOS zooma da solo --- */
+ button,select,input,textarea{font-family:inherit;font-size:16px}
+ button{min-height:44px;padding:0 16px;border:0;border-radius:10px;background:var(--acc);
+  color:#fff;font-weight:600;cursor:pointer;-webkit-tap-highlight-color:transparent}
+ button:active{transform:scale(.98)}
+ button.sec{background:var(--card2);border:1px solid var(--bordo);color:var(--txt);font-weight:500}
+ button.dan{background:transparent;border:1px solid #5a2a28;color:#e08b86;font-weight:500}
+ button.full{width:100%}
+ select,input[type=text],input[type=number],textarea{
+  background:#141417;color:var(--txt);border:1px solid var(--bordo);border-radius:10px;
+  padding:11px 12px;min-height:44px;width:100%}
+ textarea{min-height:92px;resize:vertical;line-height:1.45}
+ input[type=file]{width:100%;color:var(--dim);font-size:.85rem}
+
+ /* --- interruttore --- */
+ .sw{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  min-height:44px;cursor:pointer;user-select:none}
+ .sw input{position:absolute;opacity:0;pointer-events:none}
+ .sw .track{flex:none;width:50px;height:30px;border-radius:15px;background:#3a3a41;
+  position:relative;transition:background .15s}
+ .sw .track::after{content:"";position:absolute;top:3px;left:3px;width:24px;height:24px;
+  border-radius:50%;background:#fff;transition:transform .15s}
+ .sw input:checked + .track{background:var(--ok)}
+ .sw input:checked + .track::after{transform:translateX(20px)}
+
+ /* --- una pagina del pannello --- */
+ .pg{background:var(--card);border:1px solid var(--bordo);border-radius:var(--r);
+  padding:14px;margin-bottom:10px}
+ .pg.now{border-color:var(--ok);background:linear-gradient(180deg,rgba(63,185,80,.07),transparent 60%)}
+ .pg .top{display:flex;align-items:center;gap:.5rem;margin-bottom:.2rem}
+ .pg .nome{font-size:1.05rem;font-weight:600;text-transform:capitalize}
+ .pg .par{color:var(--dim);font-size:.85rem;font-weight:400;text-transform:none}
+ .badge{margin-left:auto;flex:none;font-size:.7rem;font-weight:700;letter-spacing:.04em;
+  padding:4px 9px;border-radius:99px;background:rgba(63,185,80,.15);color:var(--ok)}
+ .riga{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:8px 0;border-top:1px solid var(--bordo);margin-top:10px}
+ .riga:first-of-type{margin-top:4px}
+ .riga label{color:var(--dim);font-size:.85rem}
+ .riga select{width:auto;min-width:118px}
+ .azioni{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+ .azioni button{padding:0 8px;font-size:.88rem}
+ .azioni .sol{grid-column:1/-1}
+
+ .duo{display:flex;gap:8px;align-items:center}
+ .duo select{width:auto;min-width:90px}
+ .fine{display:flex;gap:8px;margin-top:12px}
+ .fine button{flex:1}
+ .esito{font-size:.82rem;color:var(--ok);min-height:1.1em;margin-top:.5rem}
+ .esito.err{color:#e08b86}
+
+ /* --- immagini --- */
+ .gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+ .im{background:var(--card2);border:1px solid var(--bordo);border-radius:12px;
+  padding:10px;overflow:hidden}
+ .im canvas{width:100%;height:auto;display:block;border-radius:8px;background:#fff;
+  image-rendering:pixelated}
+ .im .nm{display:flex;align-items:baseline;gap:.5rem;margin:8px 2px}
+ .im .nm b{font-size:.95rem}
+ .im .nm span{color:var(--dim);font-size:.75rem;margin-left:auto}
+ .im .azioni{margin-top:8px}
+
+ .arch p{background:var(--card2);border-left:3px solid var(--bordo);border-radius:0 8px 8px 0;
+  padding:10px 12px;margin:8px 0;font-size:.9rem;cursor:pointer;min-height:44px;
+  display:flex;align-items:center}
+ .arch p:active{border-left-color:var(--acc)}
+ nav{margin:1.8rem 0 .5rem;display:flex;flex-wrap:wrap;gap:.4rem 1rem;font-size:.85rem}
+ a{color:var(--acc);text-decoration:none}
+ @media (max-width:420px){
+  .azioni{grid-template-columns:1fr}
+  .riga{flex-wrap:wrap}
+ }
 </style></head><body><div class="wrap">
 <h1>Pannello e-ink</h1>
 
-<div class="card">
- <h2>Pagine</h2>
- <table><thead><tr><th>pagina</th><th>in rotazione</th><th>durata</th><th></th></tr></thead>
- <tbody id="tbody"></tbody></table>
- <div class="row" style="margin-top:.8rem">
-  <button id="brf" class="sec">Refresh completo adesso</button>
-  <span class="muted" id="srf"></span>
- </div>
- <p class="muted">Il refresh completo toglie il ghosting senza aspettare il
- ciclo. Ogni cambio pagina &egrave; comunque un refresh completo (~2,2 s, e
- lampeggia): sotto il minuto di durata non ha senso.</p>
+<div class="card" id="ora">
+ <div class="muted" style="margin:0">A schermo adesso</div>
+ <div style="font-size:1.35rem;font-weight:700;margin:.25rem 0 .8rem" id="oraNome">&mdash;</div>
+ <button class="sec full" id="brf">Aggiorna il pannello adesso</button>
+ <div class="esito" id="srf"></div>
 </div>
 
+<h2>Pagine</h2>
+<div id="lista"></div>
+
+<h2>Cambio automatico</h2>
 <div class="card">
- <h2>Rotazione automatica</h2>
- <div class="row">
-  <label><input type="checkbox" id="rot"> attiva</label>
-  <span class="muted">silenzio dalle</span>
-  <input type="number" id="sda" min="0" max="23"> <span class="muted">alle</span>
-  <input type="number" id="sa" min="0" max="23">
-  <button id="bs">Salva</button>
-  <span class="muted" id="ss"></span>
+ <label class="sw"><span>Ruota fra le pagine attive</span>
+  <input type="checkbox" id="rot"><span class="track"></span></label>
+ <div class="riga">
+  <label>Non ruotare dalle</label>
+  <div class="duo">
+   <select id="sda"></select><span class="muted" style="margin:0">alle</span><select id="sa"></select>
+  </div>
  </div>
- <p class="muted">Spenta di default, ed &egrave; una scelta: un pannello che
- ruota fra sei pagine diventa un salvaschermo che nessuno legge. Con una sola
- pagina attiva la rotazione non ha dove andare e non tocca il display.
- Nelle ore di silenzio non ruota &mdash; di notte nessuno guarda, e ogni
- refresh risparmiato &egrave; consumo e usura in meno. Ore uguali = mai.</p>
+ <button class="full" id="bs" style="margin-top:12px">Salva</button>
+ <div class="esito" id="ss"></div>
+ <p class="muted">Con una sola pagina attiva non ruota: non c'&egrave; dove andare, e un
+ cambio &egrave; sempre un refresh completo (~2,2 s, e lampeggia).</p>
 </div>
 
+<h2>Messaggio</h2>
 <div class="card">
- <h2>Messaggio</h2>
- <textarea id="txt" rows="3" maxlength="200" placeholder="Il bigliettino sul frigo, max 200 caratteri"></textarea>
- <div class="row">
-  <span class="muted">scade fra</span>
+ <textarea id="txt" maxlength="200" placeholder="Il bigliettino sul frigo&hellip;"></textarea>
+ <div class="riga">
+  <label>Scade fra</label>
   <select id="min">
    <option value="0">mai</option><option value="60">1 ora</option>
    <option value="240">4 ore</option><option value="720">12 ore</option>
    <option value="1440">1 giorno</option><option value="4320">3 giorni</option>
   </select>
-  <label><input type="checkbox" id="urg"> urgente</label>
+ </div>
+ <label class="sw"><span>Urgente <span class="muted">&mdash; va subito sul pannello</span></span>
+  <input type="checkbox" id="urg"><span class="track"></span></label>
+ <div class="fine">
   <button id="bm">Manda al pannello</button>
-  <button id="bx" class="dan">Cancella</button>
-  <span class="muted" id="sm"></span>
+  <button class="dan" id="bx" style="flex:0 0 auto">Togli</button>
  </div>
+ <div class="esito" id="sm"></div>
  <p class="muted" id="att"></p>
- <p class="muted">Un messaggio <b>urgente</b> porta il pannello sulla sua
- pagina subito, scavalcando la rotazione; uno normale si vede alla prossima
- rotazione o andandoci a mano. Il pulsante &egrave; esplicito apposta: se il
- pannello si aggiornasse mentre scrivi, ogni carattere costerebbe un refresh
- da 2,2 s.</p>
- <div id="arch"></div>
+ <div class="arch" id="arch"></div>
 </div>
 
+<h2>Immagini</h2>
 <div class="card">
- <h2>Immagini</h2>
- <p class="muted"><b><a href="/immagini">Componi un'immagine</a></b> per
- ritagliare una foto, regolarla e mandarla qui senza passare da un file.
- Il caricamento qui sotto resta per un <code>.bin</code> gi&agrave; pronto.</p>
- <p class="muted">File impacchettati nel formato del pannello:
- 400&times;300 a 1 bit, <b>15.000 byte esatti</b>, bit a 1 = bianco. Il
- dithering lo fa il browser, la scheda scrive i byte sul pannello senza
- convertire niente &mdash; un file di lunghezza diversa viene rifiutato qui,
- non scoperto quando si disegna.</p>
- <div class="row">
-  <input type="file" id="fimg" accept=".bin">
-  <input type="text" id="nimg" placeholder="nome" maxlength="20" style="width:8rem">
-  <button id="bimg">Carica</button>
-  <span class="muted" id="simg"></span>
- </div>
- <div id="limg"></div>
+ <button class="full" onclick="location.href='/immagini'">Componi un'immagine</button>
+ <p class="muted">Ritaglio, luminosit&agrave;, gamma e dithering nel browser. Qui sotto
+ si carica un <code>.bin</code> gi&agrave; pronto (15.000 byte esatti).</p>
+ <div class="riga" style="border:0;padding-top:0"><input type="file" id="fimg" accept=".bin"></div>
+ <div class="duo"><input type="text" id="nimg" placeholder="nome" maxlength="20">
+  <button class="sec" id="bimg" style="flex:0 0 auto">Carica</button></div>
+ <div class="esito" id="simg"></div>
 </div>
+<div class="gal" id="limg"></div>
 
-<p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/dashboard-upload">dashboard personalizzata</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
+<nav>
+ <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/immagini">Componi immagine</a>
+ <a href="/dashboard-upload">Dashboard</a><a href="/update">Aggiorna firmware</a>
+</nav>
 <script>
 const E=document.getElementById.bind(document);
 function esc(x){return String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
-function dur(s){return s<60?s+' s':(s<3600?Math.round(s/60)+' min':(s/3600).toFixed(1)+' h');}
-function ora(u){return u?new Date(u*1000).toLocaleString('it-IT'):'';}
+function ora(u){return u?new Date(u*1000).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';}
 function post(u){return fetch(u,{method:'POST'});}
+function flash(el,t,err){el.textContent=t;el.className='esito'+(err?' err':'');setTimeout(()=>{el.textContent='';},3000);}
+
+// Durate proposte, non un campo libero: sotto il minuto non ha senso (un cambio
+// pagina e' un refresh completo), e su un telefono una tendina si tocca meglio
+// di un campo numerico.
+const DUR=[[60,'1 min'],[120,'2 min'],[300,'5 min'],[600,'10 min'],[900,'15 min'],
+           [1800,'30 min'],[3600,'1 ora'],[10800,'3 ore']];
+function optDur(v){
+ let o='',visto=false;
+ DUR.forEach(([s,t])=>{const sel=(s==v);if(sel)visto=true;o+='<option value="'+s+'"'+(sel?' selected':'')+'>'+t+'</option>';});
+ if(!visto)o='<option value="'+v+'" selected>'+Math.round(v/60)+' min</option>'+o;
+ return o;
+}
+for(let h=0;h<24;h++){const t=('0'+h)+':00';
+ E('sda').insertAdjacentHTML('beforeend','<option value="'+h+'">'+t+'</option>');
+ E('sa').insertAdjacentHTML('beforeend','<option value="'+h+'">'+t+'</option>');}
 
 function render(d){
- const tb=E('tbody'); tb.innerHTML='';
+ const box=E('lista'); box.innerHTML='';
  d.pagine.forEach(p=>{
-  const tr=document.createElement('tr');
-  tr.innerHTML='<td'+(p.corrente?' class="cur"':'')+'>'+esc(p.tipo)+(p.param?' <span class="muted">'+esc(p.param)+'</span>':'')+(p.corrente?' &larr; a schermo':'')+'</td>'+
-   '<td><input type="checkbox" data-a="'+p.i+'"'+(p.attiva?' checked':'')+'></td>'+
-   '<td><input type="number" data-d="'+p.i+'" value="'+p.durata_s+'" min="60" step="60"> <span class="muted">'+dur(p.durata_s)+'</span></td>'+
-   '<td><button class="sec" data-v="'+p.i+'">mostra</button> <button class="sec" data-f="'+p.i+'">solo questa</button>'+
-   (p.tipo=='immagine'?' <button class="sec" data-x="'+p.i+'">togli</button>':'')+'</td>';
-  tb.appendChild(tr);
+  const el=document.createElement('div');
+  el.className='pg'+(p.corrente?' now':'');
+  el.innerHTML=
+   '<div class="top"><span class="nome">'+esc(p.tipo)+
+     (p.param?' <span class="par">'+esc(p.param)+'</span>':'')+'</span>'+
+     (p.corrente?'<span class="badge">A SCHERMO</span>':'')+'</div>'+
+   '<label class="sw"><span>Nel cambio automatico</span>'+
+     '<input type="checkbox" data-a="'+p.i+'"'+(p.attiva?' checked':'')+'><span class="track"></span></label>'+
+   '<div class="riga"><label>Resta a schermo</label>'+
+     '<select data-d="'+p.i+'">'+optDur(p.durata_s)+'</select></div>'+
+   '<div class="azioni">'+
+     (p.corrente?'':'<button class="sec" data-v="'+p.i+'">Mostra ora</button>')+
+     '<button class="sec' + (p.corrente?' sol':'') + '" data-f="'+p.i+'">Solo questa</button>'+
+     (p.tipo=='immagine'?'<button class="dan sol" data-x="'+p.i+'">Togli dall\'elenco</button>':'')+
+   '</div>';
+  box.appendChild(el);
+  if(p.corrente) E('oraNome').textContent = p.tipo + (p.param? ' — '+p.param : '');
  });
  E('rot').checked=d.rotazione; E('sda').value=d.silenzio_da; E('sa').value=d.silenzio_a;
- tb.querySelectorAll('[data-a]').forEach(c=>c.onchange=()=>
+
+ box.querySelectorAll('[data-a]').forEach(c=>c.onchange=()=>
    post('/api/pannello/pagina?i='+c.dataset.a+'&attiva='+(c.checked?1:0)).then(r=>r.json()).then(render));
- tb.querySelectorAll('[data-d]').forEach(c=>c.onchange=()=>
+ box.querySelectorAll('[data-d]').forEach(c=>c.onchange=()=>
    post('/api/pannello/pagina?i='+c.dataset.d+'&durata='+c.value).then(r=>r.json()).then(render));
- tb.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>
-   post('/api/pannello/vai?i='+b.dataset.v).then(()=>{E('srf').textContent='pagina in coda';setTimeout(carica,3500);}));
- tb.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>
+ box.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>{
+   b.disabled=true;b.textContent='in coda...';
+   post('/api/pannello/vai?i='+b.dataset.v).then(()=>setTimeout(carica,3500));});
+ box.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>
    post('/api/pannello/pagina?i='+b.dataset.f+'&fissa=1').then(r=>r.json()).then(render));
- tb.querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>{
-   if(!confirm('Togliere questa pagina dall\'elenco? L\'immagine resta sulla card.'))return;
+ box.querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>{
+   if(!confirm('Togliere questa pagina? L\'immagine resta sulla card.'))return;
    post('/api/pannello/rimuovi?i='+b.dataset.x).then(r=>r.json()).then(render);});
 }
 
@@ -862,71 +948,67 @@ function carica(){
  fetch('/api/pannello').then(r=>r.json()).then(render);
  fetch('/api/messaggio').then(r=>r.json()).then(d=>{
   E('att').innerHTML = d.attivo
-   ? 'Sul pannello adesso: <b>'+esc(d.attivo.testo)+'</b>'+(d.attivo.scadenza?' &mdash; fino al '+esc(ora(d.attivo.scadenza)):'')
+   ? 'Sul pannello: <b>'+esc(d.attivo.testo)+'</b>'+(d.attivo.scadenza?'<br>fino al '+esc(ora(d.attivo.scadenza)):'')
    : 'Nessun messaggio attivo.';
   const a=E('arch'); a.innerHTML='';
   if(d.archivio.length){
-   a.innerHTML='<p class="muted">Archivio (clic per riusare):</p>';
-   d.archivio.forEach(m=>{const p=document.createElement('p');p.className='arch';
+   a.innerHTML='<p class="muted" style="background:0;border:0;padding:0;min-height:0;display:block">Gi&agrave; scritti &mdash; tocca per riusare:</p>';
+   d.archivio.forEach(m=>{const p=document.createElement('p');
     p.textContent=m.testo; p.title=ora(m.creato);
-    p.onclick=()=>{E('txt').value=m.testo;}; a.appendChild(p);});}
- });}
-
-E('bs').onclick=()=>post('/api/pannello?rotazione='+(E('rot').checked?1:0)+'&sil_da='+E('sda').value+'&sil_a='+E('sa').value)
- .then(r=>r.json()).then(d=>{render(d);E('ss').textContent='salvato';setTimeout(()=>E('ss').textContent='',2000);});
-E('brf').onclick=()=>post('/api/pannello/refresh').then(()=>{E('srf').textContent='refresh in coda';setTimeout(()=>E('srf').textContent='',4000);});
-E('bm').onclick=()=>{
- const b=new URLSearchParams();b.set('t',E('txt').value);b.set('min',E('min').value);b.set('urg',E('urg').checked?1:0);
- fetch('/api/messaggio',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})
-  .then(r=>r.text().then(t=>{E('sm').textContent=(r.status==200)?'mandato':t;setTimeout(carica,1500);}));};
-E('bx').onclick=()=>{if(!confirm('Togliere il messaggio dal pannello?'))return;
- post('/api/messaggio/cancella').then(()=>{E('txt').value='';setTimeout(carica,1500);});};
-// L'anteprima e' 1:1 per costruzione: sono gli STESSI 15.000 byte che
-// finiscono nel controller, ridisegnati qui con lo stesso unpack() di
-// dither.html. Non e' una simulazione del pannello, e' il suo contenuto.
-function disegnaBin(cv, bytes){
- const W=400,H=300,RB=W/8,ctx=cv.getContext('2d'),img=ctx.createImageData(W,H);
- for(let y=0;y<H;y++)for(let x=0;x<W;x++){
-  const bit=(bytes[y*RB+(x>>3)]>>(7-(x&7)))&1, o=(y*W+x)*4, v=bit?255:0;
-  img.data[o]=img.data[o+1]=img.data[o+2]=v; img.data[o+3]=255;}
- ctx.putImageData(img,0,0);
+    p.onclick=()=>{E('txt').value=m.testo;E('txt').focus();}; a.appendChild(p);});}
+ });
 }
 
 function caricaImmagini(){
  fetch('/api/immagini').then(r=>r.json()).then(d=>{
   const box=E('limg'); box.innerHTML='';
-  if(!d.sd){box.innerHTML='<p class="muted">microSD non montata: niente immagini.</p>';return;}
-  if(!d.immagini.length){box.innerHTML='<p class="muted">Nessuna immagine sulla card.</p>';return;}
+  if(!d.sd||!d.immagini.length)return;
   d.immagini.forEach(im=>{
-   const div=document.createElement('div'); div.style.margin='.8rem 0';
-   div.innerHTML='<div class="row"><b>'+esc(im.nome)+'</b>'+
-     '<span class="muted">'+im.byte+' byte'+(im.ok?'':' — NON valida')+'</span>'+
-     '<button class="sec" data-add="'+esc(im.nome)+'">aggiungi come pagina</button>'+
-     '<button class="dan" data-del="'+esc(im.nome)+'">elimina</button></div>';
-   const cv=document.createElement('canvas'); cv.width=400; cv.height=300;
-   cv.style.cssText='width:100%;max-width:400px;border:1px solid #333;border-radius:6px;image-rendering:pixelated';
-   div.appendChild(cv); box.appendChild(div);
+   const el=document.createElement('div'); el.className='im';
+   el.innerHTML='<canvas width="400" height="300"></canvas>'+
+    '<div class="nm"><b>'+esc(im.nome)+'</b><span>'+(im.ok?'ok':im.byte+' byte, non valida')+'</span></div>'+
+    '<div class="azioni"><button class="sec" data-add="'+esc(im.nome)+'">Aggiungi</button>'+
+    '<button class="dan" data-del="'+esc(im.nome)+'">Elimina</button></div>';
+   box.appendChild(el);
    if(im.ok) fetch('/api/immagini/scarica?nome='+encodeURIComponent(im.nome))
-     .then(r=>r.arrayBuffer()).then(b=>disegnaBin(cv,new Uint8Array(b)));
+     .then(r=>r.arrayBuffer()).then(b=>{
+      // Gli STESSI 15.000 byte che finiscono nel controller: l'anteprima e'
+      // 1:1 per costruzione, non una simulazione.
+      const by=new Uint8Array(b),cv=el.querySelector('canvas'),W=400,H=300,RB=50;
+      const ctx=cv.getContext('2d'),img=ctx.createImageData(W,H);
+      for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+       const bit=(by[y*RB+(x>>3)]>>(7-(x&7)))&1,o=(y*W+x)*4,v=bit?255:0;
+       img.data[o]=img.data[o+1]=img.data[o+2]=v;img.data[o+3]=255;}
+      ctx.putImageData(img,0,0);});
   });
   box.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>
     post('/api/pannello/aggiungi?param='+encodeURIComponent(b.dataset.add))
-      .then(r=>r.json()).then(render));
+      .then(r=>r.json()).then(d=>{render(d);window.scrollTo({top:0,behavior:'smooth'});}));
   box.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{
     if(!confirm('Eliminare '+b.dataset.del+' dalla card?'))return;
     post('/api/immagini/elimina?nome='+encodeURIComponent(b.dataset.del)).then(caricaImmagini);});
  });}
 
+E('bs').onclick=()=>post('/api/pannello?rotazione='+(E('rot').checked?1:0)+'&sil_da='+E('sda').value+'&sil_a='+E('sa').value)
+ .then(r=>r.json()).then(d=>{render(d);flash(E('ss'),'Salvato');});
+E('brf').onclick=()=>post('/api/pannello/refresh').then(()=>flash(E('srf'),'Refresh in coda&hellip;'));
+E('bm').onclick=()=>{
+ if(!E('txt').value.trim()){flash(E('sm'),'Scrivi qualcosa',1);return;}
+ const b=new URLSearchParams();b.set('t',E('txt').value);b.set('min',E('min').value);b.set('urg',E('urg').checked?1:0);
+ fetch('/api/messaggio',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})
+  .then(r=>r.text().then(t=>{flash(E('sm'),r.status==200?'Mandato':t,r.status!=200);setTimeout(carica,1200);}));};
+E('bx').onclick=()=>{if(!confirm('Togliere il messaggio dal pannello?'))return;
+ post('/api/messaggio/cancella').then(()=>{E('txt').value='';setTimeout(carica,1200);});};
 E('bimg').onclick=()=>{
  const f=E('fimg').files[0];
- if(!f){E('simg').textContent='scegli un file .bin';return;}
+ if(!f){flash(E('simg'),'Scegli un file .bin',1);return;}
  const nome=E('nimg').value||f.name.replace(/\.bin$/,'');
  const fd=new FormData(); fd.append('img',f);
- E('simg').textContent='invio...';
+ E('simg').textContent='Invio…';
  fetch('/api/immagini?nome='+encodeURIComponent(nome),{method:'POST',body:fd})
-  .then(r=>r.text().then(t=>{E('simg').textContent=(r.status==200)?'caricata':t;caricaImmagini();}));};
+  .then(r=>r.text().then(t=>{flash(E('simg'),r.status==200?'Caricata':t,r.status!=200);caricaImmagini();}));};
 
-carica();caricaImmagini();setInterval(carica,10000);
+carica();caricaImmagini();setInterval(carica,15000);
 </script></div></body></html>
 )HTML";
 
