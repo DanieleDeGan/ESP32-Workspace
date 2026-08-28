@@ -1502,7 +1502,9 @@ pannello si vede o non si vede allo stesso modo.
 | `remote_nodes.h/.cpp` | copia da `EnvNode_C3`: registro nodi, cadenza appresa, nodo muto, trend, NVS |
 | `forecast.h` | copia da `EnvNode_C3`: trend a 3 h con isteresi, header-only e pura |
 | `rtc_time.h/.cpp` | copia da `EnvNode_C3`: stima da build-time, poi NTP (che qui non c'e' ancora) |
-| `www/dither.html` | ritaglio + dithering nel browser, **non compilata**: produce i `.bin` del pannello e da `v6` li **manda direttamente** all'hub (POST su `/api/immagini`, serve il CORS) |
+| `www/dither.html` | ritaglio + dithering nel browser: la **sorgente unica** della pagina di composizione. Si apre da disco per lavorarci, e da `v8` e' anche servita dall'hub su `/immagini` |
+| `www/gen_page.py` | rigenera `dither_page.h` da `dither.html`. **Da rilanciare dopo ogni modifica alla pagina**, prima di ricompilare |
+| `dither_page.h` | **GENERATO**, non si modifica a mano: la pagina in PROGMEM (~31 kB) servita su `/immagini` |
 
 **Cose da sapere prima di metterci le mani**:
 

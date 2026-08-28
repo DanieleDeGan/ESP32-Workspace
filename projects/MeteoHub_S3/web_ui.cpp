@@ -23,6 +23,7 @@
 #include "rtc_time.h"
 #include "pages.h"
 #include "messages.h"
+#include "dither_page.h"   // GENERATO da www/gen_page.py, servito su /immagini
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -375,10 +376,8 @@ static const char HUB_PAGE[] PROGMEM = R"HTML(
  stanno molto piu' vicini di cosi'.</p>
 </div>
 <div id="lista"></div>
-<p class="muted"><a href="/update">aggiornamento firmware (OTA)</a> &mdash;
- <a href="/pannello">pannello e messaggi</a> &mdash;
- <a href="/dashboard-upload">dashboard personalizzata</a> &mdash;
- i registri dei nodi stanno su microSD, un file per giorno per nodo.</p>
+<p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/dashboard-upload">dashboard personalizzata</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
+<p class="muted">I registri dei nodi stanno su microSD, un file per giorno per nodo.</p>
 <script>
 const E=document.getElementById.bind(document);
 // Il nome del nodo arriva dalla radio: nel DOM va come testo, mai come
@@ -809,7 +808,10 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
 
 <div class="card">
  <h2>Immagini</h2>
- <p class="muted">File gi&agrave; impacchettati da <code>www/dither.html</code>:
+ <p class="muted"><b><a href="/immagini">Componi un'immagine</a></b> per
+ ritagliare una foto, regolarla e mandarla qui senza passare da un file.
+ Il caricamento qui sotto resta per un <code>.bin</code> gi&agrave; pronto.</p>
+ <p class="muted">File impacchettati nel formato del pannello:
  400&times;300 a 1 bit, <b>15.000 byte esatti</b>, bit a 1 = bianco. Il
  dithering lo fa il browser, la scheda scrive i byte sul pannello senza
  convertire niente &mdash; un file di lunghezza diversa viene rifiutato qui,
@@ -823,8 +825,7 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  <div id="limg"></div>
 </div>
 
-<p class="muted"><a href="/">&larr; nodi</a> &mdash;
- <a href="/update">aggiornamento firmware</a></p>
+<p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/dashboard-upload">dashboard personalizzata</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
 <script>
 const E=document.getElementById.bind(document);
 function esc(x){return String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
@@ -928,6 +929,25 @@ E('bimg').onclick=()=>{
 carica();caricaImmagini();setInterval(carica,10000);
 </script></div></body></html>
 )HTML";
+
+// ---------------------------------------------------------------------
+//  /immagini — composizione di un'immagine per il pannello.
+//
+//  E' www/dither.html servita dalla scheda: ritaglio, zoom, rotazione,
+//  luminosita', gamma e quattro algoritmi di dithering, con l'anteprima di
+//  come verra' davvero. Il lavoro pesante resta nel browser — la scheda
+//  riceve 15.000 byte gia' impacchettati e non converte niente, che e' la
+//  decisione su cui poggia tutta la catena delle immagini.
+//
+//  La pagina NON e' una seconda copia: dither.html resta il sorgente unico
+//  e dither_page.h si rigenera da li' con www/gen_page.py. Due copie a mano
+//  divergerebbero al primo ritocco, e la differenza si vedrebbe solo
+//  confrontando la pagina della scheda con quella sul PC.
+// ---------------------------------------------------------------------
+static void handleImmaginiPage() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  net_server().send_P(200, "text/html", DITHER_PAGE);
+}
 
 static void handlePannelloPage() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
@@ -1154,7 +1174,7 @@ static const char DASH_UPLOAD_PAGE[] PROGMEM = R"HTML(
  <progress id="p" value="0" max="100" hidden></progress></form>
  <p class="muted" id="s"></p>
  <button id="br" class="dan">Ripristina dashboard di default</button>
- <p class="muted"><a href="/">&larr; torna alla dashboard</a></p>
+ <p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/dashboard-upload">dashboard personalizzata</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
 <script>
 const f=document.getElementById('f'),b=document.getElementById('b'),p=document.getElementById('p'),s=document.getElementById('s'),br=document.getElementById('br');
 f.addEventListener('submit',e=>{e.preventDefault();const fd=new FormData(f),x=new XMLHttpRequest();
@@ -1286,6 +1306,7 @@ void web_ui_begin() {
   srv.on("/api/messaggio/cancella",  HTTP_POST, handleApiMessaggioCancella);
 
   // Immagini sulla card e pagine che le mostrano.
+  srv.on("/immagini",                HTTP_GET,  handleImmaginiPage);
   srv.on("/api/immagini",            HTTP_GET,  handleApiImmagini);
   srv.on("/api/immagini",            HTTP_POST, handleApiImmaginiDone, handleApiImmaginiChunk);
   srv.on("/api/immagini/elimina",    HTTP_POST, handleApiImmaginiElimina);

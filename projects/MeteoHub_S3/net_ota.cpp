@@ -49,13 +49,13 @@ static const char UPDATE_PAGE[] PROGMEM = R"HTML(
  .muted{color:#8a8a8a;font-size:.8rem;margin-top:1rem;line-height:1.4}
  a{color:#3b82f6}
 </style></head><body><div class="card">
- <h1>Aggiornamento firmware &mdash; nodo ambientale</h1>
+ <h1>Aggiornamento firmware &mdash; hub della stazione meteo</h1>
  <form id="f"><input type="file" name="update" accept=".bin" required>
  <button type="submit" id="b">Carica e aggiorna</button>
  <progress id="p" value="0" max="100" hidden></progress></form>
  <p class="muted" id="s">Seleziona il .bin generato da Arduino IDE:
  <br>Sketch &gt; Export Compiled Binary, poi prendi il file <code>*.ino.bin</code>.
- <br><br><a href="/">&larr; torna alla dashboard</a></p>
+ <br><br><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/dashboard-upload">dashboard personalizzata</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
 <script>
 const f=document.getElementById('f'),b=document.getElementById('b'),p=document.getElementById('p'),s=document.getElementById('s');
 f.addEventListener('submit',e=>{e.preventDefault();const fd=new FormData(f),x=new XMLHttpRequest();

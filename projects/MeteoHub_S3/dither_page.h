@@ -1,3 +1,13 @@
+#pragma once
+
+// ============================================================
+//  GENERATO DA www/gen_page.py - NON MODIFICARE A MANO.
+//  La sorgente e' www/dither.html: si modifica quella e si
+//  rilancia  python www/gen_page.py  prima di ricompilare.
+//  (31371 byte di pagina, serviti su /immagini)
+// ============================================================
+
+static const char DITHER_PAGE[] PROGMEM = R"DITHERPAGE(
 <!DOCTYPE html>
 <html lang="it">
 <head>
@@ -787,3 +797,5 @@ drawStage();
 </script>
 </body>
 </html>
+
+)DITHERPAGE";

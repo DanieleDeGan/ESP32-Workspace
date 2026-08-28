@@ -93,7 +93,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v6";
+static const char FW_VERSION[] = "v8";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW

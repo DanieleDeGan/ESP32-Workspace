@@ -66,7 +66,7 @@ toccare) vedi `docs/FILES.md`. Per il pinout/hardware della board AMOLED vedi
 | `projects/MeteoHub_S3/net_ota.h/.cpp` | WiFi + ArduinoOTA + `/update`, variante con `net_server()` condiviso |
 | `projects/MeteoHub_S3/web_ui.h/.cpp` | pagina di stato dell'hub + API dei nodi, gli stessi endpoint di `EnvNode_C3` |
 | `projects/MeteoHub_S3/secrets.h.example` | credenziali: si copia in `secrets.h`, **gitignorato** |
-| `projects/MeteoHub_S3/www/dither.html` | ritaglio + dithering nel browser, **non compilata**: produce i `.bin` da 15.000 byte del pannello |
+| `projects/MeteoHub_S3/www/dither.html` | ritaglio + dithering nel browser: produce i `.bin` da 15.000 byte e li manda all'hub. Da `v8` e' anche **servita dalla scheda** su `/immagini`, via `dither_page.h` generato con `www/gen_page.py` |
 | `projects/Timelapse_XIAO/` | **progetto** (XIAO ESP32-S3 Sense): camera timelapse a intervallo, archivio per giorno su microSD, galleria web con riproduzione, NTP + OTA — vedi sezione dedicata |
 | `projects/Timelapse_XIAO/Timelapse_XIAO.ino` | timer degli scatti, gestione dello spazio, impostazioni — qui va la logica applicativa |
 | `projects/Timelapse_XIAO/storage.h/.cpp` | microSD SPI organizzata per giorno: `/timelapse/<giorno>/<ora>.JPG` + CSV giornaliero |
@@ -1146,6 +1146,32 @@ senza di loro si somiglierebbero (schermo che non cambia).
   l'header `Origin` e il preflight OPTIONS finirebbe sul 404 di default.
   L'autenticazione va nell'header `Authorization` scritto a mano: con origin
   `*` il browser non può usare le credenziali salvate.
+- **`/immagini` e' `www/dither.html` servita dalla scheda** (da `v8`,
+  2026-08-28): ritaglio, zoom, rotazione, luminosita', gamma e quattro
+  algoritmi di dithering (Floyd-Steinberg, Atkinson, Bayer 8x8, soglia secca),
+  con l'anteprima di come verra' davvero e il pulsante che manda il `.bin`
+  all'hub. Il lavoro pesante resta nel browser: la scheda riceve 15.000 byte
+  gia' impacchettati e non converte niente.
+  - **La pagina NON e' una seconda copia**: `dither_page.h` (~31 kB in PROGMEM)
+    si **rigenera** da `www/dither.html` con `python www/gen_page.py`, da
+    rilanciare dopo ogni modifica e prima di ricompilare. Due copie a mano
+    divergerebbero al primo ritocco, e la differenza si vedrebbe solo
+    confrontando la pagina della scheda con quella aperta sul PC — cioe' quasi
+    mai. Il file generato e' versionato apposta: chi clona compila senza
+    eseguire niente.
+  - **La stessa pagina vive in due modi** e cambia solo come manda il file:
+    servita dalla scheda usa una richiesta **relativa e same-origin** (le
+    credenziali le rimette il browser, quindi la riga con host e password si
+    nasconde da sola); aperta da `file://` fa una richiesta **cross-origin**
+    verso l'IP dell'hub con `Authorization` scritto a mano, perche' con origin
+    `*` il browser non manda le credenziali salvate. E' `SERVITA_DA_SCHEDA`,
+    una riga di JavaScript.
+- **Tutte le pagine del firmware portano lo STESSO piede di navigazione**
+  (nodi, pannello, immagini, dashboard, aggiornamento). Non e' pignoleria
+  estetica: `/` puo' essere sostituita da una dashboard personalizzata sulla
+  card, e se quella non mette i link — o e' rotta — le altre pagine
+  resterebbero raggiungibili solo digitando l'URL a memoria. Con il piede
+  uniforme si continua a girare partendo da una qualunque.
 - **Gli handler HTTP che toccherebbero il display accodano e basta**
   (`app_chiedi_pagina()` / `app_chiedi_refresh()`, eseguite dal `loop()`).
   Un refresh dentro un handler terrebbe fermo il WebServer — che è sincrono —
