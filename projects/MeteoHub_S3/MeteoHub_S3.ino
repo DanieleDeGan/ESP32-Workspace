@@ -93,7 +93,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v10";
+static const char FW_VERSION[] = "v11";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -344,6 +344,13 @@ static uint8_t bootEvent()
 
 static const int16_t NODI_TOP       = 34;   // sotto l'intestazione
 static const int16_t NODI_BOT       = 266;  // sopra il piede
+
+// Con la fascia del messaggio accesa il corpo si ferma piu' in alto e i nodi
+// cedono 70 px. Non e' gratis: con due nodi si passa dal blocco comodo (24pt)
+// a quello compatto (18pt), cioe' si guadagna il messaggio sempre visibile e
+// si perde corpo sui numeri. La scelta e' dell'utente, da /pannello.
+static const int16_t FASCIA_H       = 70;
+static const int16_t NODI_BOT_FASCIA = NODI_BOT - FASCIA_H;   // 196
 static const int     NODI_VISIBILI  = 4;    // oltre non c'e' spazio leggibile
 static const uint8_t NODI_FULL_OGNI = 10;
 
@@ -606,6 +613,12 @@ static void screenNodi(bool full)
     display.drawFastHLine(0, 32, W, GxEPD_BLACK);
     display.drawFastHLine(0, 33, W, GxEPD_BLACK);
 
+    // --- la fascia si prende il suo spazio PRIMA che i nodi si dividano il
+    //     resto: e' l'unica cosa che cambia il layout, e deve deciderla una
+    //     riga sola, non ogni blocco per conto suo.
+    const Message* msgFascia = pages_fascia() ? msg_active(time(nullptr)) : nullptr;
+    const int16_t  yBot      = msgFascia ? NODI_BOT_FASCIA : NODI_BOT;
+
     // --- corpo ---
     const int n = remote_count();
     if (n == 0)
@@ -624,8 +637,11 @@ static void screenNodi(bool full)
     else
     {
       const int quanti  = (n < NODI_VISIBILI) ? n : NODI_VISIBILI;
-      const bool comodo = (quanti <= NODI_COMODI_FINO_A);
-      const int16_t h   = (NODI_BOT - NODI_TOP) / quanti;
+      // Il blocco comodo vuole ~110 px: con la fascia non ce ne sono, e
+      // disegnarlo lo stesso vorrebbe dire numeri che si sovrappongono al
+      // separatore. Meglio compatto e leggibile che comodo e sporco.
+      const bool comodo = (quanti <= NODI_COMODI_FINO_A) && (msgFascia == nullptr);
+      const int16_t h   = (yBot - NODI_TOP) / quanti;
 
       for (int i = 0; i < quanti; i++)
       {
@@ -644,6 +660,62 @@ static void screenNodi(bool full)
             display.drawFastHLine(x, ys, 3, GxEPD_BLACK);
           }
         }
+      }
+    }
+
+    // --- fascia del messaggio ---
+    if (msgFascia != nullptr)
+    {
+      display.drawFastHLine(0, yBot + 2, W, GxEPD_BLACK);
+
+      // U8g2 e non i font Adafruit: qui il testo lo scrive una persona, e in
+      // italiano "perche'" con i font GFX diventerebbe "perch?".
+      u8g2Fonts.setForegroundColor(GxEPD_BLACK);
+      u8g2Fonts.setBackgroundColor(GxEPD_WHITE);
+
+      // Due corpi soli, non la scala completa della pagina messaggio: qui lo
+      // spazio e' fisso e la domanda e' solo "ci sta su una riga o due".
+      const int16_t larg = W - 24;
+      String r1 = msgFascia->testo, r2 = "";
+
+      u8g2Fonts.setFont(u8g2_font_helvB14_tf);
+      if (u8g2Fonts.getUTF8Width(r1.c_str()) > larg)
+      {
+        u8g2Fonts.setFont(u8g2_font_helvB12_tf);
+        // A capo sull'ultimo spazio che ci sta: spezzare in mezzo a una
+        // parola su due righe sole si nota subito.
+        int taglio = -1;
+        for (int i = 0; i < (int)r1.length(); i++)
+        {
+          if (r1[i] != ' ') continue;
+          if (u8g2Fonts.getUTF8Width(r1.substring(0, i).c_str()) <= larg) taglio = i;
+          else break;
+        }
+        if (taglio > 0) { r2 = r1.substring(taglio + 1); r1 = r1.substring(0, taglio); }
+      }
+
+      const int16_t yTesto = yBot + (r2.length() ? 26 : 34);
+      int16_t w = u8g2Fonts.getUTF8Width(r1.c_str());
+      u8g2Fonts.setCursor((W - w) / 2, yTesto);
+      u8g2Fonts.print(r1);
+
+      if (r2.length())
+      {
+        // Se anche la seconda riga sborda si taglia con l'ellissi: meglio un
+        // messaggio troncato che due righe che si mangiano il piede.
+        while (r2.length() > 1 && u8g2Fonts.getUTF8Width((r2 + "...").c_str()) > larg)
+          r2.remove(r2.length() - 1);
+        if (r2 != msgFascia->testo) r2 += "...";
+        w = u8g2Fonts.getUTF8Width(r2.c_str());
+        u8g2Fonts.setCursor((W - w) / 2, yTesto + 22);
+        u8g2Fonts.print(r2);
+      }
+
+      // L'urgenza si vede senza leggere: cornice piena attorno alla fascia.
+      if (msgFascia->priorita == MSG_URGENTE)
+      {
+        display.drawRect(4, yBot + 6, W - 8, FASCIA_H - 10, GxEPD_BLACK);
+        display.drawRect(5, yBot + 7, W - 10, FASCIA_H - 12, GxEPD_BLACK);
       }
     }
 
@@ -1345,10 +1417,16 @@ void loop()
   // Il messaggio e' cambiato (o e' appena scaduto) mentre lo si sta
   // mostrando: senza questo il pannello resterebbe indietro fino al refresh
   // di cadenza successivo.
-  if (msg_take_dirty(time(nullptr)) && tipoCur == PT_MESSAGGIO)
+  if (msg_take_dirty(time(nullptr)))
   {
-    showPage(pages_current());
-    return;
+    if (tipoCur == PT_MESSAGGIO)
+    {
+      showPage(pages_current());
+      return;
+    }
+    // Con la fascia accesa il messaggio sta anche sulla pagina dei nodi:
+    // senza questo resterebbe quello vecchio fino al refresh di cadenza.
+    if (tipoCur == PT_NODI && pages_fascia()) s_nodiDirty = true;
   }
 
   if (tipoCur == PT_NODI)

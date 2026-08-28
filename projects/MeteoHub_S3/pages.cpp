@@ -17,6 +17,7 @@ static uint8_t s_cur       = 0;
 static bool    s_rotazione = false;
 static uint8_t s_silDa     = 23;
 static uint8_t s_silA      = 7;
+static bool    s_fascia    = false;  // messaggio in fondo alla pagina nodi
 static uint32_t s_ultimoMs = 0;   // quando e' stata disegnata la corrente
 
 // Versione del blob: se un giorno la struttura cambia, un blob vecchio si
@@ -29,7 +30,7 @@ struct PagBlob
   uint8_t  rotazione;
   uint8_t  silDa;
   uint8_t  silA;
-  uint8_t  riservato;
+  uint8_t  fascia;
   PageCfg  pag[PAGES_MAX];
 };
 
@@ -64,6 +65,7 @@ static void defaults()
   s_rotazione = false;
   s_silDa = 23;
   s_silA  = 7;
+  s_fascia = false;
 }
 
 void pages_begin()
@@ -81,6 +83,7 @@ void pages_begin()
     s_rotazione = b.rotazione != 0;
     s_silDa     = b.silDa;
     s_silA      = b.silA;
+    s_fascia    = b.fascia != 0;
   }
 
   // Lo slot 0 deve esistere sempre: e' la pagina per cui l'hub esiste, e
@@ -104,6 +107,7 @@ void pages_save()
   b.rotazione = s_rotazione ? 1 : 0;
   b.silDa     = s_silDa;
   b.silA      = s_silA;
+  b.fascia    = s_fascia ? 1 : 0;
   memcpy(b.pag, s_pag, sizeof(s_pag));
 
   s_prefs.begin("hubpag", false);
@@ -151,6 +155,9 @@ uint8_t pages_manual_next()
   }
   return s_cur;
 }
+
+bool pages_fascia()                { return s_fascia; }
+void pages_set_fascia(bool on)     { s_fascia = on; }
 
 bool pages_rotazione()             { return s_rotazione; }
 void pages_set_rotazione(bool on)  { s_rotazione = on; }

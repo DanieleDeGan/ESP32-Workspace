@@ -831,6 +831,15 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
 <h2>Pagine</h2>
 <div id="lista"></div>
 
+<div class="card">
+ <label class="sw"><span>Messaggio anche sulla pagina nodi</span>
+  <input type="checkbox" id="fas"><span class="track"></span></label>
+ <p class="muted">La fascia compare solo quando c'&egrave; un messaggio attivo,
+ e si prende 70 px: con due nodi la temperatura passa da 24 a 18 pt. Si
+ guadagna il messaggio sempre sotto gli occhi, si perde corpo sui numeri.</p>
+ <div class="esito" id="sf"></div>
+</div>
+
 <h2>Cambio automatico</h2>
 <div class="card">
  <label class="sw"><span>Ruota fra le pagine attive</span>
@@ -933,6 +942,7 @@ function render(d){
  if(!salvaTimer){
   E('rot').checked=d.rotazione; E('sda').value=d.silenzio_da; E('sa').value=d.silenzio_a;
  }
+ E('fas').checked=d.fascia;
 
  box.querySelectorAll('[data-a]').forEach(c=>c.onchange=()=>
    post('/api/pannello/pagina?i='+c.dataset.a+'&attiva='+(c.checked?1:0)).then(r=>r.json()).then(render));
@@ -1013,6 +1023,11 @@ function salvaRotazione(ritardo){
  }, ritardo);
 }
 E('rot').onchange=()=>salvaRotazione(0);
+// La fascia cambia il layout della pagina nodi: dopo averla salvata il
+// pannello va ridisegnato, o resterebbe con la disposizione di prima fino al
+// refresh di cadenza.
+E('fas').onchange=()=>post('/api/pannello?fascia='+(E('fas').checked?1:0))
+ .then(r=>r.json()).then(d=>{render(d);flash(E('sf'),'Salvato');post('/api/pannello/refresh');});
 E('sda').onchange=()=>salvaRotazione(800);
 E('sa').onchange=()=>salvaRotazione(800);
 E('brf').onclick=()=>post('/api/pannello/refresh').then(()=>flash(E('srf'),'Refresh in coda&hellip;'));
@@ -1090,6 +1105,8 @@ static void handleApiPannello() {
   j += pages_rotazione() ? "true" : "false";
   j += ",\"silenzio_da\":"; j += pages_silenzio_da();
   j += ",\"silenzio_a\":";  j += pages_silenzio_a();
+  j += ",\"fascia\":";
+  j += pages_fascia() ? "true" : "false";
   j += ",\"in_silenzio\":";
   j += pages_in_silenzio(time(nullptr)) ? "true" : "false";
   j += ",\"corrente\":"; j += corrente;
@@ -1115,6 +1132,7 @@ static void handleApiPannelloSet() {
   if (srv.hasArg("rotazione")) pages_set_rotazione(srv.arg("rotazione").toInt() != 0);
   if (srv.hasArg("sil_da") && srv.hasArg("sil_a"))
     pages_set_silenzio((uint8_t)srv.arg("sil_da").toInt(), (uint8_t)srv.arg("sil_a").toInt());
+  if (srv.hasArg("fascia")) pages_set_fascia(srv.arg("fascia").toInt() != 0);
 
   // In NVS solo qui, alla conferma dell'utente: mai a ogni cambio pagina.
   pages_save();

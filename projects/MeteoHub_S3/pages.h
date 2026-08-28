@@ -76,6 +76,14 @@ uint8_t pages_silenzio_a();
 void    pages_set_silenzio(uint8_t da, uint8_t a);
 bool    pages_in_silenzio(time_t oraLocale);
 
+// Fascia del messaggio in fondo alla pagina dei nodi. Quando e' attiva E
+// c'e' un messaggio da mostrare, la pagina nodi cede 70 px al testo: i nodi
+// passano al blocco compatto, quindi la temperatura scende da 24 a 18 pt.
+// E' un baratto vero (si guadagna il messaggio sempre visibile, si perde
+// corpo sui numeri), e per questo lo decide l'utente e non il firmware.
+bool pages_fascia();
+void pages_set_fascia(bool on);
+
 // Da chiamare nel loop(): ritorna l'indice della pagina su cui andare, o
 // -1 se non c'e' niente da fare. Tiene conto di rotazione spenta, ore di
 // silenzio, e del caso "una sola pagina attiva" (dove non c'e' nessun
