@@ -1,5 +1,60 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-08-28 — la Fase 9 regge 24 ore, e l'AP si è spostato davvero
+
+Prima finestra lunga dopo la Fase 9, letta dai CSV dell'hub
+(`/api/nodi/scarica`), **2026-08-27 19:08 → 2026-08-28 18:49, 23,7 ore**:
+
+| | prima (24-27 ago) | questa finestra |
+|---|---|---|
+| episodi della rete di sicurezza | 5 in 3 giorni (~1,6 attesi in 24 h) | **0** |
+| salti di `seq` / riavvii | ricorrenti, `seq` che ripartiva da 1 | **0** |
+| campioni consegnati | con buchi da 25 minuti | **285 su 285** |
+
+Distribuzione dei gap fra un DATA e il successivo: 299 s ×5, 300 s ×213,
+301 s ×65, 302 s ×1. **Niente fuori da ±2 s.**
+
+**La prova non è passiva: il caso è arrivato da solo.** Il 27/08 l'hub stava
+sul **canale 1**; oggi `/api/stato` dell'hub dice **canale 13**. L'access point
+si è spostato dentro la finestra, e il nodo a muro lo conferma da un'altra
+angolazione (`wifi_drops: 2`, cadute da 5 s — cioè riassociazioni, non
+disconnessioni vere). È **esattamente** lo scenario che il 25/08 aveva
+ammutolito il nodo per 25 minuti, e stavolta è passato senza perdere un
+campione.
+
+Da notare: **13 non è fra i tre canali provati per primi** (1, 6, 11). La
+scansione ha dovuto arrivare agli altri dieci e ce l'ha fatta comunque dentro
+lo stesso risveglio — il caso peggiore della tabella qui sotto (~2,6 s di
+radio) non è teorico, è successo.
+
+**Quindi la diagnosi era giusta**: il guasto era il canale in RTC memory contro
+un AP che se lo sposta. Non la batteria (la cella misurava 4,07 V, già escluso
+il 27/08), non la portata, non l'hub. Una causa in meno, verificata invece che
+supposta.
+
+**Cosa resta non misurato**: `scansioni_ok`, cioè **quante volte** la ricerca è
+servita in queste 24 ore. Il contatore c'è ed è in NVS, ma sta dentro un nodo
+che dorme e non ha IP — si legge solo nei 5 minuti di veglia dopo un
+power-cycle. I CSV dicono già la cosa che conta (nessun buco), quindi non vale
+un power-cycle apposta: si leggerà alla prossima occasione in cui il nodo è
+sveglio comunque.
+
+**Il nodo a muro** (`MeteoEsp32`, `v11`) nella stessa finestra: 1487 campioni a
+60 s, **un solo salto di `seq`** (41 → 44, il 27/08 alle 18:16:44, nei minuti
+della migrazione di hub), poi 25 ore filate. `espnow_falliti: 9` su 1510 invii,
+tutti recuperati dai ritentativi di `sendReliable()` — lato hub `persi: 0`.
+
+**L'hub** (`v2`): uptime 23,2 h, RSSI −45 dBm (l'antenna esterna si sente),
+1666 righe scritte su card, `invii_interrotti: 0`, heap 228 kB, 1378 refresh
+del pannello.
+
+**Conseguenza per la misura di scarica**: cade la riserva annotata il
+2026-08-26 (*«finché il canale non è risolto, una misura di scarica misura
+anche i riavvii»*). Da questa finestra in poi un segmento di scarica è pulito —
+un riavvio della rete di sicurezza costava ~6,7 mAh contro i ~6,5 mAh/giorno
+del funzionamento regolare, cioè più di un giorno intero ciascuno, e non se ne
+vedeva traccia sul multimetro.
+
 ## Aggiornamento del 2026-08-27 (4) - Fase 9 fatta: il nodo cerca il canale
 
 Scritta, compilata su tutti e sei gli sketch che usano `EspNowLink`, e caricata
@@ -1128,6 +1183,13 @@ serie di punti — o il partitore, che è il modo giusto.
     veglia da 5 minuti costa da sola più di un giorno di funzionamento
     regolare. Finché il canale non è risolto (Fase 9), una misura di scarica
     misura anche i riavvii. Numeri e conti nell'aggiornamento in testa al file.
+  - **Aggiornamento del 2026-08-28**: la riserva qui sopra **cade**. Con la
+    Fase 9 caricata, 23,7 ore di funzionamento non hanno avuto nemmeno un
+    intervento della rete di sicurezza (285 campioni su 285, zero riavvii),
+    e nel frattempo l’AP è passato dal canale 1 al 13 senza che il nodo
+    perdesse un pacchetto. **Da qui in poi un segmento di scarica misura
+    la scarica e basta**: il prossimo è finalmente confrontabile con i due
+    precedenti, che erano sporchi.
 - Spostare `forecast.h` sull'hub: la RAM del nodo si azzera ad ogni risveglio,
   quindi lo storico a 3 ore per il trend non può stare su di lui.
 
@@ -1422,7 +1484,14 @@ notevole: sparisce il problema del **canale che cambia da solo**, che il
 `MeteoHub_S3` se finirà dove non arriva il WiFi di casa; non per `EnvNode_C3`,
 che sta in casa.
 
-### Fase 9 — il nodo che cerca il canale da solo (idea del 2026-08-25, nulla di fatto)
+### Fase 9 — il nodo che cerca il canale da solo (FATTA il 2026-08-27, confermata sul campo il 2026-08-28)
+
+> **Fatta.** Quello che segue è il ragionamento con cui è stata decisa, tenuto
+> com’era per il perché delle scelte; **cosa è stato scritto davvero** sta
+> nell’aggiornamento del 2026-08-27 (4) in testa al file, e **come si è
+> comportata sul campo** in quello del 2026-08-28. La tabella dei costi qui
+> sotto ha retto: il caso reale (AP passato da 1 a 13) è costato ~2,6 s di
+> radio invece di 5 minuti di WiFi, e zero campioni.
 
 Nasce dal guasto del 2026-08-25: l'AP ha cambiato canale da solo (da 6 a 1) e
 il nodo a batteria, che tiene il canale in RTC memory, è diventato sordo finché
