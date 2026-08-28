@@ -26,6 +26,7 @@
 
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Middlewares.h>   // CorsMiddleware, bundled nella libreria WebServer del core
 #include <SD.h>
 #include <math.h>
 
@@ -547,6 +548,177 @@ static void handleApiStato() {
   net_server().send(200, "application/json", j);
 }
 
+// Definita piu' sotto insieme agli altri handler del pannello: qui serve
+// perche' due endpoint delle immagini rispondono con l'elenco aggiornato
+// delle pagine, invece di far fare al client una seconda richiesta.
+static void handleApiPannello();
+
+// ---------------------------------------------------------------------
+//  Pagine immagine — /images/<nome>.bin
+//
+//  Il contratto e' in sd_logger.h: 15.000 byte esatti, gia' impacchettati
+//  da www/dither.html. La dimensione si controlla QUI, quando si carica:
+//  un file storto scoperto al momento di disegnarlo si vedrebbe come una
+//  pagina sbilenca, che somiglia a un guasto del pannello invece che a un
+//  upload sbagliato.
+// ---------------------------------------------------------------------
+static void imgListCb(const char* nome, size_t bytes, void* arg) {
+  String* j = (String*)arg;
+  if (!j->endsWith("[")) *j += ',';
+  *j += "{\"nome\":"; appendJsonString(*j, nome);
+  *j += ",\"byte\":"; *j += (unsigned long)bytes;
+  *j += ",\"ok\":"; *j += (bytes == IMG_BYTES_ESATTI) ? "true" : "false";
+  *j += '}';
+}
+
+static void handleApiImmagini() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+
+  String j = "{\"sd\":";
+  j += sd_mounted() ? "true" : "false";
+  j += ",\"byte_attesi\":"; j += (unsigned long)IMG_BYTES_ESATTI;
+  j += ",\"immagini\":[";
+  sd_img_list(imgListCb, &j, 32);
+  j += "]}";
+  net_server().send(200, "application/json", j);
+}
+
+// POST /api/immagini?nome=xxx  (multipart, campo "img")
+static File   s_imgFile;
+static bool   s_imgOk    = false;
+static size_t s_imgBytes = 0;
+static char   s_imgNome[IMG_NOME_MAX + 1] = "";
+
+static void handleApiImmaginiDone() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+
+  if (!s_imgOk) {
+    srv.send(500, "text/plain", "scrittura fallita (microSD assente?)");
+    return;
+  }
+  // Il controllo che vale: 15.000 byte esatti, o non e' un'immagine per
+  // questo pannello. Il file storto si cancella subito, invece di restare
+  // sulla card ad aspettare di essere scelto per sbaglio.
+  if (s_imgBytes != IMG_BYTES_ESATTI) {
+    sd_img_delete(s_imgNome);
+    String m = "servono 15000 byte esatti, ne sono arrivati ";
+    m += (unsigned long)s_imgBytes;
+    srv.send(400, "text/plain", m);
+    return;
+  }
+  srv.send(200, "text/plain", "ok");
+}
+
+static void handleApiImmaginiChunk() {
+  WebServer& srv = net_server();
+  HTTPUpload& up = srv.upload();
+
+  switch (up.status) {
+    case UPLOAD_FILE_START: {
+      s_imgOk    = false;
+      s_imgBytes = 0;
+      s_imgNome[0] = '\0';
+      if (!net_webAuthOk()) return;
+
+      // Il nome puo' arrivare dalla query string o, in mancanza, dal nome
+      // del file caricato: sanificato in entrambi i casi (lista bianca),
+      // perche' finisce dentro un path.
+      String n = srv.hasArg("nome") ? srv.arg("nome") : up.filename;
+      if (n.endsWith(".bin")) n.remove(n.length() - 4);
+      if (!sd_img_name_safe(n.c_str(), s_imgNome, sizeof(s_imgNome))) return;
+
+      s_imgFile = sd_img_open_for_write(s_imgNome);
+      s_imgOk   = (bool)s_imgFile;
+      break;
+    }
+
+    case UPLOAD_FILE_WRITE:
+      if (s_imgOk) {
+        s_imgOk = (s_imgFile.write(up.buf, up.currentSize) == up.currentSize);
+        s_imgBytes += up.currentSize;
+      }
+      break;
+
+    case UPLOAD_FILE_END:
+      if (s_imgFile) s_imgFile.close();
+      break;
+
+    case UPLOAD_FILE_ABORTED:
+      // Come per la dashboard e per Update.abort(): un trasferimento caduto
+      // a meta' non deve lasciare un handle appeso ne' un file mezzo scritto
+      // che poi verrebbe disegnato.
+      if (s_imgFile) s_imgFile.close();
+      if (s_imgNome[0]) sd_img_delete(s_imgNome);
+      s_imgOk = false;
+      break;
+
+    default:
+      break;
+  }
+}
+
+static void handleApiImmaginiElimina() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+  if (!srv.hasArg("nome")) { srv.send(400, "text/plain", "manca nome"); return; }
+
+  const String nome = srv.arg("nome");
+  const bool ok = sd_img_delete(nome.c_str());
+
+  // Le pagine che puntavano a quell'immagine restano: si vedrebbero come
+  // "immagine non disponibile" sul pannello. Toglierle d'ufficio sarebbe
+  // peggio — l'utente potrebbe ricaricare lo stesso nome fra un minuto, e
+  // si ritroverebbe la pagina sparita senza averlo chiesto.
+  srv.send(ok ? 200 : 404, "text/plain", ok ? "ok" : "non trovata");
+}
+
+// GET /api/immagini/scarica?nome=xxx — i 15.000 byte, per l'anteprima nel
+// browser (unpack/paint sono gia' scritti in www/dither.html).
+static void handleApiImmaginiScarica() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+  if (!srv.hasArg("nome")) { srv.send(400, "text/plain", "manca nome"); return; }
+
+  File f = sd_img_open(srv.arg("nome").c_str());
+  if (!f) { srv.send(404, "text/plain", "non trovata"); return; }
+
+  streamFileLimitato(srv, f, "application/octet-stream");
+  f.close();
+}
+
+// POST /api/pannello/aggiungi?param=nome — crea una pagina immagine
+static void handleApiPannelloAggiungi() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+
+  const String nome = srv.hasArg("param") ? srv.arg("param") : String("");
+  if (nome.length() == 0) { srv.send(400, "text/plain", "manca param"); return; }
+  if (!sd_img_exists(nome.c_str())) {
+    srv.send(404, "text/plain", "immagine non presente sulla card");
+    return;
+  }
+  if (pages_add(PT_IMMAGINE, nome.c_str()) < 0) {
+    srv.send(507, "text/plain", "non c'e' piu' posto nell'elenco delle pagine");
+    return;
+  }
+  pages_save();
+  handleApiPannello();
+}
+
+static void handleApiPannelloRimuovi() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+  if (!srv.hasArg("i")) { srv.send(400, "text/plain", "manca i"); return; }
+
+  if (!pages_remove((uint8_t)srv.arg("i").toInt())) {
+    srv.send(400, "text/plain", "slot non rimovibile");
+    return;
+  }
+  pages_save();
+  handleApiPannello();
+}
+
 // ---------------------------------------------------------------------
 //  Pagina /pannello — il telecomando del display.
 //
@@ -635,6 +807,22 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  <div id="arch"></div>
 </div>
 
+<div class="card">
+ <h2>Immagini</h2>
+ <p class="muted">File gi&agrave; impacchettati da <code>www/dither.html</code>:
+ 400&times;300 a 1 bit, <b>15.000 byte esatti</b>, bit a 1 = bianco. Il
+ dithering lo fa il browser, la scheda scrive i byte sul pannello senza
+ convertire niente &mdash; un file di lunghezza diversa viene rifiutato qui,
+ non scoperto quando si disegna.</p>
+ <div class="row">
+  <input type="file" id="fimg" accept=".bin">
+  <input type="text" id="nimg" placeholder="nome" maxlength="20" style="width:8rem">
+  <button id="bimg">Carica</button>
+  <span class="muted" id="simg"></span>
+ </div>
+ <div id="limg"></div>
+</div>
+
 <p class="muted"><a href="/">&larr; nodi</a> &mdash;
  <a href="/update">aggiornamento firmware</a></p>
 <script>
@@ -651,7 +839,8 @@ function render(d){
   tr.innerHTML='<td'+(p.corrente?' class="cur"':'')+'>'+esc(p.tipo)+(p.param?' <span class="muted">'+esc(p.param)+'</span>':'')+(p.corrente?' &larr; a schermo':'')+'</td>'+
    '<td><input type="checkbox" data-a="'+p.i+'"'+(p.attiva?' checked':'')+'></td>'+
    '<td><input type="number" data-d="'+p.i+'" value="'+p.durata_s+'" min="60" step="60"> <span class="muted">'+dur(p.durata_s)+'</span></td>'+
-   '<td><button class="sec" data-v="'+p.i+'">mostra</button> <button class="sec" data-f="'+p.i+'">solo questa</button></td>';
+   '<td><button class="sec" data-v="'+p.i+'">mostra</button> <button class="sec" data-f="'+p.i+'">solo questa</button>'+
+   (p.tipo=='immagine'?' <button class="sec" data-x="'+p.i+'">togli</button>':'')+'</td>';
   tb.appendChild(tr);
  });
  E('rot').checked=d.rotazione; E('sda').value=d.silenzio_da; E('sa').value=d.silenzio_a;
@@ -663,6 +852,9 @@ function render(d){
    post('/api/pannello/vai?i='+b.dataset.v).then(()=>{E('srf').textContent='pagina in coda';setTimeout(carica,3500);}));
  tb.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>
    post('/api/pannello/pagina?i='+b.dataset.f+'&fissa=1').then(r=>r.json()).then(render));
+ tb.querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>{
+   if(!confirm('Togliere questa pagina dall\'elenco? L\'immagine resta sulla card.'))return;
+   post('/api/pannello/rimuovi?i='+b.dataset.x).then(r=>r.json()).then(render);});
 }
 
 function carica(){
@@ -688,7 +880,52 @@ E('bm').onclick=()=>{
   .then(r=>r.text().then(t=>{E('sm').textContent=(r.status==200)?'mandato':t;setTimeout(carica,1500);}));};
 E('bx').onclick=()=>{if(!confirm('Togliere il messaggio dal pannello?'))return;
  post('/api/messaggio/cancella').then(()=>{E('txt').value='';setTimeout(carica,1500);});};
-carica();setInterval(carica,10000);
+// L'anteprima e' 1:1 per costruzione: sono gli STESSI 15.000 byte che
+// finiscono nel controller, ridisegnati qui con lo stesso unpack() di
+// dither.html. Non e' una simulazione del pannello, e' il suo contenuto.
+function disegnaBin(cv, bytes){
+ const W=400,H=300,RB=W/8,ctx=cv.getContext('2d'),img=ctx.createImageData(W,H);
+ for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+  const bit=(bytes[y*RB+(x>>3)]>>(7-(x&7)))&1, o=(y*W+x)*4, v=bit?255:0;
+  img.data[o]=img.data[o+1]=img.data[o+2]=v; img.data[o+3]=255;}
+ ctx.putImageData(img,0,0);
+}
+
+function caricaImmagini(){
+ fetch('/api/immagini').then(r=>r.json()).then(d=>{
+  const box=E('limg'); box.innerHTML='';
+  if(!d.sd){box.innerHTML='<p class="muted">microSD non montata: niente immagini.</p>';return;}
+  if(!d.immagini.length){box.innerHTML='<p class="muted">Nessuna immagine sulla card.</p>';return;}
+  d.immagini.forEach(im=>{
+   const div=document.createElement('div'); div.style.margin='.8rem 0';
+   div.innerHTML='<div class="row"><b>'+esc(im.nome)+'</b>'+
+     '<span class="muted">'+im.byte+' byte'+(im.ok?'':' — NON valida')+'</span>'+
+     '<button class="sec" data-add="'+esc(im.nome)+'">aggiungi come pagina</button>'+
+     '<button class="dan" data-del="'+esc(im.nome)+'">elimina</button></div>';
+   const cv=document.createElement('canvas'); cv.width=400; cv.height=300;
+   cv.style.cssText='width:100%;max-width:400px;border:1px solid #333;border-radius:6px;image-rendering:pixelated';
+   div.appendChild(cv); box.appendChild(div);
+   if(im.ok) fetch('/api/immagini/scarica?nome='+encodeURIComponent(im.nome))
+     .then(r=>r.arrayBuffer()).then(b=>disegnaBin(cv,new Uint8Array(b)));
+  });
+  box.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>
+    post('/api/pannello/aggiungi?param='+encodeURIComponent(b.dataset.add))
+      .then(r=>r.json()).then(render));
+  box.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{
+    if(!confirm('Eliminare '+b.dataset.del+' dalla card?'))return;
+    post('/api/immagini/elimina?nome='+encodeURIComponent(b.dataset.del)).then(caricaImmagini);});
+ });}
+
+E('bimg').onclick=()=>{
+ const f=E('fimg').files[0];
+ if(!f){E('simg').textContent='scegli un file .bin';return;}
+ const nome=E('nimg').value||f.name.replace(/\.bin$/,'');
+ const fd=new FormData(); fd.append('img',f);
+ E('simg').textContent='invio...';
+ fetch('/api/immagini?nome='+encodeURIComponent(nome),{method:'POST',body:fd})
+  .then(r=>r.text().then(t=>{E('simg').textContent=(r.status==200)?'caricata':t;caricaImmagini();}));};
+
+carica();caricaImmagini();setInterval(carica,10000);
 </script></div></body></html>
 )HTML";
 
@@ -1008,8 +1245,19 @@ static void handleRoot() {
   net_server().send_P(200, "text/html", HUB_PAGE);
 }
 
+static CorsMiddleware s_cors;
+
 void web_ui_begin() {
   WebServer& srv = net_server();
+
+  // Come su EnvNode_C3: senza collectAllHeaders() il middleware non vedrebbe
+  // mai l'header Origin, non aggiungerebbe gli header CORS e (peggio) non
+  // intercetterebbe il preflight OPTIONS, che finirebbe sul 404 di default.
+  // Serve a www/dither.html, che gira come file locale nel browser e manda il
+  // .bin direttamente qui: senza CORS quel POST sarebbe cross-origin e basta.
+  srv.collectAllHeaders();
+  s_cors.setOrigin("*").setAllowCredentials(false);
+  srv.addMiddleware(&s_cors);
   srv.on("/",                    HTTP_GET,  handleRoot);
   srv.on("/api/stato",           HTTP_GET,  handleApiStato);
   srv.on("/api/nodi",            HTTP_GET,  handleApiNodi);
@@ -1036,4 +1284,12 @@ void web_ui_begin() {
   srv.on("/api/messaggio",           HTTP_GET,  handleApiMessaggio);
   srv.on("/api/messaggio",           HTTP_POST, handleApiMessaggioSet);
   srv.on("/api/messaggio/cancella",  HTTP_POST, handleApiMessaggioCancella);
+
+  // Immagini sulla card e pagine che le mostrano.
+  srv.on("/api/immagini",            HTTP_GET,  handleApiImmagini);
+  srv.on("/api/immagini",            HTTP_POST, handleApiImmaginiDone, handleApiImmaginiChunk);
+  srv.on("/api/immagini/elimina",    HTTP_POST, handleApiImmaginiElimina);
+  srv.on("/api/immagini/scarica",    HTTP_GET,  handleApiImmaginiScarica);
+  srv.on("/api/pannello/aggiungi",   HTTP_POST, handleApiPannelloAggiungi);
+  srv.on("/api/pannello/rimuovi",    HTTP_POST, handleApiPannelloRimuovi);
 }

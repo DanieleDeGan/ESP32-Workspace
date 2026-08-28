@@ -40,6 +40,7 @@ const char* pages_tipo_nome(uint8_t tipo)
     case PT_NODI:      return "nodi";
     case PT_MESSAGGIO: return "messaggio";
     case PT_BIANCA:    return "bianca";
+    case PT_IMMAGINE:  return "immagine";
     default:           return "?";
   }
 }

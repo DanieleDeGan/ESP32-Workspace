@@ -431,3 +431,90 @@ int sd_read_day(const char* isoDate, sd_row_cb_t cb, void* arg) {
   f.close();
   return count;
 }
+
+// ---------------------------------------------------------------------
+//  Pagine immagine — /images/<nome>.bin (vedi il contratto in sd_logger.h)
+// ---------------------------------------------------------------------
+
+bool sd_img_name_safe(const char* nome, char* out, size_t outCap) {
+  if (nome == nullptr || out == nullptr || outCap < 2) return false;
+
+  size_t n = 0;
+  const size_t maxLen = (outCap - 1 < IMG_NOME_MAX) ? (outCap - 1) : IMG_NOME_MAX;
+  for (const char* p = nome; *p && n < maxLen; p++) {
+    const char c = *p;
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+        (c >= '0' && c <= '9') || c == '_' || c == '-') {
+      out[n++] = c;
+    }
+  }
+  out[n] = '\0';
+  return n > 0;
+}
+
+// Compone /images/<nome>.bin da un nome gia' sanificato.
+static bool imgPath(const char* nome, char* out, size_t outCap) {
+  char safe[IMG_NOME_MAX + 1];
+  if (!sd_img_name_safe(nome, safe, sizeof(safe))) return false;
+  snprintf(out, outCap, "%s/%s.bin", IMG_DIR, safe);
+  return true;
+}
+
+int sd_img_list(sd_img_cb_t cb, void* arg, int maxItems) {
+  if (cb == nullptr || !sd_mounted()) return 0;
+
+  File dir = SD.open(IMG_DIR);
+  if (!dir || !dir.isDirectory()) { if (dir) dir.close(); return 0; }
+
+  int n = 0;
+  while (n < maxItems) {
+    File f = dir.openNextFile();
+    if (!f) break;
+    if (!f.isDirectory()) {
+      // Il nome sulla card e' "<nome>.bin": si consegna senza estensione,
+      // che e' la forma con cui il resto del firmware lo maneggia (parametro
+      // della pagina, query string).
+      const char* base = strrchr(f.name(), '/');
+      String nome = base ? String(base + 1) : String(f.name());
+      if (nome.endsWith(".bin")) {
+        nome.remove(nome.length() - 4);
+        cb(nome.c_str(), (size_t)f.size(), arg);
+        n++;
+      }
+    }
+    f.close();
+  }
+  dir.close();
+  return n;
+}
+
+bool sd_img_exists(const char* nome) {
+  if (!sd_mounted()) return false;
+  char path[64];
+  if (!imgPath(nome, path, sizeof(path))) return false;
+  return SD.exists(path);
+}
+
+File sd_img_open(const char* nome) {
+  if (!sd_mounted()) return File();
+  char path[64];
+  if (!imgPath(nome, path, sizeof(path))) return File();
+  if (!SD.exists(path)) return File();
+  return SD.open(path, FILE_READ);
+}
+
+File sd_img_open_for_write(const char* nome) {
+  if (!sd_mounted()) return File();
+  char path[64];
+  if (!imgPath(nome, path, sizeof(path))) return File();
+  if (!SD.exists(IMG_DIR)) SD.mkdir(IMG_DIR);
+  return SD.open(path, FILE_WRITE);   // tronca un eventuale file preesistente
+}
+
+bool sd_img_delete(const char* nome) {
+  if (!sd_mounted()) return false;
+  char path[64];
+  if (!imgPath(nome, path, sizeof(path))) return false;
+  if (!SD.exists(path)) return false;
+  return SD.remove(path);
+}

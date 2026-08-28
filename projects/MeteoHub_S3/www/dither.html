@@ -184,6 +184,20 @@
         <button class="primary" id="btnSave" disabled>Scarica .bin (15.000 byte)</button>
       </div>
       <hr>
+      <h2>Manda all'hub</h2>
+      <div class="row">
+        <input type="text" id="hubHost" value="192.168.1.73" spellcheck="false" style="flex:1">
+      </div>
+      <div class="row">
+        <input type="text" id="hubUser" value="admin" spellcheck="false" style="width:80px">
+        <input type="password" id="hubPass" value="admin" style="width:80px">
+        <button id="btnSend" disabled>Invia</button>
+      </div>
+      <div class="stat" style="color:var(--dim)">
+        Scrive /images/&lt;nome&gt;.bin sulla card dell'hub. Da li' la pagina
+        /pannello la mostra e la si puo' aggiungere all'elenco delle pagine.
+      </div>
+      <hr>
       <h2>Verifica</h2>
       <div class="row" style="margin-bottom:0">
         <button id="btnLoadBin">Carica un .bin e mostralo</button>
@@ -281,7 +295,7 @@ async function loadImage(src) {
   fitView('cover');           // di default riempie il riquadro, senza bordi bianchi
   showingBin = false;
   $('stageWrap').classList.add('hasImg');
-  ['btnFit','btnFill','btnRotL','btnRotR','btnSave'].forEach(id => $(id).disabled = false);
+  ['btnFit','btnFill','btnRotL','btnRotR','btnSave','btnSend'].forEach(id => $(id).disabled = false);
   say('');
   render();
 }
@@ -683,6 +697,33 @@ $('btnSave').onclick = () => {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   say(`Salvato ${n}.bin — ${lastPacked.length} byte`, 'ok');
+};
+
+// Invio diretto alla scheda: chiude la catena browser -> hub senza passare
+// da un file salvato a mano. E' un POST cross-origin (questa pagina gira da
+// file locale), quindi l'hub deve mandare gli header CORS - li' c'e' il
+// CorsMiddleware apposta. L'autenticazione va messa a mano nell'header
+// Authorization: il browser non puo' usare le credenziali salvate su una
+// richiesta cross-origin con origin "*".
+$('btnSend').onclick = async () => {
+  if (!lastPacked) return;
+  const n = safeName();
+  $('name').value = n;
+  const host = $('hubHost').value.trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const auth = 'Basic ' + btoa($('hubUser').value + ':' + $('hubPass').value);
+  const fd = new FormData();
+  fd.append('img', new Blob([lastPacked], { type: 'application/octet-stream' }), n + '.bin');
+
+  say('Invio a ' + host + '...', '');
+  try {
+    const r = await fetch('http://' + host + '/api/immagini?nome=' + encodeURIComponent(n),
+                          { method: 'POST', headers: { Authorization: auth }, body: fd });
+    const t = await r.text();
+    say(r.ok ? `Caricata: /images/${n}.bin (15.000 byte)` : `Errore ${r.status}: ${t}`,
+        r.ok ? 'ok' : 'err');
+  } catch (e) {
+    say('Non raggiungibile: ' + e.message, 'err');
+  }
 };
 
 // Rilettura di un .bin: verifica il giro completo e, allo stesso tempo, e' il

@@ -93,7 +93,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v5";
+static const char FW_VERSION[] = "v6";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1012,6 +1012,62 @@ static void screenMessaggio(const Message* m)
 }
 
 // ---------------------------------------------------------------------------
+// Pagina IMMAGINE — 15.000 byte dalla card, spinti nel controller come sono
+// ---------------------------------------------------------------------------
+// E' il percorso gia' provato dal bring-up, con l'unica differenza che conta:
+// i byte non stanno piu' in flash ma in /images/<nome>.bin. Nessuna
+// conversione a bordo — niente decoder JPEG/PNG, nessun dithering: quello lo
+// ha fatto il browser (www/dither.html), ed e' tutto il motivo per cui la
+// catena e' fatta cosi'.
+//
+// Il buffer da 15 kB si prende e si rilascia ad ogni disegno invece di
+// tenerlo sempre: una pagina immagine puo' non esserci mai, e 15 kB fissi
+// sarebbero il 6% della RAM tolti a chi lavora sempre.
+static void screenImmagine(const char* nome)
+{
+  uint8_t* buf = (uint8_t*)malloc(IMG_BYTES);
+  File f = (nome && *nome) ? sd_img_open(nome) : File();
+  size_t letti = 0;
+
+  if (buf && f) letti = f.read(buf, IMG_BYTES);
+  if (f) f.close();
+
+  if (buf && letti == IMG_BYTES)
+  {
+    display.writeImage(buf, 0, 0, IMG_W, IMG_H, false, false, false);
+    display.refresh(false);
+    free(buf);
+    return;
+  }
+  if (buf) free(buf);
+
+  // Il perche' si scrive sul pannello, non solo sulla seriale: il log di boot
+  // di questa scheda non e' leggibile via USB, e una pagina che resta com'era
+  // somiglia a un display rotto invece che a un file mancante.
+  display.setFullWindow();
+  display.firstPage();
+  do
+  {
+    display.fillScreen(GxEPD_WHITE);
+    u8g2Fonts.setForegroundColor(GxEPD_BLACK);
+    u8g2Fonts.setBackgroundColor(GxEPD_WHITE);
+    u8g2Fonts.setFont(u8g2_font_helvB14_tf);
+    const char* t1 = sd_mounted() ? "immagine non disponibile" : "microSD non montata";
+    int16_t w = u8g2Fonts.getUTF8Width(t1);
+    u8g2Fonts.setCursor((400 - w) / 2, 140);
+    u8g2Fonts.print(t1);
+
+    u8g2Fonts.setFont(u8g2_font_helvR10_tf);
+    String t2 = String("/images/") + (nome && *nome ? nome : "?") + ".bin";
+    if (letti && letti != IMG_BYTES) t2 += "  (" + String((unsigned)letti) + " byte, ne servono 15000)";
+    w = u8g2Fonts.getUTF8Width(t2.c_str());
+    u8g2Fonts.setCursor((400 - w) / 2, 170);
+    u8g2Fonts.print(t2);
+  }
+  while (display.nextPage());
+}
+
+// ---------------------------------------------------------------------------
 // Il modello delle pagine (pages.*) decide COSA mostrare; qui si disegna.
 // ---------------------------------------------------------------------------
 static void showPage(uint8_t i)
@@ -1034,6 +1090,10 @@ static void showPage(uint8_t i)
 
     case PT_MESSAGGIO:
       screenMessaggio(msg_active(time(nullptr)));
+      break;
+
+    case PT_IMMAGINE:
+      screenImmagine(pg->param);
       break;
 
     case PT_BIANCA:

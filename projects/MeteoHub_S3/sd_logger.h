@@ -158,3 +158,40 @@ File sd_open_dashboard_for_write();
 // Ripristina la dashboard di default eliminando il file su SD. true anche
 // se il file non esisteva gia' (nessun errore in quel caso).
 bool sd_delete_dashboard();
+
+// ---------------------------------------------------------------------
+//  Pagine immagine su microSD — /images/<nome>.bin
+// ---------------------------------------------------------------------
+//  Il formato e' quello prodotto da www/dither.html e gia' provato dal
+//  bring-up del pannello: 400x300 a 1 bit, 50 byte per riga, **15.000 byte
+//  esatti**, bit a 1 = bianco. Nessuna conversione a bordo: i byte si
+//  leggono dalla card e si spingono nel controller cosi' come sono — e'
+//  tutto il motivo per cui il dithering si fa nel browser.
+//
+//  La dimensione non e' un dettaglio ma il contratto: un file di lunghezza
+//  diversa NON e' un'immagine per questo pannello, e va rifiutato quando
+//  si carica, non scoperto quando si disegna (li' si vedrebbe come una
+//  pagina storta, che somiglia a un guasto del display).
+// ---------------------------------------------------------------------
+
+#define IMG_DIR        "/images"
+#define IMG_W_PX       400
+#define IMG_H_PX       300
+#define IMG_BYTES_ESATTI 15000u
+#define IMG_NOME_MAX   20
+
+// Sanifica un nome immagine (lista bianca [A-Za-z0-9_-], max IMG_NOME_MAX):
+// stessa regola di sd_node_dir_name(), e per lo stesso motivo — il nome
+// arriva da una query string e ".." o "/" non devono nemmeno poter esistere
+// in un path composto qui. false se non resta niente di utilizzabile.
+bool sd_img_name_safe(const char* nome, char* out, size_t outCap);
+
+// Elenco delle immagini presenti (nome senza estensione, byte del file).
+typedef void (*sd_img_cb_t)(const char* nome, size_t bytes, void* arg);
+int sd_img_list(sd_img_cb_t cb, void* arg, int maxItems);
+
+bool sd_img_exists(const char* nome);
+File sd_img_open(const char* nome);              // lettura, File falsy se assente
+File sd_img_open_for_write(const char* nome);    // crea /images, tronca
+bool sd_img_delete(const char* nome);
+

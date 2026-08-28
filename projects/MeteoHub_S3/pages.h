@@ -31,6 +31,7 @@ enum PageType : uint8_t
   PT_NODI = 0,     // i nodi della stazione: la pagina per cui l'hub esiste
   PT_MESSAGGIO,    // il bigliettino sul frigo, scritto dal telefono
   PT_BIANCA,       // pannello a riposo, nessun aggiornamento
+  PT_IMMAGINE,     // un .bin da /images: param = nome del file, senza estensione
   PT_COUNT
 };
 

@@ -1112,6 +1112,40 @@ senza di loro si somiglierebbero (schermo che non cambia).
   - Il fatto che a corrompersi sia stato l'archivio e non il messaggio attivo è
     la parte istruttiva: **un dato vecchio e sbagliato in un elenco può togliere
     dallo schermo un dato nuovo e giusto**, perché il JSON è una risposta sola.
+- **Le pagine immagine leggono `/images/<nome>.bin` dalla card** (da `v6`,
+  2026-08-28), con il formato che `www/dither.html` produce dal 2026-08-21:
+  400×300 a 1 bit, 50 byte per riga, **15.000 byte esatti**, bit a 1 = bianco.
+  A bordo non si converte niente — nessun decoder JPEG/PNG, nessun dithering:
+  quello lo ha fatto il browser, ed è tutto il motivo per cui la catena è fatta
+  così.
+  - **La lunghezza si controlla quando si carica, non quando si disegna.** Un
+    file di dimensione diversa viene rifiutato con 400 **e cancellato dalla
+    card**: scoperto al momento di disegnarlo si vedrebbe come una pagina
+    sbilenca, che somiglia a un guasto del pannello invece che a un upload
+    sbagliato. Provato il 2026-08-28 con un file da 9000 byte.
+  - **Il buffer da 15 kB si prende e si rilascia ad ogni disegno** invece di
+    tenerlo sempre: una pagina immagine può non esserci mai, e 15 kB fissi
+    sarebbero il 6% della RAM tolti a chi lavora sempre.
+  - **Se l'immagine manca, il pannello lo scrive.** Il percorso d'errore
+    disegna "immagine non disponibile" con il path e, se il file c'è ma è
+    storto, quanti byte ha: una pagina che resta com'era somiglia a un display
+    rotto, e il log di boot di questa scheda non è leggibile via USB.
+  - **Eliminare un'immagine NON toglie le pagine che la usano**, di proposito:
+    l'utente può ricaricare lo stesso nome un minuto dopo, e ritrovarsi la
+    pagina sparita senza averlo chiesto sarebbe peggio di vedere l'avviso.
+  - **L'anteprima nel browser è 1:1 per costruzione**: la pagina `/pannello`
+    scarica gli **stessi** 15.000 byte da `/api/immagini/scarica` e li
+    ridisegna su canvas con lo stesso `unpack()` di `dither.html`. Non è una
+    simulazione del pannello, è il suo contenuto. (L'anteprima di quello che
+    l'hub sta disegnando *adesso* è un'altra cosa e non si può fare: vedi la
+    nota su `getBuffer()` più sopra.)
+- **`www/dither.html` manda direttamente alla scheda** (pulsante "Manda
+  all'hub"): POST su `/api/immagini`. La pagina gira come **file locale**, quindi
+  quel POST è cross-origin e l'hub monta il `CorsMiddleware` come `EnvNode_C3`
+  — con `collectAllHeaders()`, senza il quale il middleware non vedrebbe mai
+  l'header `Origin` e il preflight OPTIONS finirebbe sul 404 di default.
+  L'autenticazione va nell'header `Authorization` scritto a mano: con origin
+  `*` il browser non può usare le credenziali salvate.
 - **Gli handler HTTP che toccherebbero il display accodano e basta**
   (`app_chiedi_pagina()` / `app_chiedi_refresh()`, eseguite dal `loop()`).
   Un refresh dentro un handler terrebbe fermo il WebServer — che è sincrono —
