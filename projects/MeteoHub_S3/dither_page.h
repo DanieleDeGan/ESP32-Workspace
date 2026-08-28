@@ -4,11 +4,18 @@
 //  GENERATO DA www/gen_page.py - NON MODIFICARE A MANO.
 //  La sorgente e' www/dither.html: si modifica quella e si
 //  rilancia  python www/gen_page.py  prima di ricompilare.
-//  (31371 byte di pagina, serviti su /immagini)
+//  (31678 byte di pagina, serviti su /immagini)
 // ============================================================
 
 static const char DITHER_PAGE[] PROGMEM = R"DITHERPAGE(
 <!DOCTYPE html>
+<!--
+  SORGENTE UNICA di questa pagina. L'hub la serve su /immagini da
+  dither_page.h, che si RIGENERA da qui con  python www/gen_page.py
+  (lo fa da solo un hook di .claude/settings.json). Se si modifica questo
+  file e non si rigenera, la scheda continua a servire la versione vecchia
+  senza dirlo.
+-->
 <html lang="it">
 <head>
 <meta charset="utf-8">
