@@ -59,6 +59,8 @@ toccare) vedi `docs/FILES.md`. Per il pinout/hardware della board AMOLED vedi
 | `projects/MeteoNode_C3/web_ui.h/.cpp` | pagina di stato con grafici SVG, comandi e interruttore del deep sleep |
 | `projects/MeteoHub_S3/` | **progetto** (XIAO ESP32-S3 Sense): hub della stazione meteo — riceve i nodi via ESP-NOW, li mostra su un pannello **e-ink WeAct 4.2\"** (SSD1683) e ne registra i CSV su microSD, con orario NTP, web UI e OTA — vedi sezione dedicata |
 | `projects/MeteoHub_S3/MeteoHub_S3.ino` | pagine del pannello, tasto BOOT a due gesti, hub ESP-NOW, logging dei nodi — qui va la logica applicativa |
+| `projects/MeteoHub_S3/pages.h/.cpp` | il modello delle pagine del pannello: elenco, rotazione, ore di silenzio, in NVS — non conosce il display |
+| `projects/MeteoHub_S3/messages.h/.cpp` | il messaggio sul pannello: attivo in NVS, archivio su SD |
 | `projects/MeteoHub_S3/remote_nodes.h/.cpp` | copia da `EnvNode_C3`: registro nodi, cadenza appresa, nodo muto, trend, NVS |
 | `projects/MeteoHub_S3/sd_logger.h/.cpp` | copia da `EnvNode_C3` adattata alla microSD **SPI della Sense** (CS 21, bus condiviso con l'e-ink) |
 | `projects/MeteoHub_S3/net_ota.h/.cpp` | WiFi + ArduinoOTA + `/update`, variante con `net_server()` condiviso |
@@ -1047,6 +1049,82 @@ senza di loro si somiglierebbero (schermo che non cambia).
 - **Lo storico del trend si ricostruisce dai CSV** al primo sync NTP
   (`seedForecastDaSD()`), leggendo solo la **coda** dei file: senza, ogni
   riavvio — e ogni OTA — costerebbe tre ore di previsione "non ancora nota".
+- **Le pagine sono un elenco, non un enum** (da `v4`, 2026-08-28, `pages.*`).
+  Ogni slot ha tipo, `attiva`, `durata_s` e un parametro; la configurazione sta
+  in NVS (namespace `hubpag`, un blob solo con un magic, come il registro dei
+  nodi). Da qui discendono senza meccanismi propri le tre cose che si chiedono
+  a un pannello: **«fissa una pagina» è "tutte le altre disattivate"**, «cambio
+  automatico» è la rotazione, e la rotazione si ferma da sola quando resta una
+  pagina attiva sola — lì non c'è nessun posto dove andare, e un refresh
+  completo per tornare sulla stessa pagina sarebbe 2,2 s di lampeggio per
+  niente. Se fossero tre stati separati potrebbero andare fuori sincrono fra
+  loro; così no, perché sono lo stesso elenco letto in tre modi.
+  - `pages.cpp` **non conosce il display**: dice quale pagina tocca, il `.ino`
+    la disegna. È la stessa regola per cui `remote_nodes` non conosce la SD.
+  - **La rotazione è spenta di default**, ed è una scelta d'uso, non una
+    dimenticanza: un pannello che ruota fra sei pagine diventa un salvaschermo
+    che nessuno legge, mentre il valore dell'e-ink è che l'informazione *sta
+    lì* e la si guarda passando.
+  - **Lo slot 0 è la pagina dei nodi e non si può togliere**: un elenco vuoto
+    lascerebbe il pannello senza niente da mostrare e senza modo di rimediare
+    dal tasto BOOT, che è l'unico comando quando la rete non c'è.
+  - **BOOT breve scorre anche le pagine escluse dalla rotazione.** Il tasto è
+    la via di governo quando la rete è giù: non deve dipendere da come è
+    configurata la rotazione.
+- **Le pagine di prova del bring-up (geometria, formato, contatore, foto in
+  flash) sono state tolte** in `v4`, con `foto_prova.h`. Servivano a distinguere
+  un guasto del pannello da uno della radio; quella funzione la copre ora la
+  pagina messaggio, che si vede o non si vede allo stesso modo — e in più dice
+  qualcosa di utile quando funziona.
+- **Il messaggio sta in due posti con due ruoli diversi** (`messages.*`), e non
+  è la stessa informazione duplicata: in **NVS** il messaggio *attivo adesso*
+  (~200 byte), perché è quello che sta sul pannello e deve tornare identico
+  dopo un riavvio **anche con la card tolta**; su **SD**
+  (`/messaggi/archivio.csv`) l'*archivio*, per riusare i messaggi ricorrenti
+  senza consumare cicli di erase della NVS per tenere uno storico.
+  - **Il testo va disegnato con `U8g2_for_Adafruit_GFX`** (dipendenza nuova da
+    `v4`): i font Adafruit GFX sono ASCII puro e in italiano "perché"
+    diventerebbe "perch?". U8g2 disegna UTF-8 sullo stesso canvas di GxEPD2,
+    quindi le due strade convivono — font Adafruit per i numeroni della pagina
+    nodi, U8g2 dove serve l'accento.
+  - **Il corpo si sceglie da solo** provando 24/18/14/12/10 pt e tenendo il
+    primo che entra nell'area, a capo compresi: un messaggio corto deve
+    leggersi da lontano, uno lungo deve starci, e non c'è un corpo che faccia
+    tutte e due le cose.
+  - **Solo un messaggio `urgente` scavalca la pagina corrente.** Uno normale si
+    vede alla prossima rotazione o andandoci a mano: se ogni bigliettino
+    togliesse dallo schermo la pagina dei nodi, il pannello smetterebbe di
+    essere quello per cui l'hub esiste.
+  - Il pulsante **"manda al pannello" è esplicito apposta**: aggiornare mentre
+    si scrive costerebbe un refresh da 2,2 s per carattere.
+- **Un byte che non è UTF-8 rende non parsabile l'INTERA risposta JSON**, ed è
+  la stessa trappola del `NAN` emesso come `"nan"` su `EnvNode_C3`: la pagina
+  resta vuota per colpa di un solo campo, e il guasto non somiglia alla causa.
+  Trovato il 2026-08-28 mandando un messaggio da un client che parlava CP1252:
+  un `0xF9` (la `ù`) è finito nell'archivio sulla card e `/api/messaggio` non
+  si è più parsato — con dentro anche il messaggio *attivo*, che era sano.
+  - **Si para in due punti, e servono entrambi.** All'ingresso
+    (`handleApiMessaggioSet`) un testo non UTF-8 valido viene rifiutato con
+    400, così non entra in NVS né nell'archivio, dove resterebbe per sempre.
+    In uscita `appendJsonString()` sostituisce con `?` ogni sequenza malformata:
+    è la rete per quello che è **già** stato scritto, e per i nomi dei nodi, che
+    arrivano dalla radio e nessuno ha validato.
+  - Il fatto che a corrompersi sia stato l'archivio e non il messaggio attivo è
+    la parte istruttiva: **un dato vecchio e sbagliato in un elenco può togliere
+    dallo schermo un dato nuovo e giusto**, perché il JSON è una risposta sola.
+- **Gli handler HTTP che toccherebbero il display accodano e basta**
+  (`app_chiedi_pagina()` / `app_chiedi_refresh()`, eseguite dal `loop()`).
+  Un refresh dentro un handler terrebbe fermo il WebServer — che è sincrono —
+  e con lui l'OTA e il prelievo dei DATA dal driver ESP-NOW, che tiene solo
+  l'ultimo pacchetto. È la stessa regola dei callback della radio: **la
+  richiesta accoda, il loop lavora.**
+- **L'anteprima 1:1 del pannello nel browser NON si può fare leggendo il
+  framebuffer**: in GxEPD2 1.6.9 `_buffer` è `private` e non esiste
+  `getBuffer()`. Per averla servirebbe disegnare su un `GFXcanvas1` nostro
+  (15.000 byte di RAM, ce ne sono) e spingerlo sul display con `drawImage()`,
+  cioè far passare tutte le funzioni di disegno per un `Adafruit_GFX&` invece
+  che per il `display` globale. È un refactor meccanico ma vero, non un
+  aggancio: valutato il 2026-08-28 e **non fatto**.
 - **Refresh del pannello — tre cadenze, non una**:
 
   | refresh | quando | area |

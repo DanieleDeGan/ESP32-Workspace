@@ -1483,12 +1483,18 @@ camera, o le due schede si contendono lo stesso nome mDNS.
 
 Riceve i DATA dei nodi via ESP-NOW, li mostra su un pannello **e-ink WeAct
 4.2" 400x300** (SSD1683) e ne registra i CSV su microSD, con orario NTP, web UI
-e OTA (Fase 3 chiusa il 2026-08-27). Cresciuto dal bring-up del solo pannello:
-le cinque pagine di prova sono ancora tutte li', in coda a quella dei nodi.
+e OTA (Fase 3 chiusa il 2026-08-27). Da `v4` (2026-08-28) le pagine del
+pannello sono un **elenco configurabile** (`pages.*`) invece che un enum
+fisso, e fra i tipi c'è il **messaggio** scritto dalla web UI. Le cinque
+pagine di prova del bring-up sono state tolte nella stessa occasione: la
+loro funzione diagnostica la copre ora la pagina messaggio, che sul
+pannello si vede o non si vede allo stesso modo.
 
 | File | Ruolo |
 |---|---|
 | `MeteoHub_S3.ino` | pagine del pannello, tasto BOOT, hub ESP-NOW, logging dei nodi — qui va la logica applicativa |
+| `pages.h/.cpp` | il **modello delle pagine**: elenco, attiva/durata, rotazione, ore di silenzio, tutto in NVS. Non conosce il display: dice quale pagina tocca, il `.ino` la disegna |
+| `messages.h/.cpp` | il messaggio del pannello: quello **attivo** in NVS (sopravvive senza card), l'**archivio** su SD in `/messaggi/archivio.csv` |
 | `sd_logger.h/.cpp` | copia da `EnvNode_C3` adattata alla microSD SPI della Sense: CS 21, nessuna `SPI.begin()` propria |
 | `net_ota.h/.cpp` | WiFi + ArduinoOTA + `/update` + watchdog di riconnessione, con `net_server()` condiviso |
 | `web_ui.h/.cpp` | pagina di stato dell'hub e API dei nodi: gli stessi endpoint di `EnvNode_C3` |
@@ -1496,7 +1502,6 @@ le cinque pagine di prova sono ancora tutte li', in coda a quella dei nodi.
 | `remote_nodes.h/.cpp` | copia da `EnvNode_C3`: registro nodi, cadenza appresa, nodo muto, trend, NVS |
 | `forecast.h` | copia da `EnvNode_C3`: trend a 3 h con isteresi, header-only e pura |
 | `rtc_time.h/.cpp` | copia da `EnvNode_C3`: stima da build-time, poi NTP (che qui non c'e' ancora) |
-| `foto_prova.h` | 15.000 byte usciti da `www/dither.html`, per la pagina foto |
 | `www/dither.html` | ritaglio + dithering nel browser, **non compilata**: produce i `.bin` del pannello |
 
 **Cose da sapere prima di metterci le mani**:

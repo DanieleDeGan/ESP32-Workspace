@@ -77,8 +77,8 @@
 #include <Fonts/FreeSansBold18pt7b.h>
 #include <Fonts/FreeSansBold9pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
+#include <U8g2_for_Adafruit_GFX.h>   // testo UTF-8 (accenti) sul canvas GxEPD2
 
-#include "foto_prova.h"   // 15.000 byte usciti da www/dither.html
 
 #include <WiFi.h>          // solo per WiFi.localIP(), da mostrare sul pannello
 #include <EspNowLink.h>    // ESPNOW_LINK_CHANNEL_CURRENT
@@ -89,9 +89,11 @@
 #include "sd_logger.h"     // microSD della Sense: i CSV dei nodi
 #include "net_ota.h"       // WiFi + ArduinoOTA + /update + WebServer condiviso
 #include "web_ui.h"        // pagina di stato e API, registrate su net_server()
+#include "pages.h"        // il modello delle pagine: cosa mostrare e quando
+#include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v3";
+static const char FW_VERSION[] = "v5";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -252,214 +254,16 @@ static const int8_t  PIN_BOOT = 0;
 // full-buffer (secondo parametro = HEIGHT) e niente paginazione.
 GxEPD2_BW<EPD_DRIVER, EPD_DRIVER::HEIGHT> display(EPD_DRIVER(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 
+// Testo UTF-8 sopra lo stesso canvas: serve alla pagina messaggio, dove
+// "perché" con i font Adafruit_GFX (ASCII puro) diventerebbe "perch?".
+U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
+
 // Formato del progetto: quello che dither.html produce e che un domani
 // arrivera' dalla SD gia' impacchettato.
 static const int    IMG_W      = 400;
 static const int    IMG_H      = 300;
 static const size_t IMG_STRIDE = IMG_W / 8;            // 50 byte per riga
 static const size_t IMG_BYTES  = IMG_STRIDE * IMG_H;   // 15.000 byte esatti
-
-// ---------------------------------------------------------------------------
-// Schermata 2 — prova disegnata con Adafruit_GFX
-// ---------------------------------------------------------------------------
-static void screenGfx()
-{
-  const int16_t W = display.width();
-  const int16_t H = display.height();
-
-  display.setFullWindow();
-  display.firstPage();
-  do
-  {
-    display.fillScreen(GxEPD_WHITE);
-
-    // Cornice doppia: se il pannello fosse ritagliato o disallineato, il bordo
-    // e' la prima cosa che lo mostra.
-    display.drawRect(0, 0, W, H, GxEPD_BLACK);
-    display.drawRect(1, 1, W - 2, H - 2, GxEPD_BLACK);
-
-    // Tacche DIVERSE nei quattro angoli: cosi' una rotazione o uno specchio si
-    // riconoscono a colpo d'occhio, invece di sembrare "giusti".
-    display.fillRect(4, 4, 24, 24, GxEPD_BLACK);           // alto-sx: pieno
-    display.drawRect(W - 28, 4, 24, 24, GxEPD_BLACK);      // alto-dx: vuoto
-    display.fillRect(4, H - 28, 24, 8, GxEPD_BLACK);       // basso-sx: barra
-    display.fillCircle(W - 16, H - 16, 12, GxEPD_BLACK);   // basso-dx: cerchio
-
-    // Diagonale: qualunque errore di passo riga la trasforma in una scaletta.
-    display.drawLine(0, 0, W - 1, H - 1, GxEPD_BLACK);
-
-    display.setTextColor(GxEPD_BLACK);
-
-    display.setFont(&FreeSansBold24pt7b);
-    display.setCursor(40, 96);
-    display.print("MeteoHub S3");
-
-    display.setFont(&FreeSansBold12pt7b);
-    display.setCursor(40, 128);
-    display.print("e-ink bring-up");
-
-    display.setFont(&FreeMonoBold9pt7b);
-    display.setCursor(40, 154);
-    display.print(EPD_DRIVER_NAME);
-    display.setCursor(40, 172);
-    display.printf("%d x %d  fast partial: %s", W, H,
-                   display.epd2.hasFastPartialUpdate ? "si" : "no");
-
-    // Barre di retino: e' cosi' che rendera' il dithering delle pagine
-    // immagine. Se meta' e un quarto non si distinguono, il Floyd-Steinberg di
-    // dither.html non avra' molto senso su questo pannello.
-    const int16_t bx = 40, by = 196, bh = 40;
-    const int16_t bw = W - 80;
-    for (int16_t x = bx; x < bx + bw; x++)
-    {
-      const int16_t band = (x - bx) / (bw / 4);
-      for (int16_t y = by; y < by + bh; y++)
-      {
-        bool black;
-        switch (band)
-        {
-          case 0:  black = true;                            break;  // pieno
-          case 1:  black = ((x + y) & 1) == 0;              break;  // 1/2
-          case 2:  black = ((x & 1) == 0) && ((y & 1) == 0); break;  // 1/4
-          default: black = ((x & 3) == 0) && ((y & 3) == 0); break;  // 1/16
-        }
-        if (black) display.drawPixel(x, y, GxEPD_BLACK);
-      }
-    }
-    display.setCursor(bx, by + bh + 18);
-    display.print("100%    50%    25%     6%");
-  }
-  while (display.nextPage());
-}
-
-// ---------------------------------------------------------------------------
-// Schermata 3 — prova nel formato del progetto (15.000 byte grezzi)
-// ---------------------------------------------------------------------------
-// Le regole, identiche a quelle scritte in cima a dither.html:
-//   riga = 50 byte, il bit 7 del primo byte di ogni riga e' il pixel x = 0
-//   1 = bianco, 0 = nero
-static inline void fbSet(uint8_t* fb, int x, int y, bool black)
-{
-  if (x < 0 || y < 0 || x >= IMG_W || y >= IMG_H) return;
-  uint8_t& b = fb[(size_t)y * IMG_STRIDE + (size_t)(x >> 3)];
-  const uint8_t mask = 0x80 >> (x & 7);
-  if (black) b &= (uint8_t)~mask;
-  else       b |= mask;
-}
-
-static void fbHLine(uint8_t* fb, int x0, int x1, int y)
-{
-  for (int x = x0; x <= x1; x++) fbSet(fb, x, y, true);
-}
-
-static void fbVLine(uint8_t* fb, int x, int y0, int y1)
-{
-  for (int y = y0; y <= y1; y++) fbSet(fb, x, y, true);
-}
-
-static void fbRect(uint8_t* fb, int x, int y, int w, int h)
-{
-  fbHLine(fb, x, x + w - 1, y);
-  fbHLine(fb, x, x + w - 1, y + h - 1);
-  fbVLine(fb, x, y, y + h - 1);
-  fbVLine(fb, x + w - 1, y, y + h - 1);
-}
-
-static bool screenRawFormat()
-{
-  uint8_t* fb = (uint8_t*)malloc(IMG_BYTES);
-  if (!fb)
-  {
-    Serial.println("[epd] malloc dei 15.000 byte fallita");
-    return false;
-  }
-  memset(fb, 0xFF, IMG_BYTES);   // 0xFF = tutto bianco
-
-  fbRect(fb, 0, 0, IMG_W, IMG_H);
-  fbRect(fb, 1, 1, IMG_W - 2, IMG_H - 2);
-
-  // Marcatore d'angolo pieno, solo in alto a sinistra: se comparisse altrove,
-  // l'immagine e' specchiata o ruotata.
-  for (int y = 6; y < 30; y++) fbHLine(fb, 6, 29, y);
-
-  // Righello a passo 8 px: ogni linea nera cade sul bit 7 di un byte. Se
-  // l'impacchettamento fosse LSB-first, il righello scivola di 7 px rispetto
-  // alla cornice — visibile appoggiandolo al bordo sinistro.
-  for (int x = 0; x < IMG_W; x += 8) fbVLine(fb, x, 40, 64);
-
-  // Diagonale su tutto il pannello: prova del passo riga (50 byte).
-  for (int i = 0; i < IMG_W; i++) fbSet(fb, i, (i * (IMG_H - 1)) / (IMG_W - 1), true);
-
-  // Scacchiere: a 1 px deve sembrare grigio uniforme. Qualunque sfrangiatura
-  // verticale a periodo 8 significa bit invertiti dentro il byte.
-  for (int y = 90; y < 150; y++)
-    for (int x = 40; x < 160; x++)
-      if (((x + y) & 1) == 0) fbSet(fb, x, y, true);
-
-  for (int y = 90; y < 150; y++)
-    for (int x = 200; x < 320; x++)
-      if ((((x >> 1) + (y >> 1)) & 1) == 0) fbSet(fb, x, y, true);
-
-  // Cunei pieni: nero pieno e bianco pieno adiacenti, per giudicare il
-  // contrasto reale del pannello.
-  for (int y = 180; y < 230; y++) fbHLine(fb, 40, 199, y);
-  fbRect(fb, 200, 180, 160, 50);
-
-  // writeImage() + refresh(false), non drawImage(): quest'ultima manda i byte e
-  // poi fa un refresh PARZIALE (misurato: 737 ms in tutto, contro i ~2,2 s di un
-  // completo). Veloce, ma sotto resta l'alone della pagina precedente, e qui si
-  // sta cambiando pagina — che da piano e' sempre un refresh completo. I 737 ms
-  // restano il numero buono per uno slideshow che accetti un po' di ghosting.
-  uint32_t t0 = millis();
-  display.writeImage(fb, 0, 0, IMG_W, IMG_H, false, false, false);
-  const uint32_t t_write = millis() - t0;
-  t0 = millis();
-  display.refresh(false);
-  Serial.printf("[epd] %u byte scritti in %lu ms, refresh completo %lu ms\n",
-                (unsigned)IMG_BYTES, (unsigned long)t_write,
-                (unsigned long)(millis() - t0));
-
-  free(fb);
-  return true;
-}
-
-// ---------------------------------------------------------------------------
-// Contatore in refresh parziale
-// ---------------------------------------------------------------------------
-// La finestra parziale sta in basso a destra e viene riscritta da sola: e'
-// esattamente il gesto che servira' all'hub per aggiornare i numeri senza far
-// lampeggiare tutta la pagina.
-static const int16_t BOX_W = 220, BOX_H = 60;
-
-static void drawCounter(uint32_t n, uint32_t uptime_s, bool full)
-{
-  const int16_t x = display.width() - BOX_W - 8;
-  const int16_t y = display.height() - BOX_H - 8;
-
-  if (full) display.setFullWindow();
-  else      display.setPartialWindow(x, y, BOX_W, BOX_H);
-
-  display.firstPage();
-  do
-  {
-    if (full) display.fillScreen(GxEPD_WHITE);
-    else      display.fillRect(x, y, BOX_W, BOX_H, GxEPD_WHITE);
-
-    display.drawRect(x, y, BOX_W, BOX_H, GxEPD_BLACK);
-    display.setTextColor(GxEPD_BLACK);
-
-    display.setFont(&FreeSansBold24pt7b);
-    display.setCursor(x + 10, y + 44);
-    display.printf("%lu", (unsigned long)n);
-
-    display.setFont(&FreeMonoBold9pt7b);
-    display.setCursor(x + 110, y + 26);
-    display.print(full ? "COMPLETO" : "parziale");
-    display.setCursor(x + 110, y + 46);
-    display.printf("%lus", (unsigned long)uptime_s);
-  }
-  while (display.nextPage());
-}
 
 // ---------------------------------------------------------------------------
 // Pannello a riposo e tasto BOOT
@@ -1002,27 +806,16 @@ static void seedForecastDaSD()
   s_nodiDirty = true;
 }
 
-enum Page : uint8_t
-{
-  PAGE_NODI = 0,    // i nodi della stazione: la pagina per cui l'hub esiste
-  PAGE_GFX,         // geometria, font, retini
-  PAGE_RAW,         // 15.000 byte grezzi nel formato del progetto
-  PAGE_COUNTER,     // contatore che si aggiorna in parziale ogni 20 s
-  PAGE_PHOTO,       // una foto vera, uscita da dither.html
-  PAGE_BLANK,       // bianca, nessun aggiornamento
-  PAGE_COUNT
-};
+// Richieste che arrivano dalla web UI: si ACCODANO e le esegue il loop().
+// Un refresh del pannello sono 2,2 s, e dentro un handler HTTP vorrebbe dire
+// tenere fermo il server (e con lui l'OTA e il prelievo dei DATA dei nodi):
+// e' la stessa regola dei callback ESP-NOW — la richiesta accoda, il loop
+// lavora.
+static volatile bool    s_refreshChiesto = false;
+static volatile int16_t s_paginaChiesta  = -1;
 
-static const char* const PAGE_NAMES[PAGE_COUNT] =
-{
-  "1/6 nodi", "2/6 geometria", "3/6 formato-progetto", "4/6 contatore",
-  "5/6 foto", "6/6 bianca"
-};
-
-static uint8_t  s_page     = PAGE_NODI;
-static uint32_t s_next     = 0;   // prossimo aggiornamento del contatore
-static uint32_t s_n        = 0;
-static uint32_t s_partials = 0;
+void app_chiedi_refresh()          { s_refreshChiesto = true; }
+void app_chiedi_pagina(uint8_t i)  { s_paginaChiesta  = (int16_t)i; }
 
 // Chiamata da remote_loop() quando un nodo consegna un DATA. Gira nel contesto
 // di loop(), non in un callback della radio: dentro remote_nodes il lavoro
@@ -1069,13 +862,168 @@ static void onDatoNodo(const RemoteNode* n)
                 (unsigned long)n->seq, n->online ? "" : "  (era muto)");
 }
 
-static void showPage(uint8_t p)
+// ---------------------------------------------------------------------------
+// Pagina MESSAGGIO — il bigliettino sul frigo
+// ---------------------------------------------------------------------------
+// Il testo e' UTF-8 e i font Adafruit_GFX sono ASCII puro: "perché" uscirebbe
+// "perch?". Da qui U8g2_for_Adafruit_GFX, che disegna UTF-8 sullo stesso
+// canvas di GxEPD2 senza portarsi dietro un secondo driver di display.
+//
+// Il corpo si sceglie da solo: si prova dal piu' grande al piu' piccolo e si
+// tiene il primo che entra nell'area, a capo compresi. Un messaggio corto
+// deve leggersi da lontano, uno lungo deve starci — sono due esigenze diverse
+// e non esiste un corpo che le soddisfi entrambe.
+static const uint8_t* const MSG_FONTS[] = {
+  u8g2_font_helvB24_tf, u8g2_font_helvB18_tf,
+  u8g2_font_helvB14_tf, u8g2_font_helvB12_tf, u8g2_font_helvB10_tf
+};
+static const int MSG_FONTS_N = sizeof(MSG_FONTS) / sizeof(MSG_FONTS[0]);
+
+// Area utile del testo: sotto l'intestazione, sopra il piede.
+static const int16_t MSG_X0 = 12, MSG_X1 = 388;
+static const int16_t MSG_Y0 = 56, MSG_Y1 = 268;
+
+// Spezza `testo` in righe che stanno in `larghezza` con il font gia'
+// selezionato. Ritorna quante righe servono; se `out` non e' nullptr ci
+// scrive le prime `maxRighe`. Va a capo sugli spazi; una parola piu' larga
+// dell'area viene lasciata intera e sbordera' — meglio una riga lunga che un
+// taglio a meta' parola in mezzo a un avviso.
+static int msgWrap(const char* testo, int16_t larghezza, String* out, int maxRighe)
 {
+  int n = 0;
+  String riga = "";
+  const char* p = testo;
+
+  while (*p)
+  {
+    // prossima parola (con lo spazio che la precede, se c'e')
+    String parola = "";
+    while (*p == ' ') { p++; if (riga.length()) parola += ' '; }
+    while (*p && *p != ' ') parola += *p++;
+    if (parola.length() == 0) continue;
+
+    const String prova = riga + parola;
+    if (riga.length() && u8g2Fonts.getUTF8Width(prova.c_str()) > larghezza)
+    {
+      if (out && n < maxRighe) out[n] = riga;
+      n++;
+      riga = parola;
+      riga.trim();
+    }
+    else
+    {
+      riga = prova;
+    }
+  }
+  if (riga.length()) { if (out && n < maxRighe) out[n] = riga; n++; }
+  return n;
+}
+
+#define MSG_RIGHE_MAX 12
+
+static void screenMessaggio(const Message* m)
+{
+  display.setFullWindow();
+  display.firstPage();
+  do
+  {
+    display.fillScreen(GxEPD_WHITE);
+    u8g2Fonts.setForegroundColor(GxEPD_BLACK);
+    u8g2Fonts.setBackgroundColor(GxEPD_WHITE);
+
+    // Intestazione: cosa e' questa pagina, e quando e' stato scritto. L'ora
+    // dello scritto, non "quanto tempo fa": un istante non invecchia, e su un
+    // pannello che si ridisegna ogni tanto un "12 min fa" e' sbagliato quasi
+    // sempre.
+    u8g2Fonts.setFont(u8g2_font_helvB10_tf);
+    u8g2Fonts.setCursor(MSG_X0, 26);
+    u8g2Fonts.print("MESSAGGIO");
+    display.drawFastHLine(MSG_X0, 36, MSG_X1 - MSG_X0, GxEPD_BLACK);
+
+    if (m == nullptr)
+    {
+      u8g2Fonts.setFont(u8g2_font_helvR12_tf);
+      const char* vuoto = "nessun messaggio";
+      const int16_t w = u8g2Fonts.getUTF8Width(vuoto);
+      u8g2Fonts.setCursor((400 - w) / 2, 160);
+      u8g2Fonts.print(vuoto);
+      continue;
+    }
+
+    if (m->creato != 0)
+    {
+      const String q = fmtOra(m->creato);
+      u8g2Fonts.setFont(u8g2_font_helvR10_tf);
+      const int16_t w = u8g2Fonts.getUTF8Width(q.c_str());
+      u8g2Fonts.setCursor(MSG_X1 - w, 26);
+      u8g2Fonts.print(q);
+    }
+
+    // Il corpo piu' grande che ci sta, righe comprese.
+    String righe[MSG_RIGHE_MAX];
+    int    nRighe = 0;
+    int    scelto = MSG_FONTS_N - 1;
+    int16_t passo = 0;
+
+    for (int f = 0; f < MSG_FONTS_N; f++)
+    {
+      u8g2Fonts.setFont(MSG_FONTS[f]);
+      const int16_t h = u8g2Fonts.getFontAscent() - u8g2Fonts.getFontDescent();
+      const int16_t interlinea = (int16_t)(h * 1.25f);
+      const int n = msgWrap(m->testo, MSG_X1 - MSG_X0, nullptr, 0);
+      if (n * interlinea <= (MSG_Y1 - MSG_Y0) || f == MSG_FONTS_N - 1)
+      {
+        scelto = f;
+        passo  = interlinea;
+        break;
+      }
+    }
+
+    u8g2Fonts.setFont(MSG_FONTS[scelto]);
+    nRighe = msgWrap(m->testo, MSG_X1 - MSG_X0, righe, MSG_RIGHE_MAX);
+    if (nRighe > MSG_RIGHE_MAX) nRighe = MSG_RIGHE_MAX;
+
+    // Blocco centrato verticalmente nell'area: un messaggio di una riga in
+    // cima a una pagina vuota sembra un errore di disegno.
+    const int16_t alt = nRighe * passo;
+    int16_t y = MSG_Y0 + (MSG_Y1 - MSG_Y0 - alt) / 2 + u8g2Fonts.getFontAscent();
+    for (int i = 0; i < nRighe; i++)
+    {
+      const int16_t w = u8g2Fonts.getUTF8Width(righe[i].c_str());
+      u8g2Fonts.setCursor((400 - w) / 2, y);
+      u8g2Fonts.print(righe[i]);
+      y += passo;
+    }
+
+    // Piede: urgenza e scadenza, le due cose che cambiano come va letto.
+    u8g2Fonts.setFont(u8g2_font_helvR10_tf);
+    display.drawFastHLine(MSG_X0, 278, MSG_X1 - MSG_X0, GxEPD_BLACK);
+    u8g2Fonts.setCursor(MSG_X0, 294);
+    if (m->priorita == MSG_URGENTE) u8g2Fonts.print("URGENTE");
+    if (m->scadenza != 0)
+    {
+      const String s = "fino alle " + fmtOra(m->scadenza);
+      const int16_t w = u8g2Fonts.getUTF8Width(s.c_str());
+      u8g2Fonts.setCursor(MSG_X1 - w, 294);
+      u8g2Fonts.print(s);
+    }
+  }
+  while (display.nextPage());
+}
+
+// ---------------------------------------------------------------------------
+// Il modello delle pagine (pages.*) decide COSA mostrare; qui si disegna.
+// ---------------------------------------------------------------------------
+static void showPage(uint8_t i)
+{
+  const PageCfg* pg = pages_get(i);
+  if (pg == nullptr || !pg->usato) return;
+
   const uint32_t t0 = millis();
 
-  switch (p)
+  switch (pg->tipo)
   {
-    case PAGE_NODI:
+    case PT_NODI:
       // Sempre completo entrando: la pagina precedente e' ancora nella memoria
       // del controller e un parziale la lascerebbe sotto.
       screenNodi(true);
@@ -1083,29 +1031,12 @@ static void showPage(uint8_t p)
       s_nodiDirty    = false;
       s_nodiUltimoMs = millis();
       break;
-    case PAGE_GFX:
-      screenGfx();
+
+    case PT_MESSAGGIO:
+      screenMessaggio(msg_active(time(nullptr)));
       break;
-    case PAGE_RAW:
-      screenRawFormat();
-      break;
-    case PAGE_COUNTER:
-      // Si entra sempre con un completo: la pagina precedente e' ancora nella
-      // memoria del controller e un parziale la lascerebbe sotto.
-      s_n = 0;
-      s_partials = 0;
-      drawCounter(s_n, millis() / 1000, true);
-      s_next = millis() + 20000UL;
-      break;
-    case PAGE_PHOTO:
-      // Il percorso vero di una pagina immagine: 15.000 byte gia' impacchettati
-      // spinti in RAM del controller e basta, nessuna conversione. L'unica
-      // differenza dal futuro e' da dove arrivano i byte — qui dalla flash,
-      // domani da /images/<nome>.bin sulla microSD.
-      display.writeImage(FOTO_PROVA, 0, 0, IMG_W, IMG_H, false, false, true);
-      display.refresh(false);
-      break;
-    case PAGE_BLANK:
+
+    case PT_BIANCA:
     default:
       screenBlank();
       break;
@@ -1116,8 +1047,9 @@ static void showPage(uint8_t p)
   s_epdUltimoMs   = millis() - t0;
   s_fullUltimoMs  = millis();   // il cambio pagina e' sempre un completo
   s_oraUltimoMs   = millis();
-  Serial.printf("[epd] pagina %s: %lu ms\n", PAGE_NAMES[p],
-                (unsigned long)s_epdUltimoMs);
+  pages_disegnata(millis());
+  Serial.printf("[epd] pagina %u (%s): %lu ms\n", (unsigned)i,
+                pages_tipo_nome(pg->tipo), (unsigned long)s_epdUltimoMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -1158,6 +1090,11 @@ void setup()
   // toccare.
   display.init(115200, true, 50, false);
   display.setRotation(0);          // 0 = 400x300 nativo, come il formato .bin
+
+  // U8g2 disegna sopra lo STESSO canvas di GxEPD2: begin() vuole il display
+  // gia' inizializzato, e da qui in poi le due strade convivono (i font
+  // Adafruit per i numeri grandi della pagina nodi, U8g2 dove serve UTF-8).
+  u8g2Fonts.begin(display);
 
   Serial.printf("[epd] dopo la rotazione: %d x %d\n", display.width(), display.height());
   Serial.printf("[epd] partial update: %s, fast partial: %s\n",
@@ -1224,8 +1161,14 @@ void setup()
     Serial.println("[hub] ESP-NOW non attivo: il pannello funziona lo stesso.");
   }
 
-  Serial.println("[epd] BOOT: pagina successiva. L'ultima e' la bianca.");
-  showPage(s_page);
+  // Elenco delle pagine e messaggio attivo: entrambi da NVS, quindi
+  // disponibili anche senza microSD e prima che la rete sia su.
+  pages_begin();
+  msg_begin();
+
+  Serial.printf("[epd] BOOT breve: pagina successiva. Rotazione %s.\n",
+                pages_rotazione() ? "attiva" : "spenta");
+  showPage(pages_current());
   Serial.printf("[hub] pronto: ESP-NOW %s, canale %u, %d nodi, SD %s, http://%s.local/\n",
                 remote_ready() ? "attivo" : "NON attivo",
                 (unsigned)net_channel(), remote_count(),
@@ -1266,14 +1209,18 @@ void loop()
                   remote_pairing_active() ? "APERTA" : "chiusa");
     // Si va sulla pagina nodi e si ridisegna subito: un comando che non si
     // vede sul pannello e' un comando di cui non si sa se e' arrivato.
-    s_page = PAGE_NODI;
-    showPage(s_page);
+    // Si va sulla pagina dei nodi (slot 0, che esiste sempre) e si ridisegna
+    // subito: un comando che non si vede sul pannello e' un comando di cui non
+    // si sa se e' arrivato.
+    pages_goto(0);
+    showPage(0);
     return;
   }
   if (ev == BOOT_BREVE)
   {
-    s_page = (uint8_t)((s_page + 1) % PAGE_COUNT);
-    showPage(s_page);
+    // A mano si scorrono anche le pagine escluse dalla rotazione: il tasto e'
+    // la via di governo quando la rete non c'e'.
+    showPage(pages_manual_next());
     return;
   }
 
@@ -1285,7 +1232,66 @@ void loop()
     if (ora != s_pairingPrec) { s_pairingPrec = ora; s_nodiDirty = true; }
   }
 
-  if (s_page == PAGE_NODI)
+  // --- comandi che arrivano dalla web UI (accodati, vedi app_chiedi_*) -----
+  if (s_paginaChiesta >= 0)
+  {
+    const uint8_t i = (uint8_t)s_paginaChiesta;
+    s_paginaChiesta = -1;
+    if (pages_goto(i)) { showPage(i); return; }
+  }
+  if (s_refreshChiesto)
+  {
+    // Refresh completo su richiesta: serve a togliere il ghosting quando si
+    // accumula, senza aspettare il ciclo. Ridisegna la pagina corrente.
+    s_refreshChiesto = false;
+    showPage(pages_current());
+    return;
+  }
+
+  // Un messaggio URGENTE scavalca tutto e porta il pannello sulla sua pagina:
+  // e' la differenza fra una lavagnetta e un modo per lasciare un avviso a chi
+  // torna a casa.
+  if (msg_take_urgent())
+  {
+    for (uint8_t i = 0; i < pages_slots(); i++)
+    {
+      const PageCfg* pg = pages_get(i);
+      if (pg && pg->usato && pg->tipo == PT_MESSAGGIO)
+      {
+        pages_goto(i);
+        showPage(i);
+        return;
+      }
+    }
+  }
+
+  // Rotazione automatica: pages_tick() tiene conto di rotazione spenta, ore di
+  // silenzio e del caso "una sola pagina attiva" (dove non si tocca il
+  // pannello: un completo per tornare sulla stessa pagina sono 2,2 s di
+  // lampeggio per niente).
+  {
+    const int prossima = pages_tick(millis(), time(nullptr));
+    if (prossima >= 0)
+    {
+      pages_goto((uint8_t)prossima);
+      showPage((uint8_t)prossima);
+      return;
+    }
+  }
+
+  const PageCfg* pgCur = pages_get(pages_current());
+  const uint8_t  tipoCur = pgCur ? pgCur->tipo : PT_NODI;
+
+  // Il messaggio e' cambiato (o e' appena scaduto) mentre lo si sta
+  // mostrando: senza questo il pannello resterebbe indietro fino al refresh
+  // di cadenza successivo.
+  if (msg_take_dirty(time(nullptr)) && tipoCur == PT_MESSAGGIO)
+  {
+    showPage(pages_current());
+    return;
+  }
+
+  if (tipoCur == PT_NODI)
   {
     // L'orologio per primo: e' il refresh piu' economico e il piu' frequente.
     // Se scatta anche quello della pagina intera, quello ridisegna comunque
@@ -1329,21 +1335,4 @@ void loop()
     return;
   }
 
-  // Solo la pagina del contatore ha qualcosa da aggiornare da sola.
-  if (s_page != PAGE_COUNTER) return;
-  if ((int32_t)(millis() - s_next) < 0) return;
-  s_next = millis() + 20000UL;
-
-  s_n++;
-  // Politica antighosting del piano: parziale spesso, completo ogni tanto. Qui
-  // uno completo ogni 10 parziali per vederlo succedere in pochi minuti;
-  // sull'hub vero sara' "ogni ora o al cambio pagina".
-  const bool full = (s_partials >= 10);
-  const uint32_t t0 = millis();
-  drawCounter(s_n, millis() / 1000, full);
-  display.hibernate();
-
-  Serial.printf("[epd] contatore #%lu %s: %lu ms\n", (unsigned long)s_n,
-                full ? "COMPLETO" : "parziale", (unsigned long)(millis() - t0));
-  s_partials = full ? 0 : s_partials + 1;
 }

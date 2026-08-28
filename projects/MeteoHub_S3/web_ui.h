@@ -26,4 +26,10 @@ const char* app_hub_nome();        // nome con cui l'hub si presenta ai nodi
 uint32_t    app_righe_scritte();   // righe di CSV scritte da questo avvio
 uint32_t    app_epd_refresh();     // refresh del pannello da questo avvio
 uint32_t    app_epd_ultimo_ms();
- uint32_t    app_epd_orologio_ms(); // e quanto costa il solo orologio   // quanto e' costato l'ultimo refresh
+ uint32_t    app_epd_orologio_ms();
+
+// Comandi verso il pannello: si ACCODANO e li esegue il loop(). Un refresh
+// sono ~2,2 s: dentro un handler HTTP terrebbe fermo il server, l'OTA e il
+// prelievo dei DATA dei nodi dal driver ESP-NOW, che tiene solo l'ultimo.
+void app_chiedi_refresh();
+void app_chiedi_pagina(uint8_t indice); // e quanto costa il solo orologio   // quanto e' costato l'ultimo refresh

@@ -21,6 +21,8 @@
 #include "forecast.h"
 #include "sd_logger.h"
 #include "rtc_time.h"
+#include "pages.h"
+#include "messages.h"
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -40,6 +42,31 @@ static constexpr uint32_t INVIO_BUDGET_MS = 20000;
 
 static uint32_t s_invii_interrotti = 0;   // quante volte e' scattato il taglio
 
+// Quanti byte occupa la sequenza UTF-8 che comincia con `c`, 0 se `c` non
+// puo' iniziare una sequenza valida.
+static uint8_t utf8Len(unsigned char c) {
+  if (c < 0x80) return 1;
+  if ((c & 0xE0) == 0xC0) return 2;
+  if ((c & 0xF0) == 0xE0) return 3;
+  if ((c & 0xF8) == 0xF0) return 4;
+  return 0;
+}
+
+// true se `s` e' UTF-8 ben formato (fino a `max` byte o al terminatore).
+static bool utf8Valido(const char* s, size_t max) {
+  if (s == nullptr) return true;
+  for (size_t i = 0; i < max && s[i] != '\0'; ) {
+    const uint8_t n = utf8Len((unsigned char)s[i]);
+    if (n == 0) return false;
+    for (uint8_t k = 1; k < n; k++) {
+      if (s[i + k] == '\0') return false;
+      if (((unsigned char)s[i + k] & 0xC0) != 0x80) return false;
+    }
+    i += n;
+  }
+  return true;
+}
+
 static void appendJsonString(String& out, const char* s) {
   out += '"';
   if (s) {
@@ -47,10 +74,31 @@ static void appendJsonString(String& out, const char* s) {
     // chiamante passasse un buffer non terminato (vedi il commento su
     // rtctime_format in rtc_time.cpp), questo evita comunque una lettura
     // indefinita oltre il buffer invece di bloccare il web server.
-    for (size_t i = 0; i < 256 && s[i] != '\0'; i++) {
-      char c = s[i];
-      if (c == '"' || c == '\\') { out += '\\'; out += c; }
-      else if ((unsigned char)c >= 0x20) out += c;
+    //
+    // I byte che non compongono una sequenza UTF-8 valida diventano '?'.
+    // NON e' pignoleria: un solo byte sbagliato rende non parsabile
+    // l'INTERA risposta, quindi la pagina resta vuota per colpa di un
+    // messaggio scritto male o del nome di un nodo arrivato storto dalla
+    // radio. E' la stessa trappola del NAN emesso come "nan" invece che
+    // come null, gia' costata su EnvNode_C3. Successo davvero il
+    // 2026-08-28: un client che mandava CP1252 ha lasciato un 0xF9
+    // nell'archivio dei messaggi, e /api/messaggio non si parsava piu'.
+    for (size_t i = 0; i < 256 && s[i] != '\0'; ) {
+      const char c = s[i];
+      if (c == '"' || c == '\\') { out += '\\'; out += c; i++; continue; }
+      if ((unsigned char)c < 0x20) { i++; continue; }
+
+      const uint8_t n = utf8Len((unsigned char)c);
+      if (n == 1) { out += c; i++; continue; }
+
+      // Sequenza multibyte: si copia solo se e' completa e ben formata.
+      bool ok = (n != 0);
+      for (uint8_t k = 1; ok && k < n; k++) {
+        if (s[i + k] == '\0' || ((unsigned char)s[i + k] & 0xC0) != 0x80) ok = false;
+      }
+      if (!ok) { out += '?'; i++; continue; }
+      for (uint8_t k = 0; k < n; k++) out += s[i + k];
+      i += n;
     }
   }
   out += '"';
@@ -327,6 +375,7 @@ static const char HUB_PAGE[] PROGMEM = R"HTML(
 </div>
 <div id="lista"></div>
 <p class="muted"><a href="/update">aggiornamento firmware (OTA)</a> &mdash;
+ <a href="/pannello">pannello e messaggi</a> &mdash;
  <a href="/dashboard-upload">dashboard personalizzata</a> &mdash;
  i registri dei nodi stanno su microSD, un file per giorno per nodo.</p>
 <script>
@@ -499,6 +548,330 @@ static void handleApiStato() {
 }
 
 // ---------------------------------------------------------------------
+//  Pagina /pannello — il telecomando del display.
+//
+//  In PROGMEM come la pagina dei nodi e /dashboard-upload, e per la stessa
+//  ragione: la pagina principale puo' essere sostituita da una copia sulla
+//  card, e una funzione che vive nel firmware resta raggiungibile comunque.
+// ---------------------------------------------------------------------
+static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
+<!doctype html><html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MeteoHub-S3 &mdash; Pannello</title><style>
+ body{font-family:system-ui,Arial,sans-serif;background:#111;color:#eee;margin:0;padding:1rem;display:flex;justify-content:center}
+ .wrap{max-width:720px;width:100%}
+ h1{font-size:1.05rem;margin:0 0 .8rem}
+ h2{font-size:.95rem;margin:0 0 .6rem}
+ .card{background:#1c1c1c;border:1px solid #333;border-radius:12px;padding:1rem;margin-bottom:1rem}
+ .row{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:.4rem 0}
+ button{padding:.5rem .85rem;border:0;border-radius:8px;background:#3987e5;color:#fff;font-size:.88rem;cursor:pointer}
+ button.sec{background:#2a2a2a;border:1px solid #444;color:#ccc}
+ button.dan{background:#b91c1c}
+ input,select,textarea{padding:.45rem;border-radius:6px;border:1px solid #444;background:#161616;color:#eee;font-family:inherit}
+ textarea{width:100%;font-size:.95rem;resize:vertical}
+ input[type=number]{width:5rem}
+ table{width:100%;border-collapse:collapse;font-size:.88rem}
+ td,th{padding:.45rem .3rem;border-bottom:1px solid #2a2a2a;text-align:left}
+ th{color:#8a8a8a;font-weight:500;font-size:.78rem}
+ .cur{color:#3fb950;font-weight:600}
+ .muted{color:#8a8a8a;font-size:.8rem;line-height:1.5;margin:.4rem 0}
+ .arch{font-size:.82rem;color:#bbb;border-left:2px solid #333;padding:.25rem .6rem;margin:.35rem 0;cursor:pointer}
+ .arch:hover{border-left-color:#3987e5;color:#eee}
+ a{color:#3987e5}
+</style></head><body><div class="wrap">
+<h1>Pannello e-ink</h1>
+
+<div class="card">
+ <h2>Pagine</h2>
+ <table><thead><tr><th>pagina</th><th>in rotazione</th><th>durata</th><th></th></tr></thead>
+ <tbody id="tbody"></tbody></table>
+ <div class="row" style="margin-top:.8rem">
+  <button id="brf" class="sec">Refresh completo adesso</button>
+  <span class="muted" id="srf"></span>
+ </div>
+ <p class="muted">Il refresh completo toglie il ghosting senza aspettare il
+ ciclo. Ogni cambio pagina &egrave; comunque un refresh completo (~2,2 s, e
+ lampeggia): sotto il minuto di durata non ha senso.</p>
+</div>
+
+<div class="card">
+ <h2>Rotazione automatica</h2>
+ <div class="row">
+  <label><input type="checkbox" id="rot"> attiva</label>
+  <span class="muted">silenzio dalle</span>
+  <input type="number" id="sda" min="0" max="23"> <span class="muted">alle</span>
+  <input type="number" id="sa" min="0" max="23">
+  <button id="bs">Salva</button>
+  <span class="muted" id="ss"></span>
+ </div>
+ <p class="muted">Spenta di default, ed &egrave; una scelta: un pannello che
+ ruota fra sei pagine diventa un salvaschermo che nessuno legge. Con una sola
+ pagina attiva la rotazione non ha dove andare e non tocca il display.
+ Nelle ore di silenzio non ruota &mdash; di notte nessuno guarda, e ogni
+ refresh risparmiato &egrave; consumo e usura in meno. Ore uguali = mai.</p>
+</div>
+
+<div class="card">
+ <h2>Messaggio</h2>
+ <textarea id="txt" rows="3" maxlength="200" placeholder="Il bigliettino sul frigo, max 200 caratteri"></textarea>
+ <div class="row">
+  <span class="muted">scade fra</span>
+  <select id="min">
+   <option value="0">mai</option><option value="60">1 ora</option>
+   <option value="240">4 ore</option><option value="720">12 ore</option>
+   <option value="1440">1 giorno</option><option value="4320">3 giorni</option>
+  </select>
+  <label><input type="checkbox" id="urg"> urgente</label>
+  <button id="bm">Manda al pannello</button>
+  <button id="bx" class="dan">Cancella</button>
+  <span class="muted" id="sm"></span>
+ </div>
+ <p class="muted" id="att"></p>
+ <p class="muted">Un messaggio <b>urgente</b> porta il pannello sulla sua
+ pagina subito, scavalcando la rotazione; uno normale si vede alla prossima
+ rotazione o andandoci a mano. Il pulsante &egrave; esplicito apposta: se il
+ pannello si aggiornasse mentre scrivi, ogni carattere costerebbe un refresh
+ da 2,2 s.</p>
+ <div id="arch"></div>
+</div>
+
+<p class="muted"><a href="/">&larr; nodi</a> &mdash;
+ <a href="/update">aggiornamento firmware</a></p>
+<script>
+const E=document.getElementById.bind(document);
+function esc(x){return String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function dur(s){return s<60?s+' s':(s<3600?Math.round(s/60)+' min':(s/3600).toFixed(1)+' h');}
+function ora(u){return u?new Date(u*1000).toLocaleString('it-IT'):'';}
+function post(u){return fetch(u,{method:'POST'});}
+
+function render(d){
+ const tb=E('tbody'); tb.innerHTML='';
+ d.pagine.forEach(p=>{
+  const tr=document.createElement('tr');
+  tr.innerHTML='<td'+(p.corrente?' class="cur"':'')+'>'+esc(p.tipo)+(p.param?' <span class="muted">'+esc(p.param)+'</span>':'')+(p.corrente?' &larr; a schermo':'')+'</td>'+
+   '<td><input type="checkbox" data-a="'+p.i+'"'+(p.attiva?' checked':'')+'></td>'+
+   '<td><input type="number" data-d="'+p.i+'" value="'+p.durata_s+'" min="60" step="60"> <span class="muted">'+dur(p.durata_s)+'</span></td>'+
+   '<td><button class="sec" data-v="'+p.i+'">mostra</button> <button class="sec" data-f="'+p.i+'">solo questa</button></td>';
+  tb.appendChild(tr);
+ });
+ E('rot').checked=d.rotazione; E('sda').value=d.silenzio_da; E('sa').value=d.silenzio_a;
+ tb.querySelectorAll('[data-a]').forEach(c=>c.onchange=()=>
+   post('/api/pannello/pagina?i='+c.dataset.a+'&attiva='+(c.checked?1:0)).then(r=>r.json()).then(render));
+ tb.querySelectorAll('[data-d]').forEach(c=>c.onchange=()=>
+   post('/api/pannello/pagina?i='+c.dataset.d+'&durata='+c.value).then(r=>r.json()).then(render));
+ tb.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>
+   post('/api/pannello/vai?i='+b.dataset.v).then(()=>{E('srf').textContent='pagina in coda';setTimeout(carica,3500);}));
+ tb.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>
+   post('/api/pannello/pagina?i='+b.dataset.f+'&fissa=1').then(r=>r.json()).then(render));
+}
+
+function carica(){
+ fetch('/api/pannello').then(r=>r.json()).then(render);
+ fetch('/api/messaggio').then(r=>r.json()).then(d=>{
+  E('att').innerHTML = d.attivo
+   ? 'Sul pannello adesso: <b>'+esc(d.attivo.testo)+'</b>'+(d.attivo.scadenza?' &mdash; fino al '+esc(ora(d.attivo.scadenza)):'')
+   : 'Nessun messaggio attivo.';
+  const a=E('arch'); a.innerHTML='';
+  if(d.archivio.length){
+   a.innerHTML='<p class="muted">Archivio (clic per riusare):</p>';
+   d.archivio.forEach(m=>{const p=document.createElement('p');p.className='arch';
+    p.textContent=m.testo; p.title=ora(m.creato);
+    p.onclick=()=>{E('txt').value=m.testo;}; a.appendChild(p);});}
+ });}
+
+E('bs').onclick=()=>post('/api/pannello?rotazione='+(E('rot').checked?1:0)+'&sil_da='+E('sda').value+'&sil_a='+E('sa').value)
+ .then(r=>r.json()).then(d=>{render(d);E('ss').textContent='salvato';setTimeout(()=>E('ss').textContent='',2000);});
+E('brf').onclick=()=>post('/api/pannello/refresh').then(()=>{E('srf').textContent='refresh in coda';setTimeout(()=>E('srf').textContent='',4000);});
+E('bm').onclick=()=>{
+ const b=new URLSearchParams();b.set('t',E('txt').value);b.set('min',E('min').value);b.set('urg',E('urg').checked?1:0);
+ fetch('/api/messaggio',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})
+  .then(r=>r.text().then(t=>{E('sm').textContent=(r.status==200)?'mandato':t;setTimeout(carica,1500);}));};
+E('bx').onclick=()=>{if(!confirm('Togliere il messaggio dal pannello?'))return;
+ post('/api/messaggio/cancella').then(()=>{E('txt').value='';setTimeout(carica,1500);});};
+carica();setInterval(carica,10000);
+</script></div></body></html>
+)HTML";
+
+static void handlePannelloPage() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  net_server().send_P(200, "text/html", PANNELLO_PAGE);
+}
+
+
+// ---------------------------------------------------------------------
+//  Pannello: elenco pagine, rotazione, messaggi.
+//
+//  Tutto quello che tocca il display si LIMITA a mettere una richiesta in
+//  coda (app_chiedi_pagina/app_chiedi_refresh): un refresh sono ~2,2 s, e
+//  farlo dentro un handler HTTP terrebbe fermo il server, l'OTA e il
+//  prelievo dei DATA dal driver ESP-NOW, che tiene solo l'ultimo. E' la
+//  stessa regola dei callback della radio: la richiesta accoda, il loop
+//  lavora.
+// ---------------------------------------------------------------------
+static void appendPagina(String& j, uint8_t i, const PageCfg* p, uint8_t corrente)
+{
+  j += "{\"i\":"; j += i;
+  j += ",\"tipo\":\"";  j += pages_tipo_nome(p->tipo); j += '"';
+  j += ",\"attiva\":";  j += p->attiva ? "true" : "false";
+  j += ",\"durata_s\":"; j += p->durata_s;
+  j += ",\"corrente\":"; j += (i == corrente) ? "true" : "false";
+  j += ",\"param\":"; appendJsonString(j, p->param);
+  j += '}';
+}
+
+static void handleApiPannello() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+
+  const uint8_t corrente = pages_current();
+  String j = "{\"rotazione\":";
+  j += pages_rotazione() ? "true" : "false";
+  j += ",\"silenzio_da\":"; j += pages_silenzio_da();
+  j += ",\"silenzio_a\":";  j += pages_silenzio_a();
+  j += ",\"in_silenzio\":";
+  j += pages_in_silenzio(time(nullptr)) ? "true" : "false";
+  j += ",\"corrente\":"; j += corrente;
+  j += ",\"pagine\":[";
+
+  bool primo = true;
+  for (uint8_t i = 0; i < pages_slots(); i++) {
+    const PageCfg* p = pages_get(i);
+    if (!p || !p->usato) continue;
+    if (!primo) j += ',';
+    primo = false;
+    appendPagina(j, i, p, corrente);
+  }
+  j += "]}";
+  net_server().send(200, "application/json", j);
+}
+
+// POST /api/pannello?rotazione=0|1&sil_da=23&sil_a=7
+static void handleApiPannelloSet() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+
+  if (srv.hasArg("rotazione")) pages_set_rotazione(srv.arg("rotazione").toInt() != 0);
+  if (srv.hasArg("sil_da") && srv.hasArg("sil_a"))
+    pages_set_silenzio((uint8_t)srv.arg("sil_da").toInt(), (uint8_t)srv.arg("sil_a").toInt());
+
+  // In NVS solo qui, alla conferma dell'utente: mai a ogni cambio pagina.
+  pages_save();
+  handleApiPannello();
+}
+
+// POST /api/pannello/pagina?i=2&attiva=1&durata=300
+static void handleApiPannelloPagina() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+  if (!srv.hasArg("i")) { srv.send(400, "text/plain", "manca i"); return; }
+
+  const uint8_t i = (uint8_t)srv.arg("i").toInt();
+  if (srv.hasArg("attiva")) pages_set_attiva(i, srv.arg("attiva").toInt() != 0);
+  if (srv.hasArg("durata")) pages_set_durata(i, (uint16_t)srv.arg("durata").toInt());
+  if (srv.hasArg("fissa") && srv.arg("fissa").toInt() != 0) {
+    // "Fissa questa pagina" non e' una modalita' a parte: e' tutte le altre
+    // disattivate. Cosi' non esiste uno stato "fissato" che possa andare
+    // fuori sincrono con l'elenco.
+    pages_fissa(i);
+    app_chiedi_pagina(i);
+  }
+  pages_save();
+  handleApiPannello();
+}
+
+// POST /api/pannello/vai?i=1  — cambio pagina immediato (accodato)
+static void handleApiPannelloVai() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+  if (!srv.hasArg("i")) { srv.send(400, "text/plain", "manca i"); return; }
+  app_chiedi_pagina((uint8_t)srv.arg("i").toInt());
+  srv.send(200, "text/plain", "ok");
+}
+
+// POST /api/pannello/refresh — completo sulla pagina corrente, per togliere
+// il ghosting senza aspettare il ciclo.
+static void handleApiPannelloRefresh() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  app_chiedi_refresh();
+  net_server().send(200, "text/plain", "ok");
+}
+
+// ---------------------------------------------------------------------
+//  Messaggi
+// ---------------------------------------------------------------------
+static void archivioCb(const Message& m, void* arg) {
+  String* j = (String*)arg;
+  if (j->endsWith("[")) { } else { *j += ','; }
+  *j += "{\"testo\":"; appendJsonString(*j, m.testo);
+  *j += ",\"creato\":";   *j += (long)m.creato;
+  *j += ",\"scadenza\":"; *j += (long)m.scadenza;
+  *j += ",\"urgente\":";  *j += (m.priorita == MSG_URGENTE) ? "true" : "false";
+  *j += '}';
+}
+
+static void handleApiMessaggio() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+
+  const time_t ora = time(nullptr);
+  const Message* m = msg_active(ora);
+
+  String j = "{\"attivo\":";
+  if (m) {
+    j += "{\"testo\":"; appendJsonString(j, m->testo);
+    j += ",\"creato\":";   j += (long)m->creato;
+    j += ",\"scadenza\":"; j += (long)m->scadenza;
+    j += ",\"urgente\":";  j += (m->priorita == MSG_URGENTE) ? "true" : "false";
+    j += '}';
+  } else {
+    j += "null";
+  }
+  j += ",\"archivio\":[";
+  msg_archive_list(archivioCb, &j, 10);
+  j += "]}";
+  net_server().send(200, "application/json", j);
+}
+
+// POST /api/messaggio  (form-urlencoded: t=testo&min=durata&urg=0|1)
+static void handleApiMessaggioSet() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+
+  const String testo = srv.arg("t");
+  if (testo.length() == 0) { srv.send(400, "text/plain", "testo vuoto"); return; }
+  if (testo.length() > MSG_TESTO_MAX) {
+    srv.send(400, "text/plain", "testo troppo lungo");
+    return;
+  }
+  // Si rifiuta all'ingresso quello che non e' UTF-8: cosi' non entra in NVS
+  // ne' nell'archivio sulla card, dove resterebbe per sempre. Il filtro in
+  // appendJsonString() sotto e' la seconda rete, per le righe gia' scritte.
+  if (!utf8Valido(testo.c_str(), testo.length())) {
+    srv.send(400, "text/plain", "testo non UTF-8 (il client ha mandato un'altra codifica)");
+    return;
+  }
+
+  const time_t ora = time(nullptr);
+  const long   min = srv.hasArg("min") ? srv.arg("min").toInt() : 0;
+  const time_t scad = (min > 0) ? (ora + (time_t)min * 60) : 0;
+  const uint8_t prio = (srv.hasArg("urg") && srv.arg("urg").toInt() != 0)
+                       ? MSG_URGENTE : MSG_NORMALE;
+
+  if (!msg_set(testo.c_str(), ora, scad, prio)) {
+    srv.send(500, "text/plain", "salvataggio fallito");
+    return;
+  }
+  // Un messaggio NORMALE non scavalca la pagina corrente: lo si vedra' alla
+  // prossima rotazione, o andandoci a mano. Se scavalcasse, ogni bigliettino
+  // toglierebbe dallo schermo l'unica pagina per cui l'hub esiste.
+  srv.send(200, "text/plain", "ok");
+}
+
+static void handleApiMessaggioCancella() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  msg_clear();
+  net_server().send(200, "text/plain", "ok");
+}
+
+// ---------------------------------------------------------------------
 //  Dashboard personalizzata su microSD — stesso meccanismo di
 //  projects/EnvNode_C3/, e le funzioni sd_* che servono erano gia' qui
 //  (sd_logger.cpp e' una copia di quello del C3): si carica un .html
@@ -651,4 +1024,16 @@ void web_ui_begin() {
   srv.on("/dashboard-upload",     HTTP_GET,  handleDashboardUploadPage);
   srv.on("/dashboard-upload",     HTTP_POST, handleDashboardUploadDone, handleDashboardUploadChunk);
   srv.on("/dashboard-ripristina", HTTP_POST, handleDashboardRipristina);
+
+  // Pannello: pagine, rotazione, messaggi. Gli handler che toccherebbero il
+  // display si limitano ad accodare — il refresh lo fa il loop().
+  srv.on("/pannello",                HTTP_GET,  handlePannelloPage);
+  srv.on("/api/pannello",            HTTP_GET,  handleApiPannello);
+  srv.on("/api/pannello",            HTTP_POST, handleApiPannelloSet);
+  srv.on("/api/pannello/pagina",     HTTP_POST, handleApiPannelloPagina);
+  srv.on("/api/pannello/vai",        HTTP_POST, handleApiPannelloVai);
+  srv.on("/api/pannello/refresh",    HTTP_POST, handleApiPannelloRefresh);
+  srv.on("/api/messaggio",           HTTP_GET,  handleApiMessaggio);
+  srv.on("/api/messaggio",           HTTP_POST, handleApiMessaggioSet);
+  srv.on("/api/messaggio/cancella",  HTTP_POST, handleApiMessaggioCancella);
 }
