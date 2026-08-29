@@ -72,7 +72,23 @@ void hub_loop() {
 
 bool hub_ready()  { return s_ready; }
 bool hub_paired() { return s_ready && Link_Node_IsPaired(); }
-uint8_t hub_channel() { return s_channel; }
+// Il canale si chiede ALLA RADIO ad ogni giro, non si ricorda quello scelto
+// all'avvio. Un nodo connesso all'AP segue il router quando questo si sposta,
+// e lo fa da solo riassociandosi: s_channel resterebbe quello dell'init, cioe'
+// una diagnostica che mente proprio nel caso in cui la si va a leggere - il
+// 2026-08-29 la pagina del nodo a muro diceva "canale 1" mentre tutta la rete
+// era passata al 13, e la trasmissione funzionava benissimo. s_channel resta
+// come ripiego per quando la radio non c'e' (init fallita, o WiFi gia' spento
+// prima del deep sleep, dove il valore serve ancora per la RTC memory).
+uint8_t hub_channel() {
+  if (s_ready) {
+    uint8_t primario = 0;
+    wifi_second_chan_t secondario;
+    if (esp_wifi_get_channel(&primario, &secondario) == ESP_OK && primario != 0)
+      return primario;
+  }
+  return s_channel;
+}
 const char* hub_hub_mac() { return s_hubMac; }
 
 bool hub_send_measure(float tempC, float humPct, float pressHpa, uint16_t battery_mv) {

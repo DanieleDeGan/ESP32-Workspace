@@ -98,6 +98,17 @@
 
 // Da incrementare a ogni firmware caricato: la pagina lo mostra, ed e' l'unico
 // modo per sapere da remoto quale versione sta davvero girando.
+//   v13 2026-08-29  il canale ESP-NOW mostrato in pagina si chiede alla
+//                   radio invece di ricordare quello dell'avvio: su un nodo
+//                   connesso all'AP il router si sposta e il nodo lo segue
+//                   da solo, quindi /api/stato diceva "canale 1" mentre
+//                   tutta la rete era passata al 13. Lo stesso valore
+//                   finisce in RTC memory prima di dormire
+//   v12 2026-08-27  ricerca del canale: se il DATA non viene consegnato il
+//                   nodo riprova sugli altri canali (1, 6, 11 per primi)
+//                   rimandando lo STESSO messaggio, e salva quello buono in
+//                   RTC memory e in NVS. Prima l'unica reazione era la rete
+//                   di sicurezza: cinque risvegli muti e 5 minuti di WiFi
 //   v11 2026-08-24  il nome del nodo lo deriva dal MAC (Meteo-XXXXXX) se non
 //                   ne e' stato impostato uno dalla pagina: due schede
 //                   flashate con lo stesso firmware non possono piu'
@@ -134,7 +145,7 @@
 //   v2  2026-08-22  storico 24 h in RAM + grafici, previsione dal trend
 //                   barometrico a 3 ore, intervallo e altitudine da pagina web
 //   v1  2026-08-22  bring-up del sensore, web UI, OTA
-static const char FW_VERSION[] = "v12";
+static const char FW_VERSION[] = "v13";
 
 // ---------------------------------------------------------------------
 //  Nome del nodo

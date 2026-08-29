@@ -40,7 +40,8 @@ typedef void (*hub_command_cb_t)(int cmd);
 bool hub_begin(const char* node_name);
 
 // Canale su cui sta effettivamente parlando ESP-NOW (per la web UI: e' il
-// numero che deve combaciare con quello dell'hub).
+// numero che deve combaciare con quello dell'hub). Chiesto alla radio ad ogni
+// chiamata: se l'AP si sposta, il nodo lo segue e il numero cambia sotto.
 uint8_t hub_channel();
 
 // Da chiamare a ogni giro di loop(): manda gli HELLO finche' non associato

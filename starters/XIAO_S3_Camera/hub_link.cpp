@@ -1,6 +1,7 @@
 #include "hub_link.h"
 
 #include <WiFi.h>
+#include <esp_wifi.h>   // esp_wifi_get_channel(): il canale vero, vedi hub_channel()
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
@@ -50,7 +51,22 @@ bool hub_begin(const char* node_name) {
   return true;
 }
 
-uint8_t hub_channel() { return s_channel; }
+// Il canale si chiede ALLA RADIO, non si ricorda quello dell'avvio: un nodo
+// connesso all'AP segue il router quando questo si sposta, e lo fa da solo
+// riassociandosi, mentre s_channel resterebbe fermo al numero di hub_begin().
+// E' il numero con cui si diagnostica un pairing che non parte, quindi e'
+// proprio quello che non deve mentire - sul nodo meteo, il 2026-08-29, la
+// pagina diceva "canale 1" con tutta la rete passata al 13. s_channel resta
+// come ripiego per quando la radio non risponde (init fallita).
+uint8_t hub_channel() {
+  if (s_ready) {
+    uint8_t primario = 0;
+    wifi_second_chan_t secondario;
+    if (esp_wifi_get_channel(&primario, &secondario) == ESP_OK && primario != 0)
+      return primario;
+  }
+  return s_channel;
+}
 
 void hub_loop() {
   if (!s_ready) return;

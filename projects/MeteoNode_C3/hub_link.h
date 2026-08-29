@@ -75,7 +75,7 @@ void hub_loop();
 
 bool    hub_ready();     // ESP-NOW inizializzato
 bool    hub_paired();    // associato all'hub (WELCOME ricevuto)
-uint8_t hub_channel();   // canale su cui parla davvero
+uint8_t hub_channel();   // canale su cui parla davvero, chiesto alla radio
 
 // MAC dell'hub associato, "-" finche' non lo si conosce.
 const char* hub_hub_mac();
