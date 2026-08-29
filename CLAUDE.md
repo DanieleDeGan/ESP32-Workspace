@@ -66,6 +66,7 @@ toccare) vedi `docs/FILES.md`. Per il pinout/hardware della board AMOLED vedi
 | `projects/MeteoHub_S3/net_ota.h/.cpp` | WiFi + ArduinoOTA + `/update`, variante con `net_server()` condiviso |
 | `projects/MeteoHub_S3/web_ui.h/.cpp` | pagina di stato dell'hub + API dei nodi, gli stessi endpoint di `EnvNode_C3` |
 | `projects/MeteoHub_S3/secrets.h.example` | credenziali: si copia in `secrets.h`, **gitignorato** |
+| `projects/MeteoHub_S3/www/dashboard.html` | dashboard personalizzata dell'hub: confronto fra nodi, storico dai CSV, pressione/trend, salute della rete. **Non compilata**: si carica sulla card da `/dashboard-upload` |
 | `projects/MeteoHub_S3/www/dither.html` | ritaglio + dithering nel browser: produce i `.bin` da 15.000 byte e li manda all'hub. Da `v8` e' anche **servita dalla scheda** su `/immagini`, via `dither_page.h` generato con `www/gen_page.py` |
 | `projects/Timelapse_XIAO/` | **progetto** (XIAO ESP32-S3 Sense): camera timelapse a intervallo, archivio per giorno su microSD, galleria web con riproduzione, NTP + OTA — vedi sezione dedicata |
 | `projects/Timelapse_XIAO/Timelapse_XIAO.ino` | timer degli scatti, gestione dello spazio, impostazioni — qui va la logica applicativa |

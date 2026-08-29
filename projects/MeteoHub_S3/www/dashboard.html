@@ -1,0 +1,907 @@
+<!doctype html>
+<!--
+  ====================================================================
+   MeteoHub-S3 — dashboard personalizzata
+  ====================================================================
+   Si carica sulla microSD dell'hub da  http://<ip>/dashboard-upload  e
+   finisce in  /www/dashboard.html. Da quel momento GET / serve QUESTO
+   file al posto della dashboard di default in PROGMEM.
+
+   ATTENZIONE: il file nel repo e' SOLO IL SORGENTE. La scheda serve la
+   copia sulla card, quindi dopo ogni modifica va ricaricato a mano —
+   ricompilare il firmware non cambia nulla.
+
+   Regole da non violare:
+   - SELF-CONTAINED: CSS e JS inline, nessuna richiesta esterna. In LAN
+     senza Internet un CDN sarebbe irraggiungibile e la pagina resterebbe
+     a meta'.
+   - Le fetch verso la scheda sono SEQUENZIALI. Il WebServer del core e'
+     sincrono e serve un client alla volta: richieste in parallelo lo
+     mettono in coda, fanno scadere i timeout e rubano tempo al prelievo
+     dei DATA dalla radio (il driver tiene solo l'ultimo pacchetto) e ai
+     refresh del pannello.
+   - I CSV NON si scaricano in polling: sono una scansione della card, e
+     un giorno del nodo a muro sono ~1400 righe. Si leggono al cambio
+     giorno e basta; i valori correnti arrivano da /api/nodi.
+   - Se questo file e' rotto o la card viene tolta, / torna da sola alla
+     dashboard di default, e /dashboard-upload e' SEMPRE servita da
+     PROGMEM: e' la via di rientro, ed e' il motivo per cui il piede di
+     navigazione va tenuto anche in una pagina personalizzata.
+
+   API consumate (tutte same-origin, stessa basic-auth):
+     GET  /api/stato                     stato dell'hub
+     GET  /api/nodi                      registro nodi + valori correnti
+     GET  /api/nodi/giorni?nodo=NOME     ["YYYY-MM-DD", ...]
+     GET  /api/nodi/scarica?nodo&d       CSV grezzo di quel giorno
+     POST /api/pairing?on=1|0[&s=sec]    finestra di associazione
+     POST /api/nodi/dimentica?mac=..     toglie un nodo da registro e NVS
+     POST /api/nodi/altitudine?m=..      quota per la pressione al mare
+
+   CSV dei nodi (colonne fisse):
+     ts_iso,ts_unix,fonte_ora,mac,seq,temp_c,hum_pct,press_hpa,batt_mv
+   Un campo VUOTO e' un valore non finito: nel grafico dev'essere un
+   buco, non uno zero — uno zero sarebbe una misura che nessuno ha fatto.
+  ====================================================================
+-->
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MeteoHub-S3</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#0e0f11; --card:#16181c; --card2:#1b1e24; --inset:#101216;
+  --line:#242832; --line2:#31363f;
+  --tx:#e7e9ee; --tx2:#98a0ad; --tx3:#666d7a;
+  --temp:#f0a03c; --hum:#4ab8d8; --press:#b98cf0;
+  --ok:#4ec98a; --warn:#e6b23c; --bad:#e0655a; --accent:#5b9df9;
+  --r:14px;
+  --shadow:0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:
+    radial-gradient(1100px 480px at 15% -10%, #171a20 0%, transparent 60%),
+    radial-gradient(900px 420px at 95% 0%, #14181d 0%, transparent 55%),
+    var(--bg);
+  color:var(--tx);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-size:15px; line-height:1.45;
+  padding:1rem 1rem 3rem;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+a{color:var(--accent)}
+
+header{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin:.4rem 0 1.1rem}
+.brand{display:flex;flex-direction:column;min-width:0;flex:1 1 220px}
+.brand h1{font-size:1.35rem;font-weight:600;letter-spacing:-.02em;margin:0}
+.brand .meta{font-size:.76rem;color:var(--tx3)}
+.pill{display:inline-flex;align-items:center;gap:.45rem;font-size:.75rem;
+  background:var(--card);border:1px solid var(--line);border-radius:999px;
+  padding:.32rem .7rem;color:var(--tx2);white-space:nowrap}
+.pill .led{width:7px;height:7px;border-radius:50%;background:var(--tx3)}
+.pill.on .led{background:var(--ok);animation:beat 2.4s ease-out infinite}
+.pill.off .led{background:var(--bad)}
+.pill.warn .led{background:var(--warn)}
+@keyframes beat{0%{box-shadow:0 0 0 0 rgba(78,201,138,.45)}70%{box-shadow:0 0 0 7px rgba(78,201,138,0)}100%{box-shadow:0 0 0 0 rgba(78,201,138,0)}}
+
+.card{background:linear-gradient(180deg,var(--card2),var(--card));
+  border:1px solid var(--line);border-radius:var(--r);padding:1rem 1.1rem;
+  margin-bottom:1rem;box-shadow:var(--shadow)}
+.card>h2{font-size:.7rem;font-weight:600;text-transform:uppercase;
+  letter-spacing:.09em;color:var(--tx3);margin:0 0 .85rem}
+.card>h2 .hint{float:right;text-transform:none;letter-spacing:0;font-weight:400;color:var(--tx3)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:1rem}
+
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:.75rem}
+.tiles.sec{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin-top:.75rem}
+.tiles.sec .tile{padding:.6rem .8rem}
+.tiles.sec .tile .big{font-size:1.1rem;font-weight:500}
+.tile{background:var(--inset);border:1px solid var(--line);border-radius:11px;
+  padding:.8rem .9rem;position:relative;overflow:hidden}
+.tile .lbl{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3);
+  display:flex;align-items:center;gap:.4rem}
+.tile .big{font-size:2rem;font-weight:600;letter-spacing:-.03em;line-height:1.15;margin-top:.15rem}
+.tile .big .u{font-size:.95rem;font-weight:500;color:var(--tx2);margin-left:.15rem;letter-spacing:0}
+.tile .sub{font-size:.73rem;color:var(--tx3);margin-top:.2rem}
+.tile .row2{display:flex;gap:1.1rem;margin-top:.45rem;flex-wrap:wrap}
+.tile .row2 div{font-size:.8rem;color:var(--tx2)}
+.tile .row2 b{font-weight:600;color:var(--tx)}
+.tile .prev{font-size:.73rem;margin-top:.45rem;line-height:1.45;
+  border-top:1px dashed var(--line);padding-top:.35rem;color:var(--tx3)}
+.tile canvas{width:100%;height:36px;display:block;margin-top:.5rem}
+.nd{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--tx3);flex:0 0 auto}
+.nd.on{background:var(--ok)} .nd.off{background:var(--bad)}
+
+.chart{width:100%;height:210px;display:block}
+.chart.short{height:150px}
+.legend{display:flex;flex-wrap:wrap;gap:.35rem .9rem;font-size:.76rem;color:var(--tx2);margin-top:.5rem}
+.legend span{display:inline-flex;align-items:center;gap:.35rem}
+.legend i{width:11px;height:3px;border-radius:2px;display:inline-block}
+
+table{width:100%;border-collapse:collapse;font-size:.82rem}
+th,td{text-align:right;padding:.42rem .5rem;border-bottom:1px solid var(--line)}
+th{font-size:.68rem;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);font-weight:600}
+th:first-child,td:first-child{text-align:left}
+tbody tr:last-child td{border-bottom:none}
+td.warnv{color:var(--warn)} td.badv{color:var(--bad)} td.okv{color:var(--ok)}
+.tblwrap{overflow-x:auto}
+
+button{font:inherit;font-size:.82rem;color:var(--tx);background:var(--card2);
+  border:1px solid var(--line2);border-radius:9px;padding:.4rem .8rem;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.danger{color:var(--bad)}
+button:disabled{opacity:.45;cursor:default}
+input[type=number],input[type=text]{font:inherit;font-size:.85rem;color:var(--tx);
+  background:var(--inset);border:1px solid var(--line2);border-radius:8px;padding:.35rem .5rem;width:7rem}
+.ctrls{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.msg{font-size:.78rem;margin-left:.3rem}
+.msg.ok{color:var(--ok)} .msg.err{color:var(--bad)}
+.muted{color:var(--tx3);font-size:.78rem}
+
+nav{margin:1.6rem 0 .5rem;display:flex;flex-wrap:wrap;gap:.4rem 1rem;font-size:.85rem}
+
+#tip{position:fixed;display:none;pointer-events:none;z-index:9;
+  background:#0b0d10ee;border:1px solid var(--line2);border-radius:9px;
+  padding:.45rem .6rem;font-size:.76rem;line-height:1.5;box-shadow:0 8px 20px rgba(0,0,0,.5)}
+#tip b{font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="brand">
+    <h1 id="hNome">MeteoHub-S3</h1>
+    <div class="meta" id="hMeta">collegamento in corso…</div>
+  </div>
+  <span class="pill" id="pOra"><span class="led"></span><span id="pOraTx">—</span></span>
+  <span class="pill" id="pNodi">nodi <b id="pNodiTx">—</b></span>
+  <span class="pill" id="pSd">SD <b id="pSdTx">—</b></span>
+</header>
+
+<!-- ============ i nodi adesso ============ -->
+<section class="card">
+  <h2>I nodi adesso <span class="hint" id="hUpd"></span></h2>
+  <div class="tiles" id="tiles"><div class="muted">lettura…</div></div>
+</section>
+
+<!-- ============ confronto fra nodi ============ -->
+<section class="card">
+  <h2>Confronto fra i nodi
+    <span class="hint" id="hGiorno">—</span>
+  </h2>
+  <div class="ctrls" style="margin-bottom:.9rem">
+    <button id="bPrev" title="giorno precedente">←</button>
+    <select id="selGiorno" style="font:inherit;font-size:.85rem;color:var(--tx);background:var(--inset);
+      border:1px solid var(--line2);border-radius:8px;padding:.35rem .5rem"></select>
+    <button id="bNext" title="giorno successivo">→</button>
+    <button id="bRicarica">ricarica</button>
+    <span class="msg" id="mGiorno"></span>
+  </div>
+  <div class="grid2">
+    <div>
+      <div class="muted" style="margin-bottom:.2rem">Temperatura (°C)</div>
+      <canvas class="chart" id="cT"></canvas>
+    </div>
+    <div>
+      <div class="muted" style="margin-bottom:.2rem">Umidità (%)</div>
+      <canvas class="chart" id="cH"></canvas>
+    </div>
+  </div>
+  <div class="legend" id="legT"></div>
+  <div style="margin-top:1rem">
+    <div class="muted" style="margin-bottom:.2rem">Differenza fra nodi (°C) — positiva quando il primo è più caldo</div>
+    <canvas class="chart short" id="cD"></canvas>
+  </div>
+</section>
+
+<!-- ============ pressione, trend, previsione ============ -->
+<section class="card">
+  <h2>Pressione, trend e previsione <span class="hint">al livello del mare · quota <b id="hAlt">—</b> m</span></h2>
+  <canvas class="chart" id="cP"></canvas>
+  <div class="legend" id="legP"></div>
+  <div class="tiles sec" id="tilesPrev"></div>
+</section>
+
+<!-- ============ salute della rete ============ -->
+<section class="card">
+  <h2>Salute della rete <span class="hint">contatori da quando l'hub è acceso</span></h2>
+  <div class="tblwrap">
+    <table id="tblNodi">
+      <thead><tr>
+        <th>nodo</th><th>ultimo</th><th>cadenza</th><th>pacchetti</th><th>persi</th>
+        <th>seq</th><th>riavvii</th><th>batteria</th><th>buchi oggi</th><th></th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="ctrls" style="margin-top:.9rem">
+    <button id="bPair">apri associazione (2 min)</button>
+    <span class="msg" id="mPair"></span>
+  </div>
+</section>
+
+<!-- ============ hub ============ -->
+<section class="card">
+  <h2>Hub</h2>
+  <div class="tiles sec" id="tilesHub"></div>
+  <div class="ctrls" style="margin-top:.9rem">
+    <label class="muted">quota per la pressione al mare</label>
+    <input type="number" id="inAlt" step="1" min="-400" max="4000">
+    <button id="bAlt">salva</button>
+    <span class="msg" id="mAlt"></span>
+  </div>
+</section>
+
+<nav>
+  <a href="/pannello">Pannello e messaggi</a>
+  <a href="/immagini">Componi immagine</a>
+  <a href="/dashboard-upload">Dashboard personalizzata</a>
+  <a href="/update">Aggiornamento firmware</a>
+</nav>
+<p class="muted">Questa pagina è servita dalla microSD. Se qualcosa non torna,
+  <a href="/dashboard-upload">/dashboard-upload</a> è sempre in PROGMEM e permette di ripristinare quella di default.</p>
+
+</div>
+<div id="tip"></div>
+
+<script>
+"use strict";
+
+// ====================================================================
+//  Stato del client
+// ====================================================================
+// I CSV del giorno stanno qui, per nodo: {nome: [{ts,t,h,p,seq}, ...]}.
+// Si riempiono al cambio giorno, mai in polling.
+let SERIE   = {};
+let NODI    = [];     // ultimo /api/nodi
+let STATO   = {};     // ultimo /api/stato
+let GIORNI  = [];     // giorni disponibili sulla card (unione fra i nodi)
+let GIORNO  = null;   // giorno mostrato
+let CARICO  = false;  // un caricamento CSV in corso: non sovrapporne altri
+
+// Colori per nodo, assegnati in ordine di comparsa. Nei grafici la
+// grandezza e' l'asse e il nodo e' il colore: cosi' lo stesso nodo ha lo
+// stesso colore in tutti i riquadri, che e' la sola cosa che rende
+// leggibile un confronto.
+const PALETTE = ['#f0a03c','#4ab8d8','#4ec98a','#b98cf0','#e0655a','#e6b23c','#5b9df9','#8fd14f'];
+const COLORE  = {};
+function coloreNodo(nome){
+  if (!(nome in COLORE)) COLORE[nome] = PALETTE[Object.keys(COLORE).length % PALETTE.length];
+  return COLORE[nome];
+}
+
+const COL = {};
+function readColors(){
+  const s = getComputedStyle(document.documentElement);
+  for (const k of ['tx','tx2','tx3','line','line2','ok','warn','bad','accent','press'])
+    COL[k] = s.getPropertyValue('--'+k).trim();
+}
+
+// ====================================================================
+//  Helper
+// ====================================================================
+const $ = (id) => document.getElementById(id);
+
+function esc(x){
+  return String(x==null?'':x).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function nv(x, d){ return (x==null || !isFinite(x)) ? '--' : Number(x).toFixed(d).replace('.',','); }
+function hhmm(ts){
+  const d = new Date(ts*1000);
+  return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+}
+function uptimeStr(s){
+  s = Math.max(0, Math.floor(s||0));
+  const g = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
+  if (g) return g+' g '+h+' h';
+  if (h) return h+' h '+m+' min';
+  return m+' min';
+}
+function silStr(sec){
+  if (sec==null) return '--';
+  if (sec < 90) return sec+' s fa';
+  if (sec < 5400) return Math.round(sec/60)+' min fa';
+  return Math.round(sec/3600)+' h fa';
+}
+function oggiISO(){
+  const d = new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+
+// Una fetch alla volta: il WebServer della scheda e' sincrono, e due
+// richieste in volo si mettono in coda invece di andare piu' veloci.
+let CODA = Promise.resolve();
+function api(path, opts){
+  const run = async () => {
+    const r = await fetch(path, Object.assign({cache:'no-store'}, opts||{}));
+    if (!r.ok) throw new Error(r.status+' '+r.statusText);
+    const ct = r.headers.get('content-type')||'';
+    return ct.includes('json') ? r.json() : r.text();
+  };
+  CODA = CODA.then(run, run);
+  return CODA;
+}
+
+function setMsg(el, text, kind){
+  el.textContent = text || '';
+  el.className = 'msg' + (kind ? ' '+kind : '');
+  if (text && kind==='ok') setTimeout(()=>{ if(el.textContent===text) el.textContent=''; }, 4000);
+}
+
+// ====================================================================
+//  Canvas: fondamenta comuni
+// ====================================================================
+const tip = $('tip');
+function fit(cv){
+  const dpr = window.devicePixelRatio || 1;
+  const r = cv.getBoundingClientRect();
+  const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
+  if (cv.width !== Math.round(w*dpr) || cv.height !== Math.round(h*dpr)){
+    cv.width = Math.round(w*dpr); cv.height = Math.round(h*dpr);
+  }
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  return {ctx,w,h};
+}
+function vuoto(ctx,w,h,txt){
+  ctx.fillStyle = COL.tx3; ctx.font = '12px system-ui';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(txt, w/2, h/2);
+  ctx.textAlign='start'; ctx.textBaseline='alphabetic';
+}
+function showTip(ev, html){
+  tip.innerHTML = html;
+  tip.style.display = 'block';
+  const r = tip.getBoundingClientRect();
+  let x = ev.clientX + 14, y = ev.clientY - r.height - 10;
+  if (x + r.width > innerWidth - 8) x = ev.clientX - r.width - 14;
+  if (y < 8) y = ev.clientY + 16;
+  tip.style.left = x+'px'; tip.style.top = y+'px';
+}
+function hideTip(){ tip.style.display = 'none'; }
+
+// Ogni grafico si ridisegna da solo al resize e tiene l'ascissa del
+// mouse per il tooltip: registrarlo qui evita di ripetere gli stessi
+// tre listener per ognuno.
+const GRAFICI = [];
+function monta(cv, disegna){
+  const g = {cv, disegna, hover:null};
+  GRAFICI.push(g);
+  cv.addEventListener('mousemove', ev => {
+    const r = cv.getBoundingClientRect();
+    g.hover = {x: ev.clientX - r.left, ev};
+    disegna(g);
+  });
+  cv.addEventListener('mouseleave', () => { g.hover = null; hideTip(); disegna(g); });
+  return g;
+}
+function ridisegnaTutti(){ for (const g of GRAFICI) g.disegna(g); }
+addEventListener('resize', ridisegnaTutti);
+
+// --------------------------------------------------------------------
+//  Grafico a linee nel tempo, piu' serie sovrapposte.
+//  serie: [{nome, colore, punti:[{ts, v}]}]  — un punto MANCANTE spezza
+//  la linea invece di essere interpolato: nel CSV un campo vuoto e' un
+//  dato che non esiste, e tirarci sopra una retta lo inventerebbe.
+// --------------------------------------------------------------------
+function drawSerie(g, serie, unita, decim, opts){
+  opts = opts || {};
+  const {ctx,w,h} = fit(g.cv);
+  const vive = serie.filter(s => s.punti.some(p => p.v != null));
+  if (!vive.length){ vuoto(ctx,w,h, opts.vuoto || 'nessun dato per questo giorno'); return; }
+
+  const padL = 44, padR = 10, padT = 10, padB = 22;
+  const x0 = padL, x1 = w - padR, y0 = padT, y1 = h - padB;
+
+  let tMin = Infinity, tMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+  for (const s of vive) for (const p of s.punti){
+    if (p.ts < tMin) tMin = p.ts;
+    if (p.ts > tMax) tMax = p.ts;
+    if (p.v == null) continue;
+    if (p.v < vMin) vMin = p.v;
+    if (p.v > vMax) vMax = p.v;
+  }
+  if (!isFinite(vMin)){ vuoto(ctx,w,h,'nessun dato'); return; }
+  if (opts.zero){ vMin = Math.min(vMin, 0); vMax = Math.max(vMax, 0); }
+  let margine = (vMax - vMin) * 0.12;
+  if (margine < 0.05) margine = 0.5;
+  vMin -= margine; vMax += margine;
+  if (tMax - tMin < 60) tMax = tMin + 60;
+
+  const X = ts => x0 + (ts - tMin) / (tMax - tMin) * (x1 - x0);
+  const Y = v  => y1 - (v - vMin) / (vMax - vMin) * (y1 - y0);
+
+  // griglia orizzontale + etichette dei valori
+  ctx.strokeStyle = COL.line; ctx.lineWidth = 1;
+  ctx.fillStyle = COL.tx3; ctx.font = '10px system-ui'; ctx.textAlign = 'right';
+  for (let i=0; i<=4; i++){
+    const v = vMin + (vMax - vMin) * i/4, y = Math.round(Y(v)) + .5;
+    ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+    ctx.fillText(v.toFixed(decim).replace('.',','), x0 - 6, y + 3);
+  }
+  // tacche orarie: ogni 3 ore, che su una giornata sono 8 etichette
+  ctx.textAlign = 'center';
+  const passo = 3*3600;
+  for (let t = Math.ceil(tMin/passo)*passo; t <= tMax; t += passo){
+    const x = Math.round(X(t)) + .5;
+    ctx.strokeStyle = COL.line;
+    ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
+    ctx.fillStyle = COL.tx3; ctx.fillText(hhmm(t), x, h - 7);
+  }
+  // linea dello zero, quando lo zero e' significativo (grafico delle differenze)
+  if (opts.zero && vMin < 0 && vMax > 0){
+    const y = Math.round(Y(0)) + .5;
+    ctx.strokeStyle = COL.line2; ctx.setLineDash([4,3]);
+    ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  ctx.lineWidth = 1.7; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  for (const s of vive){
+    ctx.strokeStyle = s.colore;
+    ctx.beginPath();
+    let giu = true;
+    for (const p of s.punti){
+      if (p.v == null){ giu = true; continue; }   // buco: si stacca la penna
+      const x = X(p.ts), y = Y(p.v);
+      if (giu){ ctx.moveTo(x,y); giu = false; } else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+  }
+
+  // tooltip: si cerca il punto piu' vicino all'ascissa del mouse
+  if (g.hover){
+    const ts = tMin + (g.hover.x - x0) / (x1 - x0) * (tMax - tMin);
+    if (g.hover.x >= x0 && g.hover.x <= x1){
+      const x = Math.round(X(ts)) + .5;
+      ctx.strokeStyle = COL.line2;
+      ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
+      let html = '<b>'+hhmm(ts)+'</b>';
+      for (const s of vive){
+        let best = null, bestD = Infinity;
+        for (const p of s.punti){
+          if (p.v == null) continue;
+          const d = Math.abs(p.ts - ts);
+          if (d < bestD){ bestD = d; best = p; }
+        }
+        // oltre mezz'ora dal cursore il punto non e' "quello li'": meglio
+        // non mostrarlo che far credere che il nodo abbia misurato allora
+        if (best && bestD < 1800){
+          ctx.fillStyle = s.colore;
+          ctx.beginPath(); ctx.arc(X(best.ts), Y(best.v), 3, 0, 7); ctx.fill();
+          html += '<br><span style="color:'+s.colore+'">■</span> '+esc(s.nome)+
+                  ' <b>'+best.v.toFixed(decim).replace('.',',')+'</b> '+unita;
+        }
+      }
+      showTip(g.hover.ev, html);
+    }
+  }
+}
+
+// Sparkline dentro una tile: nessun asse, solo l'andamento.
+function sparkline(cv, punti, colore){
+  const {ctx,w,h} = fit(cv);
+  const vals = punti.filter(p => p.v != null);
+  if (vals.length < 2) return;
+  let vMin = Infinity, vMax = -Infinity, tMin = vals[0].ts, tMax = vals[vals.length-1].ts;
+  for (const p of vals){ if (p.v<vMin) vMin=p.v; if (p.v>vMax) vMax=p.v; }
+  if (vMax - vMin < 0.2){ vMin -= 0.5; vMax += 0.5; }
+  if (tMax - tMin < 60) tMax = tMin + 60;
+  const X = ts => 1 + (ts - tMin)/(tMax - tMin) * (w-2);
+  const Y = v  => h-3 - (v - vMin)/(vMax - vMin) * (h-6);
+  ctx.strokeStyle = colore; ctx.lineWidth = 1.5; ctx.lineJoin='round';
+  ctx.beginPath();
+  let giu = true;
+  for (const p of punti){
+    if (p.v == null){ giu = true; continue; }
+    const x = X(p.ts), y = Y(p.v);
+    if (giu){ ctx.moveTo(x,y); giu=false; } else ctx.lineTo(x,y);
+  }
+  ctx.stroke();
+  const ult = vals[vals.length-1];
+  ctx.fillStyle = colore;
+  ctx.beginPath(); ctx.arc(X(ult.ts), Y(ult.v), 2.2, 0, 7); ctx.fill();
+}
+
+// ====================================================================
+//  Lettura dei dati
+// ====================================================================
+async function caricaStato(){
+  try{
+    STATO = await api('/api/stato');
+  }catch(e){
+    $('hMeta').textContent = 'hub non raggiungibile — ' + e.message;
+    $('pOra').className = 'pill off';
+    return;
+  }
+  const s = STATO;
+  $('hNome').textContent = s.nodo || 'MeteoHub';
+  $('hMeta').textContent = 'firmware ' + (s.fw||'?') + ' · ' + (s.ip||'?') +
+                           ' · canale ' + (s.canale!=null?s.canale:'?') +
+                           ' · acceso da ' + uptimeStr(s.uptime);
+  $('pOra').className = 'pill ' + (s.ora_fonte==='NTP' ? 'on' : 'warn');
+  $('pOraTx').textContent = (s.ora||'--') + (s.ora_fonte==='NTP' ? '' : ' (stima)');
+  $('pNodi').className = 'pill ' + (s.nodi_online===s.nodi && s.nodi>0 ? 'on' : (s.nodi ? 'warn' : ''));
+  $('pNodiTx').textContent = (s.nodi_online||0) + '/' + (s.nodi||0);
+  $('pSd').className = 'pill ' + (s.sd ? 'on' : 'off');
+  $('pSdTx').textContent = s.sd ? (Math.round((s.sd_liberi_mb||0)/1024) + ' GB liberi') : 'assente';
+  renderHub();
+}
+
+async function caricaNodi(){
+  let d;
+  try{ d = await api('/api/nodi'); }catch(e){ return; }
+  NODI = d.nodi || [];
+  if ($('inAlt') !== document.activeElement) $('inAlt').value = Math.round(d.altitudine_m||0);
+  $('hAlt').textContent = Math.round(d.altitudine_m||0);
+  $('bPair').textContent = d.pairing
+      ? ('associazione aperta — ' + d.pairing_resta_s + ' s (chiudi)')
+      : 'apri associazione (2 min)';
+  $('bPair').dataset.on = d.pairing ? '1' : '0';
+  $('hUpd').textContent = 'aggiornato ' + new Date().toLocaleTimeString('it-IT');
+  renderTiles();
+  renderTabella();
+  renderPrevisioni();
+}
+
+// I giorni disponibili sono l'unione di quelli di ogni nodo: le cartelle
+// su card sono per nome nodo, e un nodo aggiunto ieri non ha i giorni
+// degli altri.
+async function caricaGiorni(){
+  const set = new Set();
+  for (const n of NODI){
+    try{
+      const g = await api('/api/nodi/giorni?nodo=' + encodeURIComponent(n.nome));
+      (g||[]).forEach(x => set.add(x));
+    }catch(e){ /* un nodo senza cartella non e' un errore */ }
+  }
+  GIORNI = Array.from(set).sort();
+  const sel = $('selGiorno');
+  sel.innerHTML = GIORNI.map(g => '<option value="'+g+'">'+g+'</option>').join('');
+  if (!GIORNI.length){ $('mGiorno').textContent = 'nessun registro sulla card'; return; }
+  const voluto = GIORNI.includes(oggiISO()) ? oggiISO() : GIORNI[GIORNI.length-1];
+  sel.value = voluto;
+  await selezionaGiorno(voluto);
+}
+
+// Il CSV si legge una riga per volta senza costruire array intermedi:
+// un giorno del nodo a muro sono ~1400 righe per nodo, e la pagina gira
+// anche su un telefono.
+function parseCsv(testo){
+  const out = [];
+  const righe = testo.split('\n');
+  for (let i = 1; i < righe.length; i++){
+    const r = righe[i];
+    if (!r || r.length < 10) continue;
+    const c = r.split(',');
+    if (c.length < 8) continue;
+    const ts = parseInt(c[1], 10);
+    if (!isFinite(ts)) continue;
+    const num = x => (x==null || x==='' ? null : (isFinite(parseFloat(x)) ? parseFloat(x) : null));
+    out.push({ts, seq: parseInt(c[4],10), t: num(c[5]), h: num(c[6]), p: num(c[7])});
+  }
+  return out;
+}
+
+async function selezionaGiorno(giorno){
+  if (CARICO) return;
+  CARICO = true;
+  GIORNO = giorno;
+  $('hGiorno').textContent = giorno;
+  setMsg($('mGiorno'), 'lettura dalla card…');
+  SERIE = {};
+  for (const n of NODI){
+    try{
+      const csv = await api('/api/nodi/scarica?nodo=' + encodeURIComponent(n.nome) + '&d=' + encodeURIComponent(giorno));
+      SERIE[n.nome] = parseCsv(csv);
+    }catch(e){
+      SERIE[n.nome] = [];   // 404 = quel nodo non ha registrato quel giorno
+    }
+  }
+  const tot = Object.values(SERIE).reduce((a,v) => a + v.length, 0);
+  setMsg($('mGiorno'), tot ? (tot + ' campioni letti') : 'nessun campione per questo giorno', tot ? 'ok' : 'err');
+  CARICO = false;
+  ridisegnaTutti();
+  renderTiles();
+  renderTabella();
+}
+
+// ====================================================================
+//  Rendering
+// ====================================================================
+function trendGlifo(d){
+  if (d == null) return '→';
+  if (d <= -3.5) return '↓↓'; if (d <= -1.5) return '↓'; if (d <= -0.5) return '↘';
+  if (d >=  3.5) return '↑↑'; if (d >=  1.5) return '↑'; if (d >=  0.5) return '↗';
+  return '→';
+}
+
+// Minimo e massimo del giorno mostrato, presi dal CSV gia' in memoria.
+// L'hub non li espone e non deve: sono una domanda sullo storico, e lo
+// storico e' sulla card — calcolarli qui non costa una richiesta in piu'.
+function estremiDelGiorno(nome){
+  const righe = SERIE[nome] || [];
+  let tMin = Infinity, tMax = -Infinity, hMin = Infinity, hMax = -Infinity;
+  for (const r of righe){
+    if (r.t != null){ if (r.t < tMin) tMin = r.t; if (r.t > tMax) tMax = r.t; }
+    if (r.h != null){ if (r.h < hMin) hMin = r.h; if (r.h > hMax) hMax = r.h; }
+  }
+  if (!isFinite(tMin)) return '';
+  return '<div class="row2">' +
+    '<div>giorno <b class="num">' + nv(tMin,1) + '</b>…<b class="num">' + nv(tMax,1) + '</b> °C</div>' +
+    (isFinite(hMin) ? '<div><b class="num">' + nv(hMin,0) + '</b>…<b class="num">' + nv(hMax,0) + '</b> %</div>' : '') +
+    '</div>';
+}
+
+function renderTiles(){
+  const box = $('tiles');
+  if (!NODI.length){ box.innerHTML = '<div class="muted">nessun nodo associato — apri la finestra di associazione qui sotto</div>'; return; }
+  box.innerHTML = NODI.map(n => {
+    const c = coloreNodo(n.nome);
+    const v = n.valori || [null,null,null];
+    return '<div class="tile">' +
+      '<div class="lbl"><span class="nd '+(n.online?'on':'off')+'"></span>' +
+        '<span style="color:'+c+'">■</span> ' + esc(n.nome) + '</div>' +
+      '<div class="big num" style="color:'+c+'">' + nv(v[0],1) + '<span class="u">°C</span></div>' +
+      '<div class="row2">' +
+        '<div>umidità <b class="num">' + nv(v[1],0) + '%</b></div>' +
+        '<div>pressione <b class="num">' + nv(n.press_sea,1) + '</b> hPa</div>' +
+      '</div>' +
+      '<div class="sub">' + (n.dati ? ('ultimo dato ' + silStr(n.silenzio_s) + ' · ogni ' + (n.intervallo_s||'?') + ' s')
+                                    : 'in attesa del primo pacchetto') +
+        (n.online ? '' : ' · <span style="color:var(--bad)">MUTO</span>') + '</div>' +
+      estremiDelGiorno(n.nome) +
+      // Trend e previsione sono due cose diverse e vanno dette come tali:
+      // la prima riga parla della PRESSIONE, la seconda del tempo che ne
+      // segue. Scritte di fila senza soggetto si leggevano come una
+      // ripetizione ("stabile - situazione stabile").
+      '<div class="prev">' + trendGlifo(n.delta_3h) + ' pressione ' + esc(n.trend||'—') +
+        (n.previsione ? ('<br><span style="color:var(--tx2)">' + esc(n.previsione) + '</span>') : '') + '</div>' +
+      '<canvas data-spark="' + esc(n.nome) + '"></canvas>' +
+    '</div>';
+  }).join('');
+  // le sparkline vengono dal giorno caricato, non dai valori correnti:
+  // e' il pezzo di storia che la pagina ha gia' in mano
+  for (const cv of box.querySelectorAll('canvas[data-spark]')){
+    const nome = cv.getAttribute('data-spark');
+    const righe = SERIE[nome] || [];
+    sparkline(cv, righe.map(r => ({ts:r.ts, v:r.t})), coloreNodo(nome));
+  }
+}
+
+// Buchi nella giornata: si contano i salti di seq, che e' il motivo per
+// cui quella colonna sta nel CSV. Un riavvio del nodo azzera il seq e
+// NON e' una perdita — si riconosce dal salto all'indietro.
+function buchiDelGiorno(righe){
+  let persi = 0;
+  for (let i = 1; i < righe.length; i++){
+    const d = righe[i].seq - righe[i-1].seq;
+    if (d > 1) persi += d - 1;
+  }
+  return persi;
+}
+
+function renderTabella(){
+  const tb = $('tblNodi').querySelector('tbody');
+  if (!NODI.length){ tb.innerHTML = '<tr><td colspan="10" class="muted">nessun nodo</td></tr>'; return; }
+  tb.innerHTML = NODI.map(n => {
+    const righe = SERIE[n.nome] || [];
+    const buchi = buchiDelGiorno(righe);
+    const batt = n.batteria_mv ? (n.batteria_mv/1000).toFixed(2).replace('.',',')+' V' : '—';
+    return '<tr>' +
+      '<td><span class="nd '+(n.online?'on':'off')+'"></span> ' + esc(n.nome) +
+        '<div class="muted">' + esc(n.mac) + '</div></td>' +
+      '<td class="num">' + (n.ultimo ? esc(n.ultimo.slice(11)) : '—') +
+        '<div class="muted">' + silStr(n.silenzio_s) + '</div></td>' +
+      '<td class="num">' + (n.intervallo_s||'—') + ' s</td>' +
+      '<td class="num">' + (n.pacchetti||0) + '</td>' +
+      '<td class="num ' + (n.persi ? 'badv' : 'okv') + '">' + (n.persi||0) + '</td>' +
+      '<td class="num">' + (n.seq||0) + '</td>' +
+      '<td class="num">' + (n.riavvii||0) + '</td>' +
+      '<td class="num">' + batt + '</td>' +
+      '<td class="num ' + (buchi ? 'warnv' : '') + '">' + (righe.length ? buchi : '—') + '</td>' +
+      '<td><button class="danger" data-dimentica="' + esc(n.mac) + '">dimentica</button></td>' +
+    '</tr>';
+  }).join('');
+  for (const b of tb.querySelectorAll('button[data-dimentica]'))
+    b.onclick = () => dimentica(b.getAttribute('data-dimentica'));
+}
+
+function renderPrevisioni(){
+  $('tilesPrev').innerHTML = NODI.filter(n => n.press_sea != null).map(n => {
+    const c = coloreNodo(n.nome);
+    return '<div class="tile">' +
+      '<div class="lbl"><span style="color:'+c+'">■</span> ' + esc(n.nome) + '</div>' +
+      '<div class="big num">' + nv(n.press_sea,1) + '<span class="u">hPa</span></div>' +
+      '<div class="sub">3 h: ' + (n.delta_3h==null ? 'non ancora noto' :
+          ((n.delta_3h>0?'+':'') + nv(n.delta_3h,1) + ' hPa')) + '</div>' +
+      '<div class="prev">' + trendGlifo(n.delta_3h) + ' ' + esc(n.previsione||'—') + '</div>' +
+    '</div>';
+  }).join('') || '<div class="muted">nessuna misura di pressione</div>';
+}
+
+function renderHub(){
+  const s = STATO;
+  const t = (lbl, val, sub) =>
+    '<div class="tile"><div class="lbl">' + lbl + '</div>' +
+    '<div class="big num">' + val + '</div>' +
+    (sub ? '<div class="sub">' + sub + '</div>' : '') + '</div>';
+  $('tilesHub').innerHTML =
+    t('spazio card', s.sd ? (Math.round((s.sd_liberi_mb||0)/1024) + ' <span class="u">GB</span>') : '—',
+       s.sd ? ('su ' + Math.round((s.sd_totali_mb||0)/1024) + ' GB') : esc(s.sd_errore||'non montata')) +
+    t('righe scritte', (s.righe_scritte||0), 'da questo avvio') +
+    t('refresh pannello', (s.epd_refresh||0), 'ultimo ' + (s.epd_ultimo_ms||0) + ' ms · orologio ' + (s.epd_orologio_ms||0) + ' ms') +
+    t('memoria libera', Math.round((s.heap||0)/1024) + ' <span class="u">kB</span>', 'heap') +
+    t('segnale', (s.rssi||0) + ' <span class="u">dBm</span>', 'canale ' + (s.canale!=null?s.canale:'?')) +
+    t('invii interrotti', (s.invii_interrotti||0), 'client andati via a metà');
+}
+
+// ====================================================================
+//  Comandi
+// ====================================================================
+async function dimentica(mac){
+  if (!confirm('Togliere il nodo ' + mac + ' dal registro?\n\nSe è ancora acceso e si crede associato non manderà più HELLO: per riprenderlo servirà una finestra di associazione aperta, o un suo riavvio.')) return;
+  try{
+    await api('/api/nodi/dimentica?mac=' + encodeURIComponent(mac), {method:'POST'});
+    await caricaNodi();
+  }catch(e){ alert('errore: ' + e.message); }
+}
+
+$('bPair').onclick = async () => {
+  const on = $('bPair').dataset.on === '1' ? 0 : 1;
+  try{
+    await api('/api/pairing?on=' + on + (on ? '&s=120' : ''), {method:'POST'});
+    setMsg($('mPair'), on ? 'finestra aperta' : 'finestra chiusa', 'ok');
+    await caricaNodi();
+  }catch(e){ setMsg($('mPair'), 'errore: ' + e.message, 'err'); }
+};
+
+$('bAlt').onclick = async () => {
+  const m = parseFloat($('inAlt').value);
+  if (!isFinite(m)){ setMsg($('mAlt'), 'valore non valido', 'err'); return; }
+  try{
+    const r = await api('/api/nodi/altitudine?m=' + encodeURIComponent(m), {method:'POST'});
+    setMsg($('mAlt'), String(r).trim(), 'ok');
+    await caricaNodi();
+  }catch(e){ setMsg($('mAlt'), 'errore: ' + e.message, 'err'); }
+};
+
+$('selGiorno').onchange = () => selezionaGiorno($('selGiorno').value);
+$('bRicarica').onclick  = () => { if (GIORNO) selezionaGiorno(GIORNO); };
+$('bPrev').onclick = () => spostaGiorno(-1);
+$('bNext').onclick = () => spostaGiorno(+1);
+function spostaGiorno(d){
+  if (!GIORNI.length) return;
+  const i = GIORNI.indexOf(GIORNO);
+  const j = Math.min(GIORNI.length-1, Math.max(0, (i<0 ? GIORNI.length-1 : i) + d));
+  if (GIORNI[j] === GIORNO) return;
+  $('selGiorno').value = GIORNI[j];
+  selezionaGiorno(GIORNI[j]);
+}
+// Le frecce della tastiera fanno la stessa cosa dei pulsanti, ma non
+// mentre si sta scrivendo in un campo.
+addEventListener('keydown', ev => {
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
+  if (ev.key === 'ArrowLeft')  spostaGiorno(-1);
+  if (ev.key === 'ArrowRight') spostaGiorno(+1);
+});
+
+// ====================================================================
+//  I grafici
+// ====================================================================
+// Un punto ogni PASSO secondi al massimo: un giorno del nodo a muro sono
+// 1440 campioni e su 700 px di larghezza sarebbero due per pixel. La
+// decimazione tiene il primo campione di ogni finestra, cosi' un buco
+// nei dati resta un buco invece di essere colmato dal vicino.
+const PASSO_MIN = 120;
+function serieDi(campo, trasforma){
+  return NODI.map(n => {
+    const righe = SERIE[n.nome] || [];
+    const punti = [];
+    let ultimo = -Infinity;
+    for (const r of righe){
+      const v = trasforma ? trasforma(r[campo], n) : r[campo];
+      if (r.ts - ultimo < PASSO_MIN && v != null) continue;
+      ultimo = r.ts;
+      punti.push({ts: r.ts, v});
+    }
+    return {nome: n.nome, colore: coloreNodo(n.nome), punti};
+  }).filter(s => s.punti.length);
+}
+
+function legenda(el, serie){
+  $(el).innerHTML = serie.filter(s => s.punti.some(p => p.v!=null))
+    .map(s => '<span><i style="background:'+s.colore+'"></i>'+esc(s.nome)+'</span>').join('');
+}
+
+const gT = monta($('cT'), g => { const s = serieDi('t'); drawSerie(g, s, '°C', 1); legenda('legT', s); });
+const gH = monta($('cH'), g => drawSerie(g, serieDi('h'), '%', 0));
+
+// La pressione dei nodi e' GREZZA nel CSV (il nodo non conosce la quota,
+// e trasmetterla corretta scriverebbe un errore sistematico nello
+// storico): qui si riporta al livello del mare con la stessa quota che
+// usa l'hub, cosi' la curva combacia con il numero delle tile.
+function alMare(p){
+  if (p == null) return null;
+  const m = parseFloat($('inAlt').value);
+  if (!isFinite(m)) return p;
+  return p * Math.pow(1 - (0.0065*m) / 288.15, -5.257);
+}
+const gP = monta($('cP'), g => {
+  const s = serieDi('p', v => alMare(v));
+  drawSerie(g, s, 'hPa', 1);
+  legenda('legP', s);
+});
+
+// La differenza fra i primi due nodi: e' la domanda per cui la stazione
+// esiste (dentro o fuori), e un grafico solo la risponde meglio di due
+// curve da confrontare a occhio. Serve allineare i campioni, che
+// arrivano a cadenze diverse (60 s e 300 s): per ogni punto del nodo
+// piu' lento si cerca il piu' vicino dell'altro entro meta' cadenza.
+const gD = monta($('cD'), g => {
+  if (NODI.length < 2){
+    const {ctx,w,h} = fit(g.cv);
+    vuoto(ctx,w,h,'serve più di un nodo per fare un confronto');
+    return;
+  }
+  const a = SERIE[NODI[0].nome] || [], b = SERIE[NODI[1].nome] || [];
+  if (!a.length || !b.length){
+    const {ctx,w,h} = fit(g.cv);
+    vuoto(ctx,w,h,'un nodo non ha registri per questo giorno');
+    return;
+  }
+  const lento = a.length <= b.length ? a : b;
+  const veloce = lento === a ? b : a;
+  const segno = lento === a ? 1 : -1;   // sempre "primo nodo meno secondo"
+  const tolleranza = 150;
+  const punti = [];
+  let j = 0;
+  for (const p of lento){
+    if (p.t == null) { punti.push({ts:p.ts, v:null}); continue; }
+    while (j < veloce.length-1 && veloce[j+1].ts <= p.ts) j++;
+    let vicino = veloce[j];
+    if (j+1 < veloce.length && Math.abs(veloce[j+1].ts - p.ts) < Math.abs(vicino.ts - p.ts))
+      vicino = veloce[j+1];
+    const ok = vicino && vicino.t != null && Math.abs(vicino.ts - p.ts) <= tolleranza;
+    punti.push({ts: p.ts, v: ok ? segno * (p.t - vicino.t) : null});
+  }
+  const nome = esc(NODI[0].nome) + ' − ' + esc(NODI[1].nome);
+  drawSerie(g, [{nome, colore: COL.accent, punti}], '°C', 1, {zero:true});
+});
+
+// ====================================================================
+//  Avvio e polling
+// ====================================================================
+// Cinque secondi: abbastanza da vedere arrivare i pacchetti del nodo a
+// 60 s, poco abbastanza da non pesare su una scheda che deve anche
+// disegnare l'e-ink e prelevare i DATA dalla radio.
+const POLL_MS = 5000;
+let timer = null;
+async function giro(){
+  await caricaStato();
+  await caricaNodi();
+}
+async function avvio(){
+  readColors();
+  await giro();
+  await caricaGiorni();
+  timer = setInterval(giro, POLL_MS);
+}
+// Con la scheda a fare da server, una pagina lasciata aperta in secondo
+// piano continuerebbe a interrogarla per ore senza che nessuno guardi.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden){ clearInterval(timer); timer = null; }
+  else if (!timer){ giro(); timer = setInterval(giro, POLL_MS); }
+});
+avvio();
+</script>
+</body>
+</html>
