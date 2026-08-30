@@ -37,6 +37,7 @@ divisione per chip o duplicherebbe le librerie o le lascerebbe comunque fuori.
 |---|---|---|
 | `projects/EnvNode_C3/` | ESP32-C3 Supermini | nodo ambientale in funzione: DHT11 + log su microSD + dashboard web con grafici + OTA, e hub ESP-NOW dei nodi a batteria |
 | `projects/MeteoNode_C3/` | XIAO ESP32-C3 (e ESP32 "classico") | nodo meteo a batteria: AHT20 + BMP280, previsione dal trend barometrico, pagina con grafici SVG, nodo ESP-NOW e **deep sleep** fra una misura e l'altra |
+| `projects/MeteoHub_S3/` | Seeed XIAO ESP32-S3 **Sense** | **hub della stazione meteo**: riceve i nodi via ESP-NOW, li mostra su un pannello e-ink 4,2" e ne registra i CSV su microSD, con pagine configurabili, messaggi e immagini dalla web UI |
 | `projects/Timelapse_XIAO/` | Seeed XIAO ESP32-S3 **Sense** | camera timelapse: scatto a intervallo su microSD per giorno, galleria web con riproduzione, NTP + OTA |
 
 ## Le librerie condivise (`libraries/`)
@@ -469,8 +470,11 @@ davvero:
   o PMV, che pretenderebbero una precisione che il DHT11 non ha;
 - **hub ESP-NOW** (da `v4`): riceve i dati dei nodi a batteria della stazione
   meteo, li mostra su `/nodi` e segnala quelli che hanno smesso di trasmettere.
-  Finche' `MeteoHub_S3` non e' pronto, e' questa la scheda che tiene lo storico
-  dei nodi che dormono — la loro RAM si azzera ad ogni risveglio;
+  **Dal 2026-08-27 quel ruolo e' passato a `MeteoHub_S3`** e i nodi parlano con
+  lui: il codice qui resta, funzionante, ma la rete di casa non ci passa piu'.
+  Il modulo (`remote_nodes.*`) e' comunque il capostipite di quello dell'hub —
+  ci si tiene lo storico dei nodi che dormono, perche' la loro RAM si azzera ad
+  ogni risveglio;
 - **OTA** come sullo starter.
 
 Cablaggio: OLED su SDA=GPIO5/SCL=GPIO6, DHT11 su GPIO0, HW-125 su CS=GPIO1
@@ -481,6 +485,41 @@ serviva.
 
 `secrets.h` vale la stessa regola degli starter: copia `secrets.h.example` e
 riempilo, il file vero non entra nel repo.
+
+### `MeteoHub_S3` — l'hub della stazione meteo
+
+La scheda a cui parlano tutti i nodi. Su XIAO ESP32-S3 Sense:
+
+```
+nodi ESP-NOW  ->  hub S3  ->  pannello e-ink 4,2" + CSV su microSD + web UI/OTA
+```
+
+- **pannello e-ink WeAct 4,2" (400x300, SSD1683)**: la pagina dei nodi con
+  temperatura, umidita', pressione riportata al livello del mare e una
+  **freccia inclinata** per il trend barometrico — un'inclinazione si legge da
+  tre metri, una parola no. Il layout si adatta: fino a due nodi il blocco
+  comodo a 24 pt, da tre in su quello compatto;
+- **pagine configurabili** (`pages.*`): nodi, messaggio, pagina bianca e
+  immagini, ognuna con la sua durata, in un elenco che si riordina dalla web
+  UI. «Fissa una pagina» e «cambio automatico» non sono due interruttori
+  separati ma due letture dello stesso elenco, quindi non possono andare fuori
+  sincrono;
+- **messaggi** scritti dal telefono: quello attivo vive in NVS (torna dopo un
+  riavvio anche con la card tolta), l'archivio su microSD;
+- **immagini**: si compongono nel browser su `/immagini` — ritaglio, gamma,
+  quattro algoritmi di dithering e, da `v12`, **il testo sopra la foto** — e
+  alla scheda arrivano 15.000 byte gia' pronti. A bordo non si converte niente:
+  nessun decoder JPEG, nessun dithering;
+- **CSV per nodo** su microSD in `/nodi/<NOME>/AAAA-MM-GG.csv`, con il MAC in
+  colonna perche' l'identita' vera e' quello, non il nome;
+- **`/api/salute`** (da `v13`): i controlli incrociati fatti dalla scheda, primo
+  fra tutti *pacchetti ricevuti == righe scritte + scartati + fallite*;
+- **NTP, web UI e OTA** come le altre schede.
+
+Il pannello e la microSD **condividono il bus SPI**, quindi il CS della card
+(GPIO21) va tenuto alto prima di toccare il bus. Compilazione: FQBN della
+XIAO S3 **senza** `CDCOnBoot` (su questa board il flag e' invertito) e
+`--libraries libraries`, perche' usa `EspNowLink`.
 
 ### `Timelapse_XIAO` — camera timelapse con galleria web
 

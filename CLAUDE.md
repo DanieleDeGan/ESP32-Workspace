@@ -371,10 +371,41 @@ chiude**. E' deliberato — un array chiuso a meta' verrebbe letto come un giorn
 con meno dati, cioe' un grafico sbagliato che sembra giusto; cosi' invece il
 parse fallisce e si vede un errore, che e' la verita'.
 
-**Dove NON e' ancora corretto** (stesso `streamFile()`, stesso difetto):
-`projects/Timelapse_XIAO/web_ui.cpp` (foto e CSV) e
-`starters/XIAO_S3_Camera/web_ui.cpp` (foto). Li' e' **peggio**, non uguale: una
-foto da 300 kB sono 220 chunk, e la galleria ne carica decine per volta.
+**Corretto ovunque dal 2026-08-30**: `projects/Timelapse_XIAO/web_ui.cpp`
+(foto e CSV) e `starters/XIAO_S3_Camera/web_ui.cpp` (foto) hanno ora lo stesso
+`streamFileLimitato()`. Li' il difetto era **peggio**, non uguale: una foto da
+300 kB sono 220 chunk, e la galleria ne carica decine per volta. Entrambi
+espongono `invii_interrotti` su `/api/stato` — senza quel contatore il taglio
+sarebbe invisibile, e il sintomo (scatti mancanti, PIR che sembra non
+funzionare) punterebbe di nuovo lontano dalla causa.
+
+**Se si scrive un handler nuovo che manda un file, usare `streamFileLimitato()`,
+mai `streamFile()`.**
+
+### Una scrittura su microSD che nessuno controlla e' un logger che mente
+
+`File::write()` del core **non alza il writeError**: si limita a ritornare i
+byte scritti. Quindi una `print()` su una card piena, sfilata o in errore torna
+**0 senza lanciare niente**, e una funzione che non ne guarda il ritorno
+risponde `true` lo stesso.
+
+Il guasto che ne segue e' della famiglia peggiore: **il contatore sale e il file
+non cresce**. Su `MeteoHub_S3` quel contatore (`righe_scritte`) e' proprio
+quello che si usa per il controllo incrociato con i pacchetti dei nodi, quindi
+la bugia toglieva valore all'unica verifica automatica che la rete ha — e la
+lettura di un nodo a batteria, che vive **solo** nel CSV dell'hub, sarebbe
+sparita mentre tutto diceva di andare bene.
+
+Corretto il 2026-08-30 in `sd_log_sample()` e `sd_log_remote()` di
+`projects/EnvNode_C3/` e `projects/MeteoHub_S3/`: si somma il ritorno delle
+`print()` e si torna `false` se e' zero, cosi' i contatori non si muovono e
+`sd_last_error()` lo dice.
+
+**Il pattern giusto era gia' nel repo**: `sd_save_photo()` di
+`projects/Timelapse_XIAO/storage.cpp` confrontava da sempre i byte scritti con
+quelli attesi, e in piu' **cancella il file troncato** — meglio nessuna foto di
+un JPEG a meta'. Era una delle copie ad avere ragione e le altre a non saperlo:
+il rischio vero di tenere moduli gemelli allineati a mano.
 
 ### Aggiornare un nodo: un default nuovo vince su una chiave NVS mai scritta
 
@@ -442,8 +473,13 @@ Il caso peggiore non è "non c'è mai stato un monitor" ma "c'è stato e se n'è
 andato"; un nodo alimentato da un caricatore non se ne accorge (senza pin dati
 la porta non viene mai riconosciuta), ma basta collegarlo a un PC.
 
-Presente in tutti gli sketch del repo che restano accesi senza cavo. Va messo
-anche in ogni sketch nuovo per queste board.
+Presente in **tutti** gli sketch del repo dal 2026-08-30: prima mancava nei
+sei `examples/` e in `starters/AMOLED_1.91_LVGL/`, che sono i piu' esposti
+proprio perche' si usano col monitor aperto — e il caso cattivo non e' "non
+c'e' mai stato un monitor" ma "c'e' stato e se n'e' andato". `DHT11_SD_Logger`
+era il piu' a rischio: resta acceso a registrare per ore.
+
+Va messo in ogni sketch nuovo per queste board.
 
 Per caricare su scheda reale (non solo verificare) serve `--upload -p <porta_seriale>`,
 non testato da qui in quanto richiede la scheda collegata. Le schede con OTA si
@@ -659,6 +695,25 @@ resta a `pacchetti: 0`. Da un lato una lista con un nodo che non parla,
 dall'altro un nodo convinto di essere associato: **nessuno dei due dice che
 sta parlando con qualcun altro**, e la lettura giusta viene solo dal campo
 `espnow_hub` del nodo confrontato col MAC dell'hub che ci si aspetta.
+
+**Due punti di robustezza sistemati il 2026-08-30**, entrambi invisibili
+nell'uso normale:
+
+- **il registro dei peer aveva una finestra di race**. `hub_insert_peer()`
+  controlla "pieno o gia' presente" e poi inserisce, ma fra le due cose il lock
+  si rilascia per forza: `new` e `addPeer()` allocano memoria e chiamano il
+  driver, e dentro una `portENTER_CRITICAL` (spinlock, interrupt disabilitati)
+  non si possono fare. Le due strade che arrivano li' girano su **task
+  diversi** — la scoperta radio sul task del driver WiFi, il ripristino da NVS
+  in `loop()` — e si sovrappongono davvero all'avvio dell'hub, quando i peer
+  salvati si rimettono mentre i nodi stanno gia' trasmettendo. Con il registro
+  quasi pieno due inserimenti simultanei scrivevano **oltre la fine
+  dell'array**. Ora il controllo si rifa' dentro la sezione critica finale e
+  chi perde il ballottaggio viene disfatto.
+- **il nome che arriva dalla radio non era garantito terminato**: sedici byte
+  pieni sono un payload legittimo. `link_parse_message()` ora chiude sempre
+  `name` con un NUL — nell'unico punto da cui ogni messaggio passa, cosi' vale
+  anche per il codice applicativo che verra' scritto dopo.
 
 **Limite noto**: l'unicast ESP-NOW tra un hub ESP32-S3 e un nodo ESP32
 "classico" (Xtensa D0WD) è risultato inaffidabile/lento ad associarsi su
@@ -1193,6 +1248,31 @@ senza di loro si somiglierebbero (schermo che non cambia).
   card, e se quella non mette i link — o e' rotta — le altre pagine
   resterebbero raggiungibili solo digitando l'URL a memoria. Con il piede
   uniforme si continua a girare partendo da una qualunque.
+- **`GET /api/salute` fa i controlli incrociati da sola** (da `v13`). Il
+  controllo che vale e' **`pacchetti ricevuti == righe scritte + scartati per
+  orario + scritture fallite`**, e regge perche' `remote_nodes` incrementa
+  `pacchetti` e chiama la callback nello **stesso punto**: ad ogni pacchetto
+  contato corrisponde esattamente un tentativo di scrittura, che finisce in uno
+  dei tre contatori. Sono numeri tenuti da moduli che non si conoscono fra loro
+  — `remote_nodes`, `sd_logger` e lo sketch — quindi **se non tornano, il guasto
+  sta fra la radio e la card**, il tratto che nessun altro contatore guarda.
+  - Perche' esiste: quella verifica si faceva a mano leggendo `/api/stato` e
+    `/api/nodi` e sommando a occhio. Una diagnosi che serve davvero e che
+    richiede una persona non viene fatta quasi mai.
+  - **I contatori degli scarti sono la parte necessaria**, non un di piu': senza
+    di loro "pacchetti diversi da righe" non distingue una perdita reale da uno
+    scarto voluto (i DATA arrivati prima del primo sync NTP), e un controllo che
+    si allarma da solo non lo guarda piu' nessuno.
+
+- **`reset_reason` e `boot_count` anche sull'hub** (da `v13`, gia' su
+  `MeteoNode_C3` da `v5`). Tutti gli altri contatori vivono in RAM e ripartono
+  da zero: e' proprio questo che rende un riavvio **invisibile da remoto**,
+  perche' da fuori si vede solo un hub che "ha registrato poco". Il 2026-08-30
+  un `uptime` di 0,7 h ha richiesto di incrociare l'ora corrente, quella
+  dell'ultimo OTA e i CSV dei nodi per concludere che non era successo niente:
+  con questi due campi sarebbe stata una riga. `boot_count` sta in **NVS**,
+  perche' deve sopravvivere proprio all'evento che misura.
+
 - **Gli handler HTTP che toccherebbero il display accodano e basta**
   (`app_chiedi_pagina()` / `app_chiedi_refresh()`, eseguite dal `loop()`).
   Un refresh dentro un handler terrebbe fermo il WebServer — che è sincrono —

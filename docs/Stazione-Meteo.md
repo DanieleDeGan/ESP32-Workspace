@@ -1,5 +1,55 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-08-30 (3) — `v13`: ispezione del repo, e la scheda che si controlla da sola
+
+Passata completa su tutto il repository: compilazione dei **13 sketch**,
+confronto delle copie dei moduli gemelli, caccia ai difetti noti e non ancora
+corretti. Quello che ne e' uscito.
+
+**Tre difetti veri, corretti:**
+
+1. **`streamFile()` grezza in `Timelapse_XIAO` e `XIAO_S3_Camera`.** Era gia'
+   documentato in CLAUDE.md come "dove NON e' ancora corretto", con la nota che
+   li' e' **peggio**: una foto da 300 kB sono 220 chunk e la galleria ne carica
+   decine. Ora hanno lo stesso `streamFileLimitato()` di `EnvNode_C3`, e
+   `invii_interrotti` su `/api/stato` — senza quel contatore il taglio sarebbe
+   invisibile.
+2. **Le scritture su microSD non erano verificate.** `File::write()` non alza il
+   writeError del core: una `print()` su card piena o sfilata torna 0 senza
+   lanciare niente, e `sd_log_sample()` / `sd_log_remote()` rispondevano `true`
+   lo stesso. **Il contatore saliva e il file non cresceva** — e su questo hub
+   quel contatore e' proprio quello del controllo incrociato. Il pattern giusto
+   era gia' nel repo, in `sd_save_photo()` del timelapse, che confronta i byte
+   scritti e **cancella il file troncato**: una copia aveva ragione e le altre
+   non lo sapevano.
+3. **Due punti di robustezza in `EspNowLink`**: una finestra di race nel
+   registro dei peer (controllo e inserimento in due sezioni critiche separate,
+   con scrittura oltre l'array se il registro e' pieno) e il nome ricevuto dalla
+   radio che non era garantito terminato.
+
+**Piu' la guardia `Serial.setTxTimeoutMs(0)` nei sei `examples/` e nello
+starter AMOLED**, dove mancava: sono i piu' esposti proprio perche' si usano
+col monitor aperto, e il caso cattivo non e' "non c'e' mai stato un monitor" ma
+"c'e' stato e se n'e' andato".
+
+**Due aggiunte all'hub, entrambe nate da qualcosa successo oggi:**
+
+- **`GET /api/salute`**: i controlli incrociati fatti dalla scheda invece che a
+  mano. Il principale e' *pacchetti == righe + scartati + fallite*, che regge
+  perche' ad ogni pacchetto contato corrisponde esattamente un tentativo di
+  scrittura. Insieme arrivano i contatori degli scarti, senza i quali il
+  confronto si allarmerebbe per motivi legittimi — e un controllo che grida al
+  lupo non lo guarda piu' nessuno.
+- **`reset_reason` e `boot_count`**, che il nodo ha da `v5` e l'hub no. Oggi un
+  `uptime` di 0,7 h ha richiesto di incrociare tre fonti per concludere che era
+  semplicemente l'OTA di poco prima.
+
+**Un dato migliore del previsto**: l'OTA delle 08:51 **non e' costato un solo
+pacchetto** al nodo a muro — 574 righe consecutive, nessun buco oltre i 90 s.
+La stima di "un pacchetto perso per riavvio", scritta il 29/08, era pessimista.
+
+Tutti e 13 gli sketch compilano dopo le modifiche.
+
 ## Aggiornamento del 2026-08-30 (2) — `v12`: il testo sopra le foto, e un elenco solo
 
 Due richieste dell'utente, e una terza cosa trovata mentre si guardava.

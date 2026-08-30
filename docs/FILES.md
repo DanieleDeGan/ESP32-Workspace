@@ -1501,10 +1501,10 @@ pannello si vede o non si vede allo stesso modo.
 | `secrets.h.example` | si copia in `secrets.h` (gitignorato): WiFi, `OTA_HOSTNAME` `meteohub-s3`, credenziali web |
 | `remote_nodes.h/.cpp` | copia da `EnvNode_C3`: registro nodi, cadenza appresa, nodo muto, trend, NVS |
 | `forecast.h` | copia da `EnvNode_C3`: trend a 3 h con isteresi, header-only e pura |
-| `rtc_time.h/.cpp` | copia da `EnvNode_C3`: stima da build-time, poi NTP (che qui non c'e' ancora) |
+| `rtc_time.h/.cpp` | copia da `EnvNode_C3`: stima da build-time, poi NTP. Il primo sync fa anche partire `seedForecastDaSD()`, che ricostruisce il trend leggendo la coda dei CSV |
 | `www/dither.html` | ritaglio + dithering nel browser: la **sorgente unica** della pagina di composizione. Si apre da disco per lavorarci, e da `v8` e' anche servita dall'hub su `/immagini` |
 | `www/gen_page.py` | rigenera `dither_page.h` da `dither.html`. **Da rilanciare dopo ogni modifica alla pagina**, prima di ricompilare |
-| `dither_page.h` | **GENERATO**, non si modifica a mano: la pagina in PROGMEM (~31 kB) servita su `/immagini` |
+| `dither_page.h` | **GENERATO**, non si modifica a mano: la pagina in PROGMEM (~38 kB) servita su `/immagini`. Da `v12` include anche la composizione del testo sopra la foto |
 
 **Cose da sapere prima di metterci le mani**:
 
@@ -1513,10 +1513,12 @@ pannello si vede o non si vede allo stesso modo.
   **ALTO prima di toccare il bus**, anche quando la card non si monta:
   flottante, la card puo' rispondere insieme al pannello. Pin dedicati
   dell'e-ink: CS GPIO2/D1, DC GPIO3/D2, RST GPIO4/D3, BUSY GPIO1/D0.
-- **`remote_begin(nome, canale)`** e' un overload aggiunto qui: `EnvNode_C3` usa
-  la forma corta perche' sta su un AP e il canale glielo impone il router,
-  questa scheda (finche' non ha il WiFi) deve sceglierselo. `HUB_CANALE` va
-  tenuto sul canale dell'AP di casa, dove parlano i nodi.
+- **Il canale ESP-NOW e' `ESPNOW_LINK_CHANNEL_CURRENT` (0), mai un numero.**
+  L'overload `remote_begin(nome, canale)` e' nato qui quando la scheda non
+  aveva ancora il WiFi e doveva scegliersi il canale da sola; **da quando sta
+  su un AP (Fase 3, 2026-08-27) quel numero non si passa piu'**, perche' il
+  canale lo impone il router e forzarlo chiamerebbe `esp_wifi_set_channel()`
+  su una STA connessa. `remote_begin()` va chiamata **dopo** `net_begin()`.
 - **La finestra di associazione non si apre da sola all'avvio**, al contrario di
   `EnvNode_C3`: `remote_begin()` la apre e il `setup()` la richiude subito. Un
   nodo tiene un hub solo e lo adotta il primo che risponde al suo HELLO, quindi
@@ -1524,11 +1526,16 @@ pannello si vede o non si vede allo stesso modo.
   vero — e con lui il suo log su SD, che qui non c'e'. Si apre a mano tenendo
   premuto **BOOT** (1,2 s), per 2 minuti; BOOT breve cambia pagina.
 - **La diagnostica sta sul pannello, non sulla seriale**: il piede della pagina
-  NODI dice `canale N` se la radio e' su, `ESP-NOW NON ATTIVO` se l'init e'
-  fallita. Serve perche' il log di boot di questa scheda **non e' osservabile
-  via USB**: la cattura si ferma a 256 byte (il buffer TX della CDC), l'host
-  finisce di enumerare la porta un paio di secondi dopo il reset e con
+  NODI porta IP e spazio libero della card, e in negativo `SD NON MONTATA`.
+  Serve perche' il log di boot di questa scheda **non e' osservabile via USB**:
+  la cattura si ferma a 256 byte (il buffer TX della CDC), l'host finisce di
+  enumerare la porta un paio di secondi dopo il reset e con
   `Serial.setTxTimeoutMs(0)` il resto viene buttato.
+- **`GET /api/salute`** (da `v13`) fa i controlli incrociati che prima si
+  facevano a mano leggendo due endpoint: il principale e' **pacchetti ricevuti
+  == righe scritte + scartati per orario + scritture fallite**. Sono contatori
+  tenuti da moduli che non si conoscono fra loro, quindi se non tornano il
+  guasto sta **fra la radio e la card**, dove nessun altro contatore guarda.
 - **Refresh**: tre cadenze — orologio ogni 60 s su finestra piccola, pagina in
   parziale ad ogni dato nuovo (min 120 s) e comunque ogni 5 min, completo ogni
   10 parziali **o ogni ora**. Piu' un completo ad ogni cambio pagina e un
