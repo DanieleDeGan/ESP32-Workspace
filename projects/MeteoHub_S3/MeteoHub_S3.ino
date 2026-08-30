@@ -95,7 +95,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v14";
+static const char FW_VERSION[] = "v16";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1288,8 +1288,15 @@ static void screenGrafico()
     if (!almenoUno) continue;
 
     strlcpy(nomi[nSerie], n.nome, sizeof(nomi[0]));
-    ultimo[nSerie] = isfinite(n.value[0]) ? (int16_t)lroundf(n.value[0] * 10.0f)
-                                          : REMOTE_TEMP_VUOTO;
+    // hasData PRIMA di isfinite, e non e' pedanteria: i valori non si
+    // persistono, quindi dopo un riavvio value[0] vale ZERO finche' non
+    // arriva il primo DATA — e isfinite(0.0) e' vero. La legenda scriveva
+    // "0,0 C", che d'inverno e' una lettura perfettamente plausibile: mente
+    // in modo credibile, ed e' peggio di una casella vuota. Stesso schema del
+    // NAN emesso come "nan" nel JSON.
+    ultimo[nSerie] = (n.hasData && isfinite(n.value[0]))
+                       ? (int16_t)lroundf(n.value[0] * 10.0f)
+                       : REMOTE_TEMP_VUOTO;
     if (k > nCampioni) nCampioni = k;
     if (ts > tsUltimo) tsUltimo  = ts;
     nSerie++;
@@ -1354,9 +1361,15 @@ static void screenGrafico()
       if (rtctime_format(q, "%H:%M", ora, sizeof(ora))) {
         int16_t bx, by; uint16_t bw, bh;
         display.getTextBounds(ora, 0, 0, &bx, &by, &bw, &bh);
+        // Il limite e' 388, non 398: la cornice di plastica del pannello copre
+        // gli ultimi pixel dell'area disegnabile, quindi un'etichetta centrata
+        // sull'ultima tacca ci finisce sotto e si legge "19:3" invece di
+        // "19:30". Visto sul pannello vero il 2026-08-30 — sul buffer era
+        // tutto dentro i 400 px, ma i 400 px non si vedono tutti. Stesso
+        // margine del resto del layout, che si ferma gia' a 388.
         int16_t cx = x - (int16_t)bw / 2;
-        if (cx < 2) cx = 2;
-        if (cx + (int16_t)bw > 398) cx = 398 - (int16_t)bw;
+        if (cx < 12) cx = 12;
+        if (cx + (int16_t)bw > 388) cx = 388 - (int16_t)bw;
         display.setCursor(cx, GR_Y1 + 18);
         display.print(ora);
       }
