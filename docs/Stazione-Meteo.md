@@ -1,5 +1,37 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-08-30 (4) — `v14`: il grafico a 24 ore, e la salute in dashboard
+
+**La dashboard su card mostra `/api/salute`** (nessuna modifica al firmware,
+solo `www/dashboard.html` ricaricata): una pill sempre visibile e una card con
+i problemi in chiaro, che **compare solo quando ce n'e' almeno uno** — come la
+fascia del messaggio sul pannello. Una dashboard che cambia aspetto per dire
+"va tutto bene" insegna a ignorare quell'area. Quando il conto non torna,
+sotto l'elenco compaiono i numeri: e' li' che si legge dove guardare.
+
+**La pagina GRAFICO sul pannello**: temperatura dei nodi nelle ultime 24 ore, a
+piena pagina, come tipo di pagina fra gli altri.
+
+Le scelte che contano, tutte gia' implicite in regole scritte prima:
+
+- **piena pagina, non una sparkline dentro la pagina nodi**: su e-ink il tempo
+  e' la dimensione in piu', e la rotazione alterna pagine intere e leggibili
+  invece di comprimerne tre in 400x300;
+- **anello separato** da quello del trend (48 slot da 30 min contro 20 da 10),
+  perche' le due cose hanno finestre e scopi diversi. Senza timestamp per slot:
+  l'indice e' il tempo, 101 byte per nodo invece di 288 — al prezzo di dover
+  **svuotare le celle scavalcate**, o dopo un giro si legge ieri come oggi;
+- **i buchi non si attraversano**: una retta sopra un'ora senza dati direbbe che
+  la temperatura e' passata di li', cosa che nessuno ha misurato;
+- **le curve si distinguono per tratto**, non per colore.
+
+**Verificato sull'hardware** subito dopo l'OTA: **48/48 mezz'ore per entrambi i
+nodi**, cioe' il seeding dai CSV riempie il grafico al riavvio invece di
+lasciarlo formare in un giorno. Refresh misurato **2567 ms**. `temp_campioni`
+su `/api/nodi` esiste apposta per poterlo verificare da remoto: il pannello da
+fuori non si vede, e senza quel numero "la pagina e' comparsa" e "la pagina
+mostra qualcosa" sarebbero la stessa cosa.
+
 ## Aggiornamento del 2026-08-30 (3) — `v13`: ispezione del repo, e la scheda che si controlla da sola
 
 Passata completa su tutto il repository: compilazione dei **13 sketch**,

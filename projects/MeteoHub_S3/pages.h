@@ -32,6 +32,7 @@ enum PageType : uint8_t
   PT_MESSAGGIO,    // il bigliettino sul frigo, scritto dal telefono
   PT_BIANCA,       // pannello a riposo, nessun aggiornamento
   PT_IMMAGINE,     // un .bin da /images: param = nome del file, senza estensione
+  PT_GRAFICO,      // temperatura dei nodi nelle ultime 24 h
   PT_COUNT
 };
 

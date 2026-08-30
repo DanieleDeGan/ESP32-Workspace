@@ -98,6 +98,75 @@ static const uint32_t TREND_TOLL_S    = 900;     // +-15 min sul campione di 3 h
 static const float PRESS_MIN_HPA = 800.0f;
 static const float PRESS_MAX_HPA = 1100.0f;
 
+// --- storico della temperatura, per il grafico a 24 h ------------------
+//
+// Anello separato da quello della pressione, non un campo in piu' li' dentro:
+// le due cose hanno finestre diverse (3 h contro 24) e scopi diversi (una
+// soglia contro un disegno). Tenere la risoluzione da 10 minuti per un giorno
+// intero costerebbe dodici volte la memoria per una curva che a 376 px di
+// larghezza non potrebbe comunque mostrarla.
+//
+// Niente timestamp per slot: l'indice E' il tempo. Lo slot assoluto
+// (ts / 1800) modulo 48 da' la cella, e `slotUltimo` dice dove sta "adesso";
+// tutto cio' che sta piu' indietro di 48 slot e' fuori finestra per
+// costruzione. Costa 101 byte per nodo invece di 288.
+static const uint32_t TH_SLOT_S = 1800;   // 30 min
+static const int      TH_SLOTS  = 48;     // -> 24 h esatte
+static const int16_t  TH_VUOTO  = INT16_MIN;
+
+struct TempHist {
+  int16_t  t[TH_SLOTS];     // decimi di grado; TH_VUOTO = nessun campione
+  uint32_t slotUltimo;      // slot assoluto piu' recente scritto
+  bool     avviato;
+};
+static TempHist s_thist[REMOTE_MAX_NODES];
+
+static void thReset(int idx) {
+  if (idx < 0 || idx >= REMOTE_MAX_NODES) return;
+  for (int i = 0; i < TH_SLOTS; i++) s_thist[idx].t[i] = TH_VUOTO;
+  s_thist[idx].slotUltimo = 0;
+  s_thist[idx].avviato    = false;
+}
+
+// Una temperatura plausibile per l'aria di casa o di un giardino. Come per la
+// pressione: value[0] ha significati diversi per tipo di nodo, e senza questo
+// il primo canale di un attuatore finirebbe dentro un grafico del meteo.
+static bool tempPlausibile(float t) {
+  return !isnan(t) && t >= -60.0f && t <= 80.0f;
+}
+
+static void thPush(int idx, time_t ts, float tempC) {
+  if (idx < 0 || idx >= REMOTE_MAX_NODES) return;
+  if (ts <= 0 || !tempPlausibile(tempC)) return;
+
+  TempHist& h = s_thist[idx];
+  const uint32_t slot = (uint32_t)(ts / (time_t)TH_SLOT_S);
+
+  if (!h.avviato) {
+    for (int i = 0; i < TH_SLOTS; i++) h.t[i] = TH_VUOTO;
+    h.slotUltimo = slot;
+    h.avviato    = true;
+  } else if (slot > h.slotUltimo) {
+    // Si e' cambiato slot: le celle scavalcate vanno SVUOTATE, o dopo un giro
+    // completo dell'anello si leggerebbero i valori di ieri come se fossero di
+    // oggi. E' la stessa insidia dello storico della pressione, che li' non
+    // esiste perche' ogni slot porta il proprio timestamp.
+    const uint32_t salti = slot - h.slotUltimo;
+    if (salti >= (uint32_t)TH_SLOTS) {
+      for (int i = 0; i < TH_SLOTS; i++) h.t[i] = TH_VUOTO;
+    } else {
+      for (uint32_t k = 1; k <= salti; k++) {
+        h.t[(h.slotUltimo + k) % TH_SLOTS] = TH_VUOTO;
+      }
+    }
+    h.slotUltimo = slot;
+  } else if (h.slotUltimo - slot >= (uint32_t)TH_SLOTS) {
+    return;   // piu' vecchio della finestra: non ha una cella dove stare
+  }
+
+  h.t[slot % TH_SLOTS] = (int16_t)lroundf(tempC * 10.0f);
+}
+
 struct PressHist {
   time_t ts[HIST_SLOTS];
   float  p[HIST_SLOTS];
@@ -121,6 +190,7 @@ static void histReset(int idx) {
   if (idx < 0 || idx >= REMOTE_MAX_NODES) return;
   s_hist[idx].head  = -1;
   s_hist[idx].count = 0;
+  thReset(idx);
 }
 
 static bool pressPlausibile(float p) {
@@ -390,6 +460,7 @@ static void aggiornaDaLibreria() {
     // Prima della callback: cosi' chi ascolta (il .ino, che ci aggancia il
     // log su SD) trova il record completo di trend e previsione, non a meta'.
     forecastUpdate((int)(r - s_nodi));
+    thPush((int)(r - s_nodi), r->ultimoTs, r->value[0]);
 
     // In fondo, quando il record e' completo: chi ascolta (il .ino, che ci
     // aggancia il log su SD) deve vedere il dato gia' assestato. Siamo nel
@@ -541,7 +612,8 @@ bool remote_forget(const uint8_t mac[6]) {
     // pressione del vicino e il trend diventa una misura di due posti diversi.
     for (int j = i; j < s_count - 1; j++) {
       s_nodi[j] = s_nodi[j + 1];
-      s_hist[j] = s_hist[j + 1];
+      s_hist[j]  = s_hist[j + 1];
+      s_thist[j] = s_thist[j + 1];
     }
     s_count--;
     memset(&s_nodi[s_count], 0, sizeof(s_nodi[s_count]));
@@ -617,6 +689,44 @@ void remote_seed_begin(const uint8_t mac[6]) {
     // Il campione corrente NON si perde davvero: il delta si misura fra
     // value[2] di adesso e lo storico, quindi la lettura in corso non deve
     // stare nell'anello. Ci rientra da sola al prossimo DATA.
+    return;
+  }
+}
+
+int remote_temp_history(int index, int16_t* out, int maxOut, time_t* tsUltimo) {
+  if (out == nullptr || maxOut <= 0) return 0;
+  if (index < 0 || index >= s_count) return 0;
+
+  const TempHist& h = s_thist[index];
+  if (!h.avviato) return 0;
+
+  const int n = (maxOut < TH_SLOTS) ? maxOut : TH_SLOTS;
+
+  // Si parte dallo slot piu' vecchio della finestra e si cammina in avanti,
+  // cosi' chi disegna riceve i campioni gia' in ordine di tempo e non deve
+  // sapere niente di come e' fatto l'anello.
+  const uint32_t primo = h.slotUltimo - (uint32_t)(n - 1);
+  for (int i = 0; i < n; i++) {
+    out[i] = h.t[(primo + (uint32_t)i) % TH_SLOTS];
+  }
+  if (tsUltimo) *tsUltimo = (time_t)h.slotUltimo * (time_t)TH_SLOT_S;
+  return n;
+}
+
+int remote_temp_campioni(int index) {
+  if (index < 0 || index >= s_count) return 0;
+  const TempHist& h = s_thist[index];
+  if (!h.avviato) return 0;
+  int n = 0;
+  for (int i = 0; i < TH_SLOTS; i++) if (h.t[i] != TH_VUOTO) n++;
+  return n;
+}
+
+void remote_seed_temp(const uint8_t mac[6], time_t ts, float tempC) {
+  if (mac == nullptr) return;
+  for (int i = 0; i < s_count; i++) {
+    if (memcmp(s_nodi[i].mac, mac, 6) != 0) continue;
+    thPush(i, ts, tempC);
     return;
   }
 }

@@ -87,6 +87,12 @@ header{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin:.4rem 0 1
 .pill.on .led{background:var(--ok);animation:beat 2.4s ease-out infinite}
 .pill.off .led{background:var(--bad)}
 .pill.warn .led{background:var(--warn)}
+#cardSal{border-color:var(--warn)}
+#cardSal.grave{border-color:var(--bad)}
+#salLista{margin:0;padding-left:1.1rem;color:var(--tx);font-size:.9rem;line-height:1.6}
+#salLista li::marker{color:var(--warn)}
+#cardSal.grave #salLista li::marker{color:var(--bad)}
+#salConto{margin-top:.7rem}
 @keyframes beat{0%{box-shadow:0 0 0 0 rgba(78,201,138,.45)}70%{box-shadow:0 0 0 7px rgba(78,201,138,0)}100%{box-shadow:0 0 0 0 rgba(78,201,138,0)}}
 
 .card{background:linear-gradient(180deg,var(--card2),var(--card));
@@ -162,7 +168,15 @@ nav{margin:1.6rem 0 .5rem;display:flex;flex-wrap:wrap;gap:.4rem 1rem;font-size:.
   <span class="pill" id="pOra"><span class="led"></span><span id="pOraTx">—</span></span>
   <span class="pill" id="pNodi">nodi <b id="pNodiTx">—</b></span>
   <span class="pill" id="pSd">SD <b id="pSdTx">—</b></span>
+  <span class="pill" id="pSal"><span class="led"></span><span id="pSalTx">salute —</span></span>
 </header>
+
+<!-- ============ salute: compare SOLO se c'e' qualcosa da dire ============ -->
+<section class="card" id="cardSal" style="display:none">
+  <h2>Da guardare</h2>
+  <ul id="salLista"></ul>
+  <div class="hint" id="salConto"></div>
+</section>
 
 <!-- ============ i nodi adesso ============ -->
 <section class="card">
@@ -885,9 +899,40 @@ const gD = monta($('cD'), g => {
 // disegnare l'e-ink e prelevare i DATA dalla radio.
 const POLL_MS = 5000;
 let timer = null;
+// La salute si rilegge un giro su tre. Il WebServer della scheda e' sincrono:
+// mentre serve questa risposta non fa altro, e i contatori che l'endpoint
+// incrocia si muovono al ritmo dei pacchetti dei nodi (60 s il piu' veloce),
+// non ogni cinque secondi. Su un cambiamento vero si aspetta al massimo 15 s.
+let giriSalute = 0;
+
+async function caricaSalute(){
+  let d;
+  try{ d = await api('/api/salute'); }catch(e){ return; }
+
+  const grave = d.stato === 'guasto';
+  $('pSal').className   = 'pill ' + (grave ? 'off' : (d.stato === 'attenzione' ? 'warn' : 'on'));
+  $('pSalTx').textContent = 'salute ' + d.stato;
+
+  const guai = d.problemi || [];
+  $('cardSal').style.display = guai.length ? '' : 'none';
+  $('cardSal').className = 'card' + (grave ? ' grave' : '');
+  $('salLista').innerHTML = guai.map(t => '<li>' + esc(t) + '</li>').join('');
+
+  // Il conto in chiaro sotto l'elenco: quando NON torna, e' il numero che dice
+  // dove guardare — fra la radio e la card, non nei nodi.
+  const c = d.conto || {};
+  $('salConto').textContent = guai.length
+    ? (c.pacchetti + ' pacchetti = ' + c.righe + ' righe + ' + c.scartati_ora +
+       ' scartati + ' + c.scritture_fallite + ' fallite' +
+       (c.torna ? '' : '  ← non torna') +
+       '  ·  avvio n. ' + d.boot_count + ' (' + d.reset_reason + ')')
+    : '';
+}
+
 async function giro(){
   await caricaStato();
   await caricaNodi();
+  if ((giriSalute++ % 3) === 0) await caricaSalute();
 }
 async function avvio(){
   readColors();

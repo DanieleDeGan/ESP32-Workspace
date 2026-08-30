@@ -1248,6 +1248,44 @@ senza di loro si somiglierebbero (schermo che non cambia).
   card, e se quella non mette i link — o e' rotta — le altre pagine
   resterebbero raggiungibili solo digitando l'URL a memoria. Con il piede
   uniforme si continua a girare partendo da una qualunque.
+- **La pagina GRAFICO** (da `v14`): la temperatura dei nodi nelle ultime 24 h,
+  a piena pagina. E' un tipo di pagina come gli altri — si aggiunge, si toglie,
+  entra nella rotazione.
+  - **A piena pagina e non una sparkline dentro la pagina nodi**, ed e' la
+    stessa regola gia' scritta per la fascia del messaggio: su e-ink il tempo e'
+    la dimensione in piu', e per vedere tutto c'e' la rotazione, che alterna
+    pagine intere e leggibili invece di comprimerne tre in 400x300. Un
+    grafichino da 180x18 accanto ai numeri sarebbe stato un ornamento.
+  - **Anello separato da quello del trend**: 48 slot da 30 minuti (24 h) contro
+    20 slot da 10 minuti (3 h). Tenere la risoluzione fine per un giorno intero
+    costerebbe dodici volte la memoria per una curva che a 344 px non potrebbe
+    comunque mostrarla. **Niente timestamp per slot**: l'indice E' il tempo
+    (`ts / 1800 % 48`), il che costa 101 byte per nodo invece di 288 — ma
+    obbliga a **svuotare le celle scavalcate** quando si cambia slot, o dopo un
+    giro dell'anello si leggerebbero i valori di ieri come se fossero di oggi.
+  - **Lo storico si ricostruisce dai CSV** insieme a quello del trend, con la
+    coda alzata da 64 a 128 kB: verificato sull'hardware il 2026-08-30, subito
+    dopo l'OTA **48/48 mezz'ore per entrambi i nodi**, cioe' il grafico e' pieno
+    al riavvio invece di impiegare un giorno a formarsi.
+  - **Un buco non si attraversa con una retta**: un segmento sopra un'ora senza
+    dati direbbe che la temperatura e' passata di li', che nessuno ha misurato.
+    La linea si interrompe.
+  - **Le curve si distinguono per tratto** (piena, tratteggiata, punteggiata),
+    non per colore: su 1 bit e' l'unica differenza che sopravvive. Oltre tre
+    nodi non si disegna: il bianco e nero non ha altri tratti leggibili.
+  - **L'asse dei tempi porta l'ORA vera**, non "-24h/-12h/ora": un istante resta
+    vero anche quando il pannello non si ridisegna da un pezzo. Stessa ragione
+    per cui la pagina nodi mostra l'ora dell'ultimo pacchetto.
+  - Si ridisegna **ogni mezz'ora**, cioe' quando entra un campione nuovo:
+    ridisegnare piu' spesso mostrerebbe la stessa curva al prezzo di un refresh
+    completo. Serve perche' con il grafico come unica pagina attiva la rotazione
+    non scatta mai. Misurato: **2567 ms** (2,2 s di refresh completo piu' ~370
+    ms di curve).
+  - **`temp_campioni` in `/api/nodi`** dice quanti dei 48 slot hanno un
+    campione. Senza, "la pagina e' comparsa" e "la pagina mostra qualcosa"
+    sarebbero indistinguibili da remoto: il pannello non si puo' guardare da
+    fuori.
+
 - **`GET /api/salute` fa i controlli incrociati da sola** (da `v13`). Il
   controllo che vale e' **`pacchetti ricevuti == righe scritte + scartati per
   orario + scritture fallite`**, e regge perche' `remote_nodes` incrementa

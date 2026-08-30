@@ -308,6 +308,7 @@ static void handleApiNodi() {
     json += "\"trend\":";      appendJsonString(json, remote_trend_label(r.trend)); json += ',';
     json += "\"previsione\":"; appendJsonString(json, remote_forecast_text(&r));    json += ',';
     json += "\"storico_slot\":" + String(r.storicoSlot);
+    json += ",\"temp_campioni\":" + String(remote_temp_campioni(i));
     json += '}';
   }
 
@@ -778,6 +779,20 @@ static void handleApiPannelloAggiungi() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
   WebServer& srv = net_server();
 
+  // Senza `param` si aggiunge una pagina che non ha parametri: oggi solo il
+  // grafico. Con `param` si intende un'immagine, che e' il caso storico e
+  // resta quello di default per non cambiare le chiamate gia' scritte.
+  const String tipo = srv.hasArg("tipo") ? srv.arg("tipo") : String("");
+  if (tipo == "grafico") {
+    if (pages_add(PT_GRAFICO, "") < 0) {
+      srv.send(507, "text/plain", "non c'e' piu' posto nell'elenco delle pagine");
+      return;
+    }
+    pages_save();
+    handleApiPannello();
+    return;
+  }
+
   const String nome = srv.hasArg("param") ? srv.arg("param") : String("");
   if (nome.length() == 0) { srv.send(400, "text/plain", "manca param"); return; }
   if (!sd_img_exists(nome.c_str())) {
@@ -1011,6 +1026,15 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  pagine qui sopra.</p>
 </div>
 
+<h2>Altre pagine</h2>
+<div class="card">
+ <button class="sec full" id="bgraf">Aggiungi la pagina del grafico</button>
+ <p class="muted">Temperatura dei nodi nelle ultime 24 ore, a piena pagina. Lo
+ storico si ricostruisce dai CSV sulla card, quindi il grafico e&grave; pieno
+ subito dopo un riavvio invece di impiegare un giorno a formarsi.</p>
+ <div class="esito" id="sgraf"></div>
+</div>
+
 <h2>Aggiungere un'immagine</h2>
 <div class="card">
  <button class="full" onclick="location.href='/immagini'">Componi un'immagine</button>
@@ -1081,7 +1105,7 @@ function anteprima(box,nome){
   .catch(()=>{box.className='mini gen';box.innerHTML='&#9888;';});
 }
 
-const GLIFO={nodi:'&#9925;',messaggio:'&#9993;',bianca:'&#9634;'};
+const GLIFO={nodi:'&#9925;',messaggio:'&#9993;',bianca:'&#9634;',grafico:'&#128200;'};
 var ULTIMO=null, SULLACARD=[];
 
 function render(d){
@@ -1115,7 +1139,7 @@ function render(d){
    '<div class="azioni">'+
      (p.corrente?'':'<button class="sec" data-v="'+p.i+'">Mostra ora</button>')+
      '<button class="sec' + (p.corrente?' sol':'') + '" data-f="'+p.i+'">Solo questa</button>'+
-     (p.tipo=='immagine'?'<button class="dan sol" data-x="'+p.i+'">Togli dall\'elenco</button>':'')+
+     (p.i===usate[0]?'':'<button class="dan sol" data-x="'+p.i+'">Togli dall\'elenco</button>')+
    '</div>';
   box.appendChild(el);
   if(p.corrente) E('oraNome').textContent = p.tipo + (p.param? ' \u2014 '+p.param : '');
@@ -1236,6 +1260,8 @@ E('fas').onchange=()=>post('/api/pannello?fascia='+(E('fas').checked?1:0))
 E('sda').onchange=()=>salvaRotazione(800);
 E('sa').onchange=()=>salvaRotazione(800);
 E('brf').onclick=()=>post('/api/pannello/refresh').then(()=>flash(E('srf'),'Refresh in coda&hellip;'));
+E('bgraf').onclick=()=>postJson('/api/pannello/aggiungi?tipo=grafico',E('sgraf'))
+ .then(()=>{flash(E('sgraf'),'Aggiunta in fondo all\'elenco');window.scrollTo({top:0,behavior:'smooth'});});
 E('bm').onclick=()=>{
  if(!E('txt').value.trim()){flash(E('sm'),'Scrivi qualcosa',1);return;}
  const b=new URLSearchParams();b.set('t',E('txt').value);b.set('min',E('min').value);b.set('urg',E('urg').checked?1:0);

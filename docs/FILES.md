@@ -1531,6 +1531,13 @@ pannello si vede o non si vede allo stesso modo.
   la cattura si ferma a 256 byte (il buffer TX della CDC), l'host finisce di
   enumerare la porta un paio di secondi dopo il reset e con
   `Serial.setTxTimeoutMs(0)` il resto viene buttato.
+- **La pagina GRAFICO** (da `v14`, `PT_GRAFICO`): temperatura dei nodi nelle
+  ultime 24 h, a piena pagina. Lo storico e' un anello di 48 slot da 30 minuti
+  in `remote_nodes.cpp`, separato da quello del trend e senza timestamp per
+  slot — l'indice E' il tempo, e per questo le celle scavalcate vanno svuotate
+  quando si cambia slot. Si legge con `remote_temp_history()`, e
+  `remote_temp_campioni()` dice quanti slot sono pieni (l'unico modo di
+  verificare da remoto che il grafico abbia dati).
 - **`GET /api/salute`** (da `v13`) fa i controlli incrociati che prima si
   facevano a mano leggendo due endpoint: il principale e' **pacchetti ricevuti
   == righe scritte + scartati per orario + scritture fallite**. Sono contatori

@@ -95,7 +95,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v13";
+static const char FW_VERSION[] = "v14";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -857,12 +857,14 @@ static void seedNodoDaCsv(const RemoteNode* n, const char* giorno, time_t minTs,
   File f = sd_open_remote_day(n->nome, giorno);
   if (!f) return;
 
-  // Solo la coda del file: le tre ore che servono sono al massimo qualche
-  // migliaio di byte, mentre un giorno intero a cadenza fitta ne fa oltre
-  // centomila. Leggerlo tutto bloccherebbe loop() - e con lui web server, OTA
-  // e raccolta dei DATA - per secondi, ad ogni avvio.
+  // Solo la coda del file. Da quando c'e' anche il grafico a 24 h la finestra
+  // e' un giorno intero, non piu' tre ore: 128 kB coprono ~26 h del nodo piu'
+  // veloce (60 s, ~80 byte a riga). Oltre non si va — leggere due file interi
+  // per nodo bloccherebbe loop(), e con lui web server, OTA e raccolta dei
+  // DATA. Se la coda non arriva abbastanza indietro il grafico parte con
+  // qualche slot vuoto, che e' esattamente cio' che gli slot vuoti dicono.
   const size_t size = f.size();
-  const size_t CODA = 65536;
+  const size_t CODA = 131072;
   if (size > CODA)
   {
     f.seek(size - CODA);
@@ -886,6 +888,12 @@ static void seedNodoDaCsv(const RemoteNode* n, const char* giorno, time_t minTs,
     // remote_seed_pressure scarta i timestamp non validi.
     const time_t ts = (time_t)strtoul(campo[1], nullptr, 10);
     if (ts < minTs) continue;
+
+    // Temperatura (campo 5) e pressione (campo 7) vanno in due storici
+    // diversi: 24 h a mezz'ora per il disegno, 3 h a dieci minuti per il
+    // trend. Un campo vuoto nel CSV e' una lettura che il nodo non e' riuscito
+    // a fare, e resta un buco anche qui.
+    if (campo[5][0] != '\0') remote_seed_temp(n->mac, ts, atof(campo[5]));
     if (campo[7][0] == '\0') continue;   // campo vuoto = valore non finito
 
     remote_seed_pressure(n->mac, ts, atof(campo[7]));
@@ -907,7 +915,10 @@ static void seedForecastDaSD()
   s_seedFatto = true;
 
   const time_t ora   = rtctime_now();
-  const time_t minTs = ora - (time_t)(3 * 3600 + 900);   // 3 h + tolleranza
+  // 24 h piu' tolleranza: e' la finestra del grafico. Il trend ne usa solo le
+  // ultime tre, e i campioni piu' vecchi che gli arrivano scorrono via dal suo
+  // anello da soli — costano qualche push, non un errore.
+  const time_t minTs = ora - (time_t)(24 * 3600 + 900);
 
   char giornoOggi[12] = "", giornoPrima[12] = "";
   rtctime_format(ora,   "%Y-%m-%d", giornoOggi,  sizeof(giornoOggi));
@@ -1208,6 +1219,193 @@ static void screenImmagine(const char* nome)
 }
 
 // ---------------------------------------------------------------------------
+// Pagina GRAFICO — la temperatura dei nodi nelle ultime 24 ore
+// ---------------------------------------------------------------------------
+// Perche' una pagina intera e non un grafichino dentro la pagina dei nodi:
+// vale la stessa regola gia' scritta per la fascia del messaggio — su e-ink il
+// tempo e' la dimensione in piu', e per vedere tutto c'e' la rotazione, che
+// alterna pagine intere e leggibili invece di comprimerne tre in 400x300. Una
+// sparkline da 180x18 accanto ai numeri sarebbe stata un ornamento; qui la
+// curva si legge da lontano quanto i numeri della pagina nodi.
+//
+// I dati arrivano da remote_temp_history(): 48 mezz'ore in decimi di grado,
+// gia' in ordine cronologico, con REMOTE_TEMP_VUOTO nei buchi. Lo storico si
+// ricostruisce dai CSV al primo sync NTP, quindi la pagina e' piena subito
+// dopo un riavvio invece di impiegare un giorno a riempirsi.
+static const int16_t GR_X0 = 44,  GR_X1 = 388;    // area di disegno
+static const int16_t GR_Y0 = 52,  GR_Y1 = 236;
+static const int     GR_MAX_NODI = 3;             // oltre, il bianco e nero non basta piu'
+
+// Un pixel ogni due slot non basterebbe: con 48 campioni su 344 px ogni
+// mezz'ora ha 7 px, che e' anche la distanza minima perche' due curve vicine
+// restino distinguibili.
+static int16_t grX(int i, int n)
+{
+  if (n <= 1) return GR_X0;
+  return GR_X0 + (int16_t)(((int32_t)(GR_X1 - GR_X0) * i) / (n - 1));
+}
+
+// Le curve si distinguono per TRATTO, non per colore: piena, tratteggiata,
+// punteggiata. Su un pannello a 1 bit e' l'unica differenza che sopravvive.
+static bool grVisibile(int serie, int i)
+{
+  switch (serie) {
+    case 0:  return true;              // piena
+    case 1:  return (i % 6) < 4;       // tratteggiata
+    default: return (i % 4) < 2;       // punteggiata
+  }
+}
+
+static void screenGrafico()
+{
+  // Si raccoglie prima, si disegna dopo: firstPage()/nextPage() ripete il
+  // corpo del ciclo, e rileggere lo storico ad ogni passata sarebbe lavoro
+  // buttato.
+  static int16_t serie[GR_MAX_NODI][REMOTE_TEMP_SLOTS];
+  static char    nomi[GR_MAX_NODI][18];
+  static int16_t ultimo[GR_MAX_NODI];
+  int nSerie = 0, nCampioni = 0;
+  time_t tsUltimo = 0;
+  int16_t vMin = 32767, vMax = -32768;
+
+  const int nodi = remote_count();
+  for (int i = 0; i < nodi && nSerie < GR_MAX_NODI; i++) {
+    RemoteNode n;
+    if (!remote_get(i, &n)) continue;
+
+    time_t ts = 0;
+    const int k = remote_temp_history(i, serie[nSerie], REMOTE_TEMP_SLOTS, &ts);
+    if (k <= 0) continue;
+
+    bool almenoUno = false;
+    for (int j = 0; j < k; j++) {
+      const int16_t v = serie[nSerie][j];
+      if (v == REMOTE_TEMP_VUOTO) continue;
+      almenoUno = true;
+      if (v < vMin) vMin = v;
+      if (v > vMax) vMax = v;
+    }
+    if (!almenoUno) continue;
+
+    strlcpy(nomi[nSerie], n.nome, sizeof(nomi[0]));
+    ultimo[nSerie] = isfinite(n.value[0]) ? (int16_t)lroundf(n.value[0] * 10.0f)
+                                          : REMOTE_TEMP_VUOTO;
+    if (k > nCampioni) nCampioni = k;
+    if (ts > tsUltimo) tsUltimo  = ts;
+    nSerie++;
+  }
+
+  // Scala verticale: almeno due gradi di respiro, cosi' una giornata piatta
+  // non diventa una linea che ondeggia di dieci pixel per due decimi.
+  if (nSerie > 0) {
+    if (vMax - vMin < 20) {
+      const int16_t centro = (int16_t)((vMax + vMin) / 2);
+      vMin = centro - 10;
+      vMax = centro + 10;
+    }
+    const int16_t margine = (int16_t)((vMax - vMin) / 12 + 1);
+    vMin -= margine;
+    vMax += margine;
+  }
+
+  display.setFullWindow();
+  display.firstPage();
+  do
+  {
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+
+    display.setFont(&FreeSansBold12pt7b);
+    display.setCursor(12, 30);
+    display.print("TEMPERATURA");
+    display.setFont(&FreeSans9pt7b);
+    drawRight("ultime 24 ore", 388, 30);
+    display.drawFastHLine(12, 38, 376, GxEPD_BLACK);
+
+    if (nSerie == 0) {
+      display.setFont(&FreeSans9pt7b);
+      drawCenter("nessuno storico ancora", 200, 150);
+      drawCenter("si riempie con i dati dei nodi", 200, 172);
+      return;
+    }
+
+    // Cornice e tacche orizzontali: tre linee tratteggiate, che su e-ink si
+    // leggono senza rubare contrasto alla curva.
+    display.drawRect(GR_X0, GR_Y0, GR_X1 - GR_X0, GR_Y1 - GR_Y0, GxEPD_BLACK);
+    display.setFont(&FreeSans9pt7b);
+    for (int t = 0; t <= 2; t++) {
+      const int16_t y = GR_Y0 + (int16_t)(((int32_t)(GR_Y1 - GR_Y0) * t) / 2);
+      const int16_t v = (int16_t)(vMax - (int32_t)(vMax - vMin) * t / 2);
+      if (t != 0 && t != 2) {
+        for (int16_t x = GR_X0 + 4; x < GR_X1; x += 8) display.drawPixel(x, y, GxEPD_BLACK);
+      }
+      drawRight(fmtNum(v / 10.0f, 1), GR_X0 - 5, y + 5);
+    }
+
+    // Asse dei tempi: l'ORA vera dei campioni, non "-24h/-12h/ora". Un istante
+    // resta vero anche quando il pannello non si ridisegna da un pezzo, una
+    // distanza no — la stessa ragione per cui la pagina nodi mostra l'ora
+    // dell'ultimo pacchetto invece di "38 s fa".
+    for (int t = 0; t <= 4; t++) {
+      const int16_t x = GR_X0 + (int16_t)(((int32_t)(GR_X1 - GR_X0) * t) / 4);
+      display.drawFastVLine(x, GR_Y1, 4, GxEPD_BLACK);
+      const time_t q = tsUltimo - (time_t)(24 * 3600) + (time_t)(6 * 3600 * t);
+      char ora[8];
+      if (rtctime_format(q, "%H:%M", ora, sizeof(ora))) {
+        int16_t bx, by; uint16_t bw, bh;
+        display.getTextBounds(ora, 0, 0, &bx, &by, &bw, &bh);
+        int16_t cx = x - (int16_t)bw / 2;
+        if (cx < 2) cx = 2;
+        if (cx + (int16_t)bw > 398) cx = 398 - (int16_t)bw;
+        display.setCursor(cx, GR_Y1 + 18);
+        display.print(ora);
+      }
+    }
+
+    // Le curve. Un buco NON si attraversa con una retta: un segmento lungo
+    // sopra un'ora senza dati direbbe che la temperatura e' passata di li',
+    // che nessuno ha misurato. Meglio la linea che si interrompe.
+    for (int k = 0; k < nSerie; k++) {
+      int16_t xPrec = 0, yPrec = 0;
+      bool hoPrec = false;
+      for (int i = 0; i < nCampioni; i++) {
+        const int16_t v = serie[k][i];
+        if (v == REMOTE_TEMP_VUOTO) { hoPrec = false; continue; }
+
+        const int16_t x = grX(i, nCampioni);
+        const int16_t y = GR_Y1 - (int16_t)(((int32_t)(v - vMin) * (GR_Y1 - GR_Y0)) /
+                                            (vMax - vMin ? vMax - vMin : 1));
+        if (hoPrec && grVisibile(k, i)) {
+          display.drawLine(xPrec, yPrec, x, y, GxEPD_BLACK);
+          if (k == 0) display.drawLine(xPrec, yPrec + 1, x, y + 1, GxEPD_BLACK);
+        }
+        xPrec = x; yPrec = y; hoPrec = true;
+      }
+    }
+
+    // Legenda: nome, tratto e valore di adesso. Il campione di destra e' di
+    // mezz'ora fa al massimo, il valore corrente e' quello vero.
+    int16_t ly = GR_Y1 + 40;
+    display.setFont(&FreeSans9pt7b);
+    for (int k = 0; k < nSerie; k++) {
+      const int16_t x0 = 14;
+      for (int16_t x = x0; x < x0 + 26; x++) {
+        if (grVisibile(k, (int)(x - x0))) display.drawPixel(x, ly - 4, GxEPD_BLACK);
+        if (k == 0 && grVisibile(k, (int)(x - x0))) display.drawPixel(x, ly - 3, GxEPD_BLACK);
+      }
+      display.setCursor(x0 + 34, ly);
+      display.print(nomi[k]);
+      if (ultimo[k] != REMOTE_TEMP_VUOTO) {
+        drawRight(fmtNum(ultimo[k] / 10.0f, 1) + " C", 388, ly);
+      }
+      ly += 20;
+      if (ly > 296) break;
+    }
+  }
+  while (display.nextPage());
+}
+
+// ---------------------------------------------------------------------------
 // Il modello delle pagine (pages.*) decide COSA mostrare; qui si disegna.
 // ---------------------------------------------------------------------------
 static void showPage(uint8_t i)
@@ -1234,6 +1432,10 @@ static void showPage(uint8_t i)
 
     case PT_IMMAGINE:
       screenImmagine(pg->param);
+      break;
+
+    case PT_GRAFICO:
+      screenGrafico();
       break;
 
     case PT_BIANCA:
@@ -1501,6 +1703,24 @@ void loop()
     // Con la fascia accesa il messaggio sta anche sulla pagina dei nodi:
     // senza questo resterebbe quello vecchio fino al refresh di cadenza.
     if (tipoCur == PT_NODI && pages_fascia()) s_nodiDirty = true;
+  }
+
+  // Il grafico si ridisegna quando entra un campione nuovo nell'anello, cioe'
+  // ogni mezz'ora: e' la risoluzione dello storico, e ridisegnare piu' spesso
+  // mostrerebbe esattamente la stessa curva al prezzo di un refresh completo.
+  // Serve perche' con il grafico come unica pagina attiva la rotazione non
+  // scatta mai, e senza questo resterebbe fermo all'ora in cui e' comparso.
+  if (tipoCur == PT_GRAFICO)
+  {
+    static uint32_t s_graficoUltimoSlot = 0;
+    const uint32_t slotOra = (uint32_t)(time(nullptr) / (time_t)REMOTE_TEMP_SLOT_S);
+    if (s_graficoUltimoSlot == 0) s_graficoUltimoSlot = slotOra;
+    else if (slotOra != s_graficoUltimoSlot)
+    {
+      s_graficoUltimoSlot = slotOra;
+      showPage(pages_current());
+      return;
+    }
   }
 
   if (tipoCur == PT_NODI)

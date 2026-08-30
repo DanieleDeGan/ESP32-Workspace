@@ -233,6 +233,37 @@ void remote_seed_begin(const uint8_t mac[6]);
 // la stessa ragione per cui non conosce sd_logger: l'incollatura e' nel .ino.
 void remote_seed_pressure(const uint8_t mac[6], time_t ts, float pressHpa);
 
+// Come sopra, per la temperatura: riempie lo storico a 24 h da cui si disegna
+// il grafico. Stessa regola, stesso posto da cui si chiama (il .ino, che e'
+// l'unico a conoscere la SD).
+void remote_seed_temp(const uint8_t mac[6], time_t ts, float tempC);
+
+// ---------------------------------------------------------------------
+//  Storico della temperatura, per il grafico a 24 h del pannello
+// ---------------------------------------------------------------------
+// Mezz'ora per campione, 48 campioni: la finestra e' esattamente un giorno, e
+// a 376 px di larghezza ogni campione ha ~8 px — piu' risoluzione non si
+// vedrebbe. Sono ~100 byte per nodo.
+#define REMOTE_TEMP_SLOTS   48
+#define REMOTE_TEMP_SLOT_S  1800
+#define REMOTE_TEMP_VUOTO   INT16_MIN
+
+// Copia in out[] i campioni in ordine cronologico (il piu' vecchio per primo),
+// in DECIMI di grado, con REMOTE_TEMP_VUOTO dove non c'e' niente. Torna il
+// numero di celle scritte (0 se il nodo non ha ancora storico).
+//
+// I decimi di grado e non i float: e' quello che c'e' in memoria, e chi
+// disegna lavora comunque su interi. tsUltimo riceve l'ora dell'ultimo slot,
+// che serve a etichettare l'asse dei tempi — senza, il grafico non saprebbe
+// dire "da quando a quando".
+int remote_temp_history(int index, int16_t* out, int maxOut, time_t* tsUltimo);
+
+// Quanti dei 48 slot hanno davvero un campione. Serve a sapere DA REMOTO se il
+// grafico ha di che disegnare: il pannello non si puo' guardare da fuori, e
+// senza questo numero "la pagina e' comparsa" e "la pagina mostra qualcosa"
+// sarebbero indistinguibili.
+int remote_temp_campioni(int index);
+
 // Etichetta e testo della previsione, per la UI. Incapsulati qui cosi' chi
 // disegna non deve includere forecast.h ne' sapere come e' fatto il trend.
 const char* remote_trend_label(uint8_t trend);
