@@ -31,6 +31,11 @@
 #include <SD.h>
 #include <math.h>
 
+// Definita piu' sotto, insieme alla whitelist delle pagine sostituibili: qui
+// serve il prototipo perche' handleRoot() e le altre due pagine la chiamano
+// prima che il compilatore l'abbia vista.
+static void servePagina(const char* nome, const char* pm);
+
 // ---------------------------------------------------------------------
 //  Invii che si arrendono invece di trascinarsi dietro la scheda.
 //  streamFile() del core ignora il valore di ritorno di write() e insiste
@@ -1296,14 +1301,10 @@ carica();caricaImmagini();setInterval(carica,15000);
 //  divergerebbero al primo ritocco, e la differenza si vedrebbe solo
 //  confrontando la pagina della scheda con quella sul PC.
 // ---------------------------------------------------------------------
-static void handleImmaginiPage() {
-  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
-  net_server().send_P(200, "text/html", DITHER_PAGE);
-}
+static void handleImmaginiPage() { servePagina("immagini", DITHER_PAGE); }
 
 static void handlePannelloPage() {
-  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
-  net_server().send_P(200, "text/html", PANNELLO_PAGE);
+  servePagina("pannello", PANNELLO_PAGE);
 }
 
 
@@ -1606,20 +1607,410 @@ static void handleDashboardRipristina() {
 }
 
 static void handleRoot() {
+  // La versione sulla card se c'è, altrimenti quella del firmware: da v18
+  // vale per tutte le pagine sostituibili, non più solo per questa.
+  servePagina("dashboard", HUB_PAGE);
+}
+
+// ---------------------------------------------------------------------
+//  La tabella delle rotte — una sola, usata due volte
+// ---------------------------------------------------------------------
+//  Da qui si registrano gli handler sul WebServer E si genera
+//  /api/elenco, che documenta l'interfaccia a chi si scrive le proprie
+//  pagine. Due usi della stessa riga: una rotta nuova compare nella
+//  documentazione perche' e' stata REGISTRATA, non perche' qualcuno si e'
+//  ricordato di scriverla da qualche parte.
+//
+//  E' la ragione per cui la pagina /api puo' stare sulla card senza
+//  diventare bugiarda: sulla card c'e' solo l'impaginazione, i fatti
+//  arrivano dal firmware ad ogni richiesta.
+//
+//  `handler == nullptr` significa "documentata qui, registrata a mano piu'
+//  sotto": sono le rotte con upload multipart, che vogliono due callback e
+//  non entrano in questa forma.
+struct Rotta {
+  HTTPMethod  metodo;
+  const char* path;
+  void      (*handler)();
+  const char* cosa;
+  const char* parametri;
+};
+
+static const Rotta ROTTE[] = {
+  { HTTP_GET,  "/",                     handleRoot,                  "la pagina dei nodi (sostituibile dalla card)", "" },
+  { HTTP_GET,  "/pannello",             handlePannelloPage,          "pagine del pannello, messaggi, immagini (sostituibile)", "" },
+  { HTTP_GET,  "/immagini",             handleImmaginiPage,          "composizione di un'immagine per il pannello (sostituibile)", "" },
+
+  { HTTP_GET,  "/api/stato",            handleApiStato,              "stato generale: firmware, rete, ora, card, contatori", "" },
+  { HTTP_GET,  "/api/salute",           handleApiSalute,             "controlli incrociati: pacchetti == righe + scartati + fallite", "" },
+  { HTTP_GET,  "/api/elenco",           nullptr,                     "QUESTO elenco, in JSON", "" },
+
+  { HTTP_GET,  "/api/nodi",             handleApiNodi,               "i nodi: valori, cadenza, trend, previsione, pacchetti persi", "" },
+  { HTTP_POST, "/api/pairing",          handleApiPairing,            "apre o chiude la finestra di associazione", "on=0|1, s=secondi" },
+  { HTTP_POST, "/api/nodi/dimentica",   handleApiNodiDimentica,      "toglie un nodo dal registro (RAM e NVS)", "mac=AA:BB:..." },
+  { HTTP_POST, "/api/nodi/altitudine",  handleApiNodiAltitudine,     "quota per riportare la pressione al livello del mare", "m=metri" },
+  { HTTP_GET,  "/api/nodi/giorni",      handleApiNodiGiorni,         "i giorni di CSV presenti sulla card per un nodo", "nodo=NOME" },
+  { HTTP_GET,  "/api/nodi/scarica",     handleApiNodiScarica,        "il CSV di un giorno (ts_iso,ts_unix,fonte_ora,mac,seq,temp_c,hum_pct,press_hpa,batt_mv)", "nodo=NOME, d=AAAA-MM-GG" },
+
+  { HTTP_GET,  "/api/pannello",         handleApiPannello,           "elenco delle pagine, rotazione, ore di silenzio", "" },
+  { HTTP_POST, "/api/pannello",         handleApiPannelloSet,        "rotazione, ore di silenzio, fascia del messaggio", "rotazione=0|1, sil_da=0..23, sil_a=0..23, fascia=0|1" },
+  { HTTP_POST, "/api/pannello/pagina",  handleApiPannelloPagina,     "una pagina: attiva, durata, oppure 'solo questa'", "i=slot, attiva=0|1, durata=secondi, fissa=1" },
+  { HTTP_POST, "/api/pannello/vai",     handleApiPannelloVai,        "manda subito una pagina sul pannello (accoda: la disegna il loop)", "i=slot" },
+  { HTTP_POST, "/api/pannello/refresh", handleApiPannelloRefresh,    "ridisegna la pagina corrente (completo, ~2,2 s)", "" },
+  { HTTP_POST, "/api/pannello/aggiungi",handleApiPannelloAggiungi,   "aggiunge una pagina: immagine (param) o grafico (tipo)", "param=NOME oppure tipo=grafico" },
+  { HTTP_POST, "/api/pannello/rimuovi", handleApiPannelloRimuovi,    "toglie una pagina dall'elenco (lo slot 0 non si tocca)", "i=slot" },
+  { HTTP_POST, "/api/pannello/sposta",  handleApiPannelloSposta,     "sposta una pagina di un posto nell'elenco", "i=slot, dir=-1|1" },
+
+  { HTTP_GET,  "/api/messaggio",        handleApiMessaggio,          "il messaggio attivo e l'archivio", "" },
+  { HTTP_POST, "/api/messaggio",        handleApiMessaggioSet,       "scrive il messaggio sul pannello (form-urlencoded)", "t=testo, min=minuti, urg=0|1" },
+  { HTTP_POST, "/api/messaggio/cancella",handleApiMessaggioCancella, "toglie il messaggio dal pannello", "" },
+
+  { HTTP_GET,  "/api/immagini",         handleApiImmagini,           "le immagini sulla card e se sono valide", "" },
+  { HTTP_POST, "/api/immagini",         nullptr,                     "carica un'immagine da 15.000 byte esatti (multipart, campo 'img')", "nome=NOME" },
+  { HTTP_POST, "/api/immagini/elimina", handleApiImmaginiElimina,    "elimina un'immagine dalla card", "nome=NOME" },
+  { HTTP_GET,  "/api/immagini/scarica", handleApiImmaginiScarica,    "i 15.000 byte di un'immagine (per l'anteprima)", "nome=NOME" },
+
+  { HTTP_GET,  "/api",                  nullptr,                     "questo elenco, impaginato (sostituibile)", "" },
+  { HTTP_GET,  "/pagine",               nullptr,                     "gestione delle pagine sostituibili (sempre nel firmware)", "" },
+  { HTTP_POST, "/api/pagine/carica",    nullptr,                     "carica una pagina sulla card (multipart, campo 'pagina')", "nome=dashboard|pannello|immagini|api" },
+  { HTTP_POST, "/api/pagine/ripristina",nullptr,                     "toglie la pagina dalla card: torna quella del firmware", "nome=..." },
+  { HTTP_GET,  "/update",               nullptr,                     "aggiornamento del firmware (in net_ota.cpp, sempre nel firmware)", "" },
+};
+static const int ROTTE_N = sizeof(ROTTE) / sizeof(ROTTE[0]);
+
+// GET /api/elenco — l'interfaccia raccontata da se stessa.
+static void handleApiElenco() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
 
-  // Dashboard personalizzata sulla card, se c'è (vedi /dashboard-upload):
-  // altrimenti quella incorporata nel firmware. Passa da
-  // streamFileLimitato() come ogni file servito da qui: un client che se
-  // ne va a metà non deve tenere fermo il loop(), che nel frattempo non
-  // preleverebbe i DATA dei nodi.
-  File custom = sd_open_dashboard();
-  if (custom) {
-    streamFileLimitato(net_server(), custom, "text/html");
-    custom.close();
+  String j = "{\"fw\":";
+  appendJsonString(j, app_fw_version());
+  j += ",\"rotte\":[";
+  for (int i = 0; i < ROTTE_N; i++) {
+    if (i) j += ',';
+    j += "{\"metodo\":\"";
+    j += (ROTTE[i].metodo == HTTP_GET) ? "GET" : "POST";
+    j += "\",\"path\":";  appendJsonString(j, ROTTE[i].path);
+    j += ",\"cosa\":";    appendJsonString(j, ROTTE[i].cosa);
+    j += ",\"parametri\":"; appendJsonString(j, ROTTE[i].parametri);
+    j += '}';
+  }
+  j += "]}";
+  net_server().send(200, "application/json", j);
+}
+
+// ---------------------------------------------------------------------
+//  /api — l'elenco impaginato
+// ---------------------------------------------------------------------
+//  Volutamente MINIMA: non contiene un solo fatto sulle rotte, li chiede a
+//  /api/elenco ad ogni caricamento. E' cio' che le permette di stare sulla
+//  card senza diventare bugiarda il giorno che il firmware cambia — e di
+//  costare poche centinaia di byte invece di qualche kB.
+static const char API_PAGE[] PROGMEM = R"HTML(
+<!doctype html><html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark"><title>MeteoHub-S3 &mdash; API</title><style>
+ :root{--bg:#0e0e10;--card:#1a1a1d;--bordo:#2e2e33;--txt:#ececee;--dim:#8e8e96;--acc:#3987e5;--ok:#3fb950}
+ *{box-sizing:border-box}
+ body{font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:var(--bg);
+  color:var(--txt);margin:0;padding:14px}
+ .wrap{max-width:860px;margin:0 auto}
+ h1{font-size:1.15rem;margin:.2rem 0 .3rem}
+ .sub{color:var(--dim);font-size:.85rem;line-height:1.5;margin-bottom:1.2rem}
+ .r{background:var(--card);border:1px solid var(--bordo);border-radius:12px;
+  padding:11px 13px;margin-bottom:8px}
+ .top{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
+ .m{font-size:.68rem;font-weight:700;letter-spacing:.05em;padding:2px 7px;border-radius:5px;
+  background:#20343f;color:#79c0ff;flex:none}
+ .m.post{background:#3a2a1e;color:#e5a13a}
+ code{font-family:ui-monospace,Consolas,monospace;font-size:.9rem}
+ .c{color:var(--dim);font-size:.85rem;margin-top:.35rem;line-height:1.45}
+ .p{margin-top:.35rem;font-size:.8rem}
+ .p b{color:var(--ok);font-weight:600}
+ nav{margin:1.6rem 0 .5rem;display:flex;flex-wrap:wrap;gap:.4rem 1rem;font-size:.85rem}
+ a{color:var(--acc);text-decoration:none}
+</style></head><body><div class="wrap">
+<h1>API dell&rsquo;hub <span id="fw" class="sub"></span></h1>
+<p class="sub">Questo elenco lo genera il firmware da s&eacute;: ogni riga esiste perch&eacute;
+la rotta &egrave; <b>registrata</b>, non perch&eacute; qualcuno si &egrave; ricordato di
+scriverla. Serve a chi si costruisce le proprie pagine &mdash; vedi
+<a href="/pagine">Pagine</a>. Tutte le rotte vogliono la stessa autenticazione
+del resto dell&rsquo;interfaccia.</p>
+<div id="l">lettura&hellip;</div>
+<nav>
+ <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/immagini">Componi immagine</a>
+ <a href="/pagine">Pagine</a><a href="/api">API</a><a href="/update">Aggiorna firmware</a>
+</nav>
+<script>
+const esc=x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+fetch('/api/elenco').then(r=>{if(!r.ok)throw new Error(r.status);return r.json();}).then(d=>{
+ document.getElementById('fw').textContent='firmware '+d.fw;
+ document.getElementById('l').innerHTML=d.rotte.map(r=>
+  '<div class="r"><div class="top"><span class="m'+(r.metodo=='POST'?' post':'')+'">'+r.metodo+
+  '</span><code>'+esc(r.path)+'</code></div><div class="c">'+esc(r.cosa)+'</div>'+
+  (r.parametri?'<div class="p">parametri: <b>'+esc(r.parametri)+'</b></div>':'')+'</div>').join('');
+}).catch(e=>{document.getElementById('l').textContent='elenco non leggibile: '+e.message;});
+</script></div></body></html>
+)HTML";
+
+// ---------------------------------------------------------------------
+//  Pagine sostituibili: la whitelist
+// ---------------------------------------------------------------------
+//  Il nome NON arriva mai dalla rete come pezzo di path: si cerca in questa
+//  tabella e si usa la voce trovata. Cosi' non c'e' path traversal da
+//  parare, e sulla card non finiscono file che nessuno serve.
+//
+//  /pagine, /update e i due upload NON sono qui, ed e' la regola che vale da
+//  quando esiste la dashboard personalizzata: la via di rientro non puo'
+//  dipendere da cio' da cui si sta rientrando. Se la card manca, si corrompe
+//  o contiene una pagina rotta, quelle continuano ad arrivare dal firmware.
+struct PaginaSost {
+  const char* nome;
+  const char* path;
+  const char* titolo;
+  const char* pm;      // il fallback nel firmware
+};
+static const PaginaSost PAGINE_SOST[] = {
+  { "dashboard", "/",         "Nodi (home)",            HUB_PAGE      },
+  { "pannello",  "/pannello", "Pannello e messaggi",    PANNELLO_PAGE },
+  { "immagini",  "/immagini", "Composizione immagini",  DITHER_PAGE   },
+  { "api",       "/api",      "Elenco delle API",       API_PAGE      },
+};
+static const int PAGINE_SOST_N = sizeof(PAGINE_SOST) / sizeof(PAGINE_SOST[0]);
+
+static const PaginaSost* paginaSost(const String& nome) {
+  for (int i = 0; i < PAGINE_SOST_N; i++) {
+    if (nome == PAGINE_SOST[i].nome) return &PAGINE_SOST[i];
+  }
+  return nullptr;
+}
+
+// Serve la versione sulla card se c'e', altrimenti quella del firmware.
+// streamFileLimitato() come per ogni file: un client che se ne va a meta' non
+// deve tenere fermo il loop(), che nel frattempo non preleva i DATA dei nodi.
+static void servePagina(const char* nome, const char* pm) {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  File f = sd_open_www(nome);
+  if (f) {
+    streamFileLimitato(net_server(), f, "text/html");
+    f.close();
     return;
   }
-  net_server().send_P(200, "text/html", HUB_PAGE);
+  net_server().send_P(200, "text/html", pm);
+}
+
+static void handleApiPage() { servePagina("api", API_PAGE); }
+
+// GET /api/pagine/elenco — quali pagine sono sostituite, e con quale firmware
+// erano state caricate. Il confronto fra quella versione e quella che gira
+// adesso e' l'unico modo di accorgersi di una pagina rimasta indietro: e' il
+// rischio che ci si prende spostandole sulla card.
+static void handleApiPagineElenco() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+
+  String j = "{\"fw\":";
+  appendJsonString(j, app_fw_version());
+  j += ",\"sd\":";
+  j += sd_mounted() ? "true" : "false";
+  j += ",\"pagine\":[";
+  for (int i = 0; i < PAGINE_SOST_N; i++) {
+    if (i) j += ',';
+    const bool suCard = sd_www_exists(PAGINE_SOST[i].nome);
+    char fw[12] = "";
+    time_t quando = 0;
+    const bool info = suCard && sd_www_info(PAGINE_SOST[i].nome, fw, sizeof(fw), &quando);
+
+    j += "{\"nome\":";   appendJsonString(j, PAGINE_SOST[i].nome);
+    j += ",\"path\":";   appendJsonString(j, PAGINE_SOST[i].path);
+    j += ",\"titolo\":"; appendJsonString(j, PAGINE_SOST[i].titolo);
+    j += ",\"su_card\":"; j += suCard ? "true" : "false";
+    j += ",\"fw_caricata\":"; if (info) appendJsonString(j, fw); else j += "null";
+    j += ",\"quando\":";  j += (long)(info ? quando : 0);
+    j += '}';
+  }
+  j += "]}";
+  net_server().send(200, "application/json", j);
+}
+
+// POST /api/pagine/carica?nome=... (multipart, campo "pagina")
+static File s_pagUploadFile;
+static bool s_pagUploadOk = false;
+static String s_pagUploadNome;
+
+static void handlePagineCaricaChunk() {
+  HTTPUpload& up = net_server().upload();
+  switch (up.status) {
+    case UPLOAD_FILE_START: {
+      if (!net_webAuthOk()) { s_pagUploadOk = false; return; }
+      s_pagUploadNome = net_server().hasArg("nome") ? net_server().arg("nome") : String("");
+      const PaginaSost* p = paginaSost(s_pagUploadNome);
+      if (p == nullptr) { s_pagUploadOk = false; return; }
+      s_pagUploadFile = sd_open_www_for_write(p->nome);
+      s_pagUploadOk   = (bool)s_pagUploadFile;
+      break;
+    }
+    case UPLOAD_FILE_WRITE:
+      if (s_pagUploadOk) {
+        s_pagUploadOk = (s_pagUploadFile.write(up.buf, up.currentSize) == up.currentSize);
+      }
+      break;
+
+    case UPLOAD_FILE_END:
+      if (s_pagUploadFile) s_pagUploadFile.close();
+      break;
+
+    // Stessa disciplina di Update.abort() in net_ota.cpp: un upload caduto a
+    // meta' non deve lasciare un handle appeso ne' passare per riuscito.
+    case UPLOAD_FILE_ABORTED:
+      if (s_pagUploadFile) s_pagUploadFile.close();
+      s_pagUploadOk = false;
+      break;
+
+    default:
+      break;
+  }
+}
+
+static void handlePagineCaricaDone() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  if (!s_pagUploadOk) {
+    net_server().send(500, "text/plain",
+                      "caricamento fallito (nome non valido, card assente o piena)");
+    return;
+  }
+  // Si registra CON QUALE firmware e' stata caricata: e' il dato che permette
+  // di vedere, piu' avanti, una pagina rimasta indietro.
+  sd_www_registra(s_pagUploadNome.c_str(), app_fw_version(), rtctime_now());
+  net_server().send(200, "text/plain", "OK");
+}
+
+// POST /api/pagine/ripristina?nome=... — toglie il file dalla card
+static void handlePagineRipristina() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  const String nome = net_server().hasArg("nome") ? net_server().arg("nome") : String("");
+  const PaginaSost* p = paginaSost(nome);
+  if (p == nullptr) { net_server().send(400, "text/plain", "pagina sconosciuta"); return; }
+  if (!sd_delete_www(p->nome)) {
+    net_server().send(500, "text/plain", "non si e' potuto eliminare il file dalla card");
+    return;
+  }
+  net_server().send(200, "text/plain", "OK");
+}
+
+// ---------------------------------------------------------------------
+//  /pagine — gestione delle pagine sostituibili
+// ---------------------------------------------------------------------
+//  Sta SEMPRE nel firmware, come /update e come la vecchia
+//  /dashboard-upload: e' la via da cui si rimette a posto una pagina rotta,
+//  e non puo' dipendere dalla card che sta sostituendo.
+static const char PAGINE_PAGE[] PROGMEM = R"HTML(
+<!doctype html><html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark"><title>MeteoHub-S3 &mdash; Pagine</title><style>
+ :root{--bg:#0e0e10;--card:#1a1a1d;--card2:#212125;--bordo:#2e2e33;--txt:#ececee;
+  --dim:#8e8e96;--acc:#3987e5;--ok:#3fb950;--warn:#d29922;--dan:#c9342d}
+ *{box-sizing:border-box}
+ body{font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:var(--bg);
+  color:var(--txt);margin:0;padding:14px}
+ .wrap{max-width:760px;margin:0 auto}
+ h1{font-size:1.15rem;margin:.2rem 0 .3rem}
+ .sub{color:var(--dim);font-size:.85rem;line-height:1.55;margin-bottom:1.2rem}
+ .p{background:var(--card);border:1px solid var(--bordo);border-radius:12px;
+  padding:13px;margin-bottom:10px}
+ .top{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-bottom:.3rem}
+ .top b{font-size:1rem}
+ code{font-family:ui-monospace,Consolas,monospace;font-size:.85rem;color:var(--dim)}
+ .tag{margin-left:auto;font-size:.68rem;font-weight:700;letter-spacing:.04em;
+  padding:3px 8px;border-radius:99px}
+ .tag.fw{background:rgba(142,142,150,.16);color:var(--dim)}
+ .tag.sd{background:rgba(63,185,80,.15);color:var(--ok)}
+ .tag.old{background:rgba(210,153,34,.15);color:var(--warn)}
+ .info{color:var(--dim);font-size:.82rem;line-height:1.5}
+ .az{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center}
+ input[type=file]{color:var(--dim);font-size:.8rem;flex:1;min-width:180px}
+ button{min-height:40px;padding:0 14px;border:0;border-radius:9px;background:var(--acc);
+  color:#fff;font-weight:600;font-size:15px;cursor:pointer}
+ button.sec{background:var(--card2);border:1px solid var(--bordo);color:var(--txt);font-weight:500}
+ button:disabled{opacity:.4}
+ .esito{font-size:.8rem;margin-top:.5rem;min-height:1.1em;color:var(--ok)}
+ .esito.err{color:#e08b86}
+ nav{margin:1.6rem 0 .5rem;display:flex;flex-wrap:wrap;gap:.4rem 1rem;font-size:.85rem}
+ a{color:var(--acc);text-decoration:none}
+</style></head><body><div class="wrap">
+<h1>Pagine dell&rsquo;interfaccia</h1>
+<p class="sub">Ogni pagina qui sotto pu&ograve; essere sostituita da un file sulla
+microSD: si carica, e da quel momento l&rsquo;hub serve la tua invece della sua &mdash;
+senza ricompilare e senza riavviare. <b>Ripristina</b> toglie il file dalla card e
+fa tornare quella del firmware, che resta sempre l&igrave; sotto: se la card manca o
+la tua pagina &egrave; rotta, l&rsquo;interfaccia continua a funzionare.<br>
+Le rotte disponibili sono elencate in <a href="/api">API</a>.</p>
+<div id="l">lettura&hellip;</div>
+<nav>
+ <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/immagini">Componi immagine</a>
+ <a href="/pagine">Pagine</a><a href="/api">API</a><a href="/update">Aggiorna firmware</a>
+</nav>
+<script>
+const E=document.getElementById.bind(document);
+const esc=x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const dt=u=>u?new Date(u*1000).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+let FW='';
+
+function carica(){
+ fetch('/api/pagine/elenco').then(r=>r.json()).then(d=>{
+  FW=d.fw;
+  E('l').innerHTML=d.pagine.map(p=>{
+   const vecchia = p.su_card && p.fw_caricata && p.fw_caricata!=d.fw;
+   const tag = !p.su_card ? '<span class="tag fw">dal firmware</span>'
+             : (vecchia ? '<span class="tag old">caricata con '+esc(p.fw_caricata)+'</span>'
+                        : '<span class="tag sd">dalla card</span>');
+   let info;
+   if(!p.su_card) info='Nessun file sulla card: l&rsquo;hub serve la sua.';
+   else if(vecchia) info='Caricata con <b>'+esc(p.fw_caricata)+'</b>, adesso gira <b>'+esc(d.fw)+
+     '</b>. Se nel frattempo &egrave; cambiata un&rsquo;API, questa pagina pu&ograve; chiamare '+
+     'rotte che non esistono pi&ugrave;: controlla in <a href="/api">API</a>.';
+   else info='Sulla card dal '+esc(dt(p.quando))+', caricata con questo firmware.';
+   return '<div class="p"><div class="top"><b>'+esc(p.titolo)+'</b><code>'+esc(p.path)+'</code>'+tag+'</div>'+
+    '<div class="info">'+info+'</div>'+
+    '<div class="az"><input type="file" accept=".html,.htm" data-f="'+esc(p.nome)+'">'+
+    '<button data-u="'+esc(p.nome)+'">Carica</button>'+
+    (p.su_card?'<button class="sec" data-r="'+esc(p.nome)+'">Ripristina</button>':'')+
+    '</div><div class="esito" data-e="'+esc(p.nome)+'"></div></div>';
+  }).join('');
+  if(!d.sd) E('l').insertAdjacentHTML('afterbegin',
+    '<div class="p" style="border-color:var(--dan)"><div class="info">La microSD non &egrave; '+
+    'montata: le pagine arrivano tutte dal firmware e non si pu&ograve; caricarne nessuna. '+
+    'Tutto il resto continua a funzionare.</div></div>');
+  aggancia();
+ }).catch(()=>{E('l').textContent='elenco non leggibile';});
+}
+
+function esito(n,t,err){const e=document.querySelector('[data-e="'+n+'"]');
+ if(!e)return; e.textContent=t; e.className='esito'+(err?' err':'');}
+
+function aggancia(){
+ document.querySelectorAll('[data-u]').forEach(b=>b.onclick=()=>{
+  const n=b.dataset.u;
+  const f=document.querySelector('[data-f="'+n+'"]').files[0];
+  if(!f){esito(n,'Scegli prima un file .html',1);return;}
+  esito(n,'Invio\u2026');
+  const fd=new FormData(); fd.append('pagina',f);
+  fetch('/api/pagine/carica?nome='+encodeURIComponent(n),{method:'POST',body:fd})
+   .then(r=>r.text().then(t=>{esito(n,r.ok?'Caricata':t,!r.ok);if(r.ok)setTimeout(carica,600);}))
+   .catch(e=>esito(n,'hub non raggiungibile',1));
+ });
+ document.querySelectorAll('[data-r]').forEach(b=>b.onclick=()=>{
+  const n=b.dataset.r;
+  if(!confirm('Togliere la tua pagina dalla card? Torna quella del firmware.'))return;
+  fetch('/api/pagine/ripristina?nome='+encodeURIComponent(n),{method:'POST'})
+   .then(r=>r.text().then(t=>{esito(n,r.ok?'Ripristinata':t,!r.ok);if(r.ok)setTimeout(carica,600);}));
+ });
+}
+carica();
+</script></div></body></html>
+)HTML";
+
+static void handlePaginePage() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  net_server().send_P(200, "text/html", PAGINE_PAGE);
 }
 
 static CorsMiddleware s_cors;
@@ -1635,41 +2026,29 @@ void web_ui_begin() {
   srv.collectAllHeaders();
   s_cors.setOrigin("*").setAllowCredentials(false);
   srv.addMiddleware(&s_cors);
-  srv.on("/",                    HTTP_GET,  handleRoot);
-  srv.on("/api/stato",           HTTP_GET,  handleApiStato);
-  srv.on("/api/salute",          HTTP_GET,  handleApiSalute);
-  srv.on("/api/nodi",            HTTP_GET,  handleApiNodi);
-  srv.on("/api/pairing",         HTTP_POST, handleApiPairing);
-  srv.on("/api/nodi/dimentica",  HTTP_POST, handleApiNodiDimentica);
-  srv.on("/api/nodi/altitudine", HTTP_POST, handleApiNodiAltitudine);
-  srv.on("/api/nodi/giorni",     HTTP_GET,  handleApiNodiGiorni);
-  srv.on("/api/nodi/scarica",    HTTP_GET,  handleApiNodiScarica);
+  // Tutte le rotte con un handler semplice si registrano dalla tabella: e'
+  // l'unico posto dove esistono, e da li' esce anche /api/elenco.
+  for (int i = 0; i < ROTTE_N; i++) {
+    if (ROTTE[i].handler) srv.on(ROTTE[i].path, ROTTE[i].metodo, ROTTE[i].handler);
+  }
+  srv.on("/api/elenco", HTTP_GET, handleApiElenco);
 
-  // Dashboard personalizzata: la pagina di upload e il ripristino stanno
-  // sempre nel firmware, mai sulla card che possono sostituire.
+  // Le rotte con upload multipart vogliono due callback e non entrano nella
+  // forma della tabella: sono documentate li' con handler nullptr.
+  srv.on("/api/immagini",     HTTP_POST, handleApiImmaginiDone,  handleApiImmaginiChunk);
+  srv.on("/api/pagine/carica",HTTP_POST, handlePagineCaricaDone, handlePagineCaricaChunk);
+
+  // Pagine sostituibili: gestione, upload e ripristino stanno SEMPRE nel
+  // firmware, mai sulla card che possono sostituire. Una via di rientro che
+  // dipende da cio' da cui si sta rientrando non e' una via di rientro.
+  srv.on("/api",                   HTTP_GET,  handleApiPage);
+  srv.on("/pagine",                HTTP_GET,  handlePaginePage);
+  srv.on("/api/pagine/ripristina", HTTP_POST, handlePagineRipristina);
+  srv.on("/api/pagine/elenco",     HTTP_GET,  handleApiPagineElenco);
+
+  // I vecchi indirizzi della sola dashboard restano: erano scritti in
+  // CLAUDE.md e nei segnalibri, e romperli non guadagnerebbe niente.
   srv.on("/dashboard-upload",     HTTP_GET,  handleDashboardUploadPage);
   srv.on("/dashboard-upload",     HTTP_POST, handleDashboardUploadDone, handleDashboardUploadChunk);
   srv.on("/dashboard-ripristina", HTTP_POST, handleDashboardRipristina);
-
-  // Pannello: pagine, rotazione, messaggi. Gli handler che toccherebbero il
-  // display si limitano ad accodare — il refresh lo fa il loop().
-  srv.on("/pannello",                HTTP_GET,  handlePannelloPage);
-  srv.on("/api/pannello",            HTTP_GET,  handleApiPannello);
-  srv.on("/api/pannello",            HTTP_POST, handleApiPannelloSet);
-  srv.on("/api/pannello/pagina",     HTTP_POST, handleApiPannelloPagina);
-  srv.on("/api/pannello/vai",        HTTP_POST, handleApiPannelloVai);
-  srv.on("/api/pannello/refresh",    HTTP_POST, handleApiPannelloRefresh);
-  srv.on("/api/messaggio",           HTTP_GET,  handleApiMessaggio);
-  srv.on("/api/messaggio",           HTTP_POST, handleApiMessaggioSet);
-  srv.on("/api/messaggio/cancella",  HTTP_POST, handleApiMessaggioCancella);
-
-  // Immagini sulla card e pagine che le mostrano.
-  srv.on("/immagini",                HTTP_GET,  handleImmaginiPage);
-  srv.on("/api/immagini",            HTTP_GET,  handleApiImmagini);
-  srv.on("/api/immagini",            HTTP_POST, handleApiImmaginiDone, handleApiImmaginiChunk);
-  srv.on("/api/immagini/elimina",    HTTP_POST, handleApiImmaginiElimina);
-  srv.on("/api/immagini/scarica",    HTTP_GET,  handleApiImmaginiScarica);
-  srv.on("/api/pannello/aggiungi",   HTTP_POST, handleApiPannelloAggiungi);
-  srv.on("/api/pannello/rimuovi",    HTTP_POST, handleApiPannelloRimuovi);
-  srv.on("/api/pannello/sposta",     HTTP_POST, handleApiPannelloSposta);
 }

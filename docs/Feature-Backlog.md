@@ -270,6 +270,8 @@ Solo la riga essenziale: il racconto sta in `docs/Stazione-Meteo.md`.
 | `/pannello` con elenco unico, 16 slot, errori visibili | 2026-08-30 | `v12` |
 | `/api/salute` + `reset_reason`/`boot_count` | 2026-08-30 | `v13`, commit `4fb85a1` |
 | Pagina grafico 24 h + salute in dashboard | 2026-08-30 | `v14`, commit `2030697` |
+| Tre correzioni al grafico viste solo sul pannello | 2026-08-30 | `v15`-`v17` |
+| **Pagine dell'interfaccia sostituibili dalla card + `/api` autogenerata** | 2026-08-30 | `v18` |
 
 ---
 

@@ -256,6 +256,108 @@ File sd_open_dashboard() {
   return SD.open(WWW_DASHBOARD_PATH, FILE_READ);
 }
 
+// ---------------------------------------------------------------------
+//  Pagine sostituibili in /www (vedi la nota in sd_logger.h)
+// ---------------------------------------------------------------------
+#define WWW_REGISTRO_PATH WWW_DIR "/caricate.csv"
+
+static bool wwwPath(const char* nome, char* out, size_t cap) {
+  // Il nome arriva da una whitelist di web_ui, non dalla rete: qui si
+  // controlla comunque che sia fatto di soli caratteri innocui, perche' un
+  // giorno potrebbe arrivare da altrove e questa e' l'ultima riga prima di
+  // SD.open().
+  if (nome == nullptr || *nome == '\0') return false;
+  for (const char* p = nome; *p; p++) {
+    const char c = *p;
+    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '_' || c == '-';
+    if (!ok) return false;
+  }
+  snprintf(out, cap, WWW_DIR "/%s.html", nome);
+  return true;
+}
+
+bool sd_www_exists(const char* nome) {
+  char path[48];
+  if (!s_mounted || !wwwPath(nome, path, sizeof(path))) return false;
+  return SD.exists(path);
+}
+
+File sd_open_www(const char* nome) {
+  char path[48];
+  if (!s_mounted || !wwwPath(nome, path, sizeof(path))) return File();
+  return SD.open(path, FILE_READ);
+}
+
+File sd_open_www_for_write(const char* nome) {
+  char path[48];
+  if (!s_mounted || !wwwPath(nome, path, sizeof(path))) return File();
+  if (!SD.exists(WWW_DIR)) SD.mkdir(WWW_DIR);
+  return SD.open(path, FILE_WRITE);
+}
+
+bool sd_delete_www(const char* nome) {
+  char path[48];
+  if (!s_mounted || !wwwPath(nome, path, sizeof(path))) return false;
+  if (!SD.exists(path)) return true;   // gia' assente: non e' un errore
+  return SD.remove(path);
+}
+
+// Il registro e' riscritto per intero ad ogni upload: sono quattro righe, e
+// riscriverle e' molto piu' semplice che modificarne una in mezzo a un file.
+void sd_www_registra(const char* nome, const char* fw, time_t quando) {
+  if (!s_mounted || nome == nullptr) return;
+
+  struct Voce { char nome[20]; char fw[12]; long quando; };
+  Voce voci[8];
+  int n = 0;
+
+  File in = SD.open(WWW_REGISTRO_PATH, FILE_READ);
+  if (in) {
+    while (in.available() && n < 8) {
+      const String riga = in.readStringUntil('\n');
+      const int c1 = riga.indexOf(','), c2 = riga.indexOf(',', c1 + 1);
+      if (c1 <= 0 || c2 <= c1) continue;
+      const String nm = riga.substring(0, c1);
+      if (nm == nome) continue;              // la voce vecchia si sostituisce
+      strlcpy(voci[n].nome, nm.c_str(), sizeof(voci[0].nome));
+      strlcpy(voci[n].fw, riga.substring(c1 + 1, c2).c_str(), sizeof(voci[0].fw));
+      voci[n].quando = riga.substring(c2 + 1).toInt();
+      n++;
+    }
+    in.close();
+  }
+
+  if (!SD.exists(WWW_DIR)) SD.mkdir(WWW_DIR);
+  File out = SD.open(WWW_REGISTRO_PATH, FILE_WRITE);
+  if (!out) return;
+  for (int i = 0; i < n; i++) {
+    out.printf("%s,%s,%ld\n", voci[i].nome, voci[i].fw, voci[i].quando);
+  }
+  out.printf("%s,%s,%ld\n", nome, fw ? fw : "?", (long)quando);
+  out.close();
+}
+
+bool sd_www_info(const char* nome, char* fwOut, size_t fwCap, time_t* quandoOut) {
+  if (!s_mounted || nome == nullptr) return false;
+  File in = SD.open(WWW_REGISTRO_PATH, FILE_READ);
+  if (!in) return false;
+
+  bool trovato = false;
+  while (in.available()) {
+    const String riga = in.readStringUntil('\n');
+    const int c1 = riga.indexOf(','), c2 = riga.indexOf(',', c1 + 1);
+    if (c1 <= 0 || c2 <= c1) continue;
+    if (riga.substring(0, c1) != nome) continue;
+    if (fwOut && fwCap) strlcpy(fwOut, riga.substring(c1 + 1, c2).c_str(), fwCap);
+    if (quandoOut) *quandoOut = (time_t)riga.substring(c2 + 1).toInt();
+    trovato = true;
+    break;
+  }
+  in.close();
+  return trovato;
+}
+
 File sd_open_dashboard_for_write() {
   if (!s_mounted) return File();
   if (!SD.exists(WWW_DIR)) SD.mkdir(WWW_DIR);

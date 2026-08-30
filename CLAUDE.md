@@ -1243,6 +1243,43 @@ senza di loro si somiglierebbero (schermo che non cambia).
     verso l'IP dell'hub con `Authorization` scritto a mano, perche' con origin
     `*` il browser non manda le credenziali salvate. E' `SERVITA_DA_SCHEDA`,
     una riga di JavaScript.
+- **Le pagine dell'interfaccia si sostituiscono dalla card** (da `v18`): `/`,
+  `/pannello`, `/immagini` e `/api` servono il file `/www/<nome>.html` se c'è,
+  altrimenti quello nel firmware. Si gestisce da **`/pagine`**.
+  - **Il motivo non è lo spazio**: le cinque pagine pesano 74 kB su una
+    partizione piena al 41 %, e toglierle porterebbe al 39 %. Il motivo è
+    **iterare senza OTA** — il 2026-08-30 sono serviti *cinque* aggiornamenti
+    per dettagli grafici, e ogni riavvio si porta dietro il suo corredo (il
+    pannello torna alla pagina dei nodi, i contatori si azzerano).
+  - **Il fallback nel firmware resta sempre**, e per questo non si libera
+    flash: è il prezzo, ed è quello giusto. Con tutto solo sulla card, una
+    microSD che non monta significherebbe **nessuna interfaccia** e l'unico
+    rientro sarebbe andare fisicamente alla scheda.
+  - **`/pagine`, `/update` e gli upload NON sono sostituibili**, ed è la stessa
+    regola della dashboard: una via di rientro che dipende da ciò da cui si
+    sta rientrando non è una via di rientro.
+  - **Il nome non arriva mai dalla rete come pezzo di path**: si cerca in una
+    whitelist (`PAGINE_SOST`) e si usa la voce trovata. Niente path traversal
+    da parare, e sulla card non finiscono file che nessuno serve.
+  - **L'upload registra con quale firmware** la pagina è stata caricata
+    (`/www/caricate.csv`), e `/pagine` avvisa quando quella versione non è più
+    quella che gira. È il rischio nuovo che ci si prende spostando le pagine:
+    prima firmware e pagine erano la stessa cosa e non potevano divergere.
+
+- **La tabella delle rotte è una sola, e viene usata due volte** (da `v18`):
+  da lì si registrano gli handler **e** si genera `/api/elenco`, che documenta
+  l'interfaccia a chi si scrive le proprie pagine (impaginato su `/api`).
+  - È ciò che permette alla pagina `/api` di stare sulla card **senza
+    diventare bugiarda**: sulla card c'è solo l'impaginazione, i fatti li
+    chiede al firmware ad ogni caricamento. Una rotta nuova compare nella
+    documentazione perché è stata **registrata**, non perché qualcuno si è
+    ricordato di scriverla.
+  - È la stessa disciplina di `drawOra()` sul pannello: una funzione sola,
+    perché due disegni dello stesso dato finirebbero per differire.
+  - Le rotte con upload multipart vogliono due callback e non entrano nella
+    forma della tabella: stanno lì con `handler == nullptr`, documentate, e si
+    registrano a mano subito sotto.
+
 - **Tutte le pagine del firmware portano lo STESSO piede di navigazione**
   (nodi, pannello, immagini, dashboard, aggiornamento). Non e' pignoleria
   estetica: `/` puo' essere sostituita da una dashboard personalizzata sulla

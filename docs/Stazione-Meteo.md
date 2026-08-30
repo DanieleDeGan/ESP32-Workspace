@@ -1,5 +1,48 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-08-30 (5) — `v18`: le pagine si sostituiscono dalla card
+
+Nasce da una domanda: *perché non portarle tutte su SD?* La misura ha spostato
+la risposta. Le cinque pagine pesano **74 kB** su una partizione piena al
+**41 %**: toglierle porterebbe al 39 %, cioè lo spazio **non è un argomento**.
+
+Il motivo vero è un altro ed è buono: **iterare senza OTA**. Oggi sono serviti
+cinque aggiornamenti per dettagli grafici, e ogni riavvio si porta dietro il
+suo corredo — il pannello torna alla pagina dei nodi, i contatori si azzerano,
+la legenda resta muta finché non arriva un pacchetto.
+
+**Ma "tutte su SD" no.** Con tutto sulla card, una microSD che non monta
+significa nessuna interfaccia: niente pannello da governare, niente `/update`,
+e l'unico rientro sarebbe andare fisicamente alla scheda. Quindi il modello è
+quello che `/` già usava: **card se c'è, firmware sempre come rete**. Non
+libera flash — ed è il prezzo giusto, visto che lo spazio non serviva.
+
+Sostituibili: `/`, `/pannello`, `/immagini`, `/api`. **Non** sostituibili:
+`/pagine`, `/update` e gli upload. Una via di rientro che dipende da ciò da cui
+si sta rientrando non è una via di rientro.
+
+**La pagina delle API non è scritta a mano, ed è la parte che mi convince di
+più.** Una documentazione statica su card sarebbe il primo file a mentire: il
+firmware cambia una rotta e lei resta indietro. Invece la **tabella delle rotte
+è una sola e viene usata due volte** — da lì si registrano gli handler e si
+genera `/api/elenco`. Una rotta compare nella documentazione perché è stata
+*registrata*, non perché qualcuno se n'è ricordato. La pagina `/api` contiene
+solo l'impaginazione (696 byte di JavaScript) e i fatti li chiede al firmware:
+per questo può stare sulla card senza poter diventare falsa. È la stessa
+disciplina di `drawOra()`, una funzione sola perché due disegni dello stesso
+dato finirebbero per differire.
+
+**Il rischio nuovo, e come si vede**: prima firmware e pagine erano la stessa
+cosa e non potevano divergere. Ora una pagina sulla card può chiamare rotte che
+un OTA ha tolto. L'upload registra quindi **con quale firmware** è stata
+caricata (`/www/caricate.csv`), e `/pagine` lo dice: *«caricata con v14, adesso
+gira v18»*. Un avviso, non un blocco.
+
+**Verificato sulla scheda**: 32 rotte in `/api/elenco`, upload di una pagina di
+prova servita dalla card, ripristino che fa tornare quella del firmware, e la
+whitelist che rifiuta con 400 sia un nome inventato sia `../../etc` — il nome
+non arriva mai dalla rete come pezzo di path, si cerca in tabella.
+
 ## Aggiornamento del 2026-08-30 (4) — `v14`: il grafico a 24 ore, e la salute in dashboard
 
 **La dashboard su card mostra `/api/salute`** (nessuna modifica al firmware,

@@ -151,6 +151,28 @@ bool sd_dashboard_exists();
 // File "falsy" se la SD non e' montata o il file non esiste.
 File sd_open_dashboard();
 
+// ---------------------------------------------------------------------
+//  Pagine sostituibili in /www
+// ---------------------------------------------------------------------
+// La dashboard era la prima; da v18 lo sono anche le altre pagine del
+// firmware. Il nome NON e' libero: e' una whitelist decisa da chi chiama
+// (web_ui), non un pezzo di path che arriva dalla rete. Cosi' non esiste
+// path traversal da controllare, e sulla card non si accumulano file che
+// nessuno serve.
+//
+// Il file e' sempre /www/<nome>.html.
+bool sd_www_exists(const char* nome);
+File sd_open_www(const char* nome);
+File sd_open_www_for_write(const char* nome);
+bool sd_delete_www(const char* nome);
+
+// Registro di quando e con quale firmware una pagina e' stata caricata, in
+// /www/caricate.csv. Serve a vedere una pagina rimasta indietro rispetto al
+// firmware che la usa: e' il rischio nuovo che si prende spostando le pagine
+// sulla card, e l'unico modo di accorgersene e' scriverselo.
+void sd_www_registra(const char* nome, const char* fw, time_t quando);
+bool sd_www_info(const char* nome, char* fwOut, size_t fwCap, time_t* quandoOut);
+
 // Crea /www se serve e apre il file in scrittura (tronca un eventuale file
 // preesistente). File "falsy" se la SD non e' montata o l'apertura fallisce.
 File sd_open_dashboard_for_write();
