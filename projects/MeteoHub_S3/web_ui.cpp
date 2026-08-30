@@ -35,6 +35,7 @@
 // serve il prototipo perche' handleRoot() e le altre due pagine la chiamano
 // prima che il compilatore l'abbia vista.
 static void servePagina(const char* nome, const char* pm);
+static bool paginaGiaPresente(uint8_t tipo, const char* param);
 
 // ---------------------------------------------------------------------
 //  Invii che si arrendono invece di trascinarsi dietro la scheda.
@@ -789,6 +790,10 @@ static void handleApiPannelloAggiungi() {
   // resta quello di default per non cambiare le chiamate gia' scritte.
   const String tipo = srv.hasArg("tipo") ? srv.arg("tipo") : String("");
   if (tipo == "grafico") {
+    if (paginaGiaPresente(PT_GRAFICO, nullptr)) {
+      srv.send(409, "text/plain", "la pagina del grafico c'e' gia'");
+      return;
+    }
     if (pages_add(PT_GRAFICO, "") < 0) {
       srv.send(507, "text/plain", "non c'e' piu' posto nell'elenco delle pagine");
       return;
@@ -804,12 +809,31 @@ static void handleApiPannelloAggiungi() {
     srv.send(404, "text/plain", "immagine non presente sulla card");
     return;
   }
+  if (paginaGiaPresente(PT_IMMAGINE, nome.c_str())) {
+    srv.send(409, "text/plain", "quell'immagine e' gia' fra le pagine");
+    return;
+  }
   if (pages_add(PT_IMMAGINE, nome.c_str()) < 0) {
     srv.send(507, "text/plain", "non c'e' piu' posto nell'elenco delle pagine");
     return;
   }
   pages_save();
   handleApiPannello();
+}
+
+// C'e' gia' una pagina di questo tipo (e, per le immagini, con questo
+// parametro)? Serve a non accettare doppioni: due pagine identiche nella
+// rotazione mostrerebbero la stessa cosa due volte di fila, e ogni cambio
+// pagina costa un refresh completo da 2,2 s. Sul pannello un doppione non si
+// vede come un errore — si vede come una rotazione che si inceppa.
+static bool paginaGiaPresente(uint8_t tipo, const char* param) {
+  for (uint8_t i = 0; i < pages_slots(); i++) {
+    const PageCfg* pg = pages_get(i);
+    if (pg == nullptr || !pg->usato || pg->tipo != tipo) continue;
+    if (param == nullptr || *param == '\0') return true;      // tipo senza parametro
+    if (strcmp(pg->param, param) == 0) return true;
+  }
+  return false;
 }
 
 static void handleApiPannelloSposta() {
@@ -1155,6 +1179,16 @@ function render(d){
 
  // Quanti posti restano: il numero che prima non compariva da nessuna parte,
  // e la cui assenza faceva sembrare rotto il pulsante che li riempiva.
+ // Il pulsante del grafico si spegne se la pagina c'e' gia': il server la
+ // rifiuta comunque (409), ma un pulsante che si puo' premere e non fa
+ // niente e' il difetto che si e' appena tolto altrove.
+ const bg=E('bgraf');
+ if(bg){
+  const c=d.pagine.some(p=>p.tipo=='grafico');
+  bg.disabled=c;
+  bg.textContent=c?'Il grafico è già fra le pagine':'Aggiungi la pagina del grafico';
+ }
+
  const tot=d.slot_totali;
  E('conta').textContent = tot? ('\u2014 '+d.pagine.length+' su '+tot+
    ((tot-d.pagine.length)?', '+(tot-d.pagine.length)+' liberi':', elenco pieno')) : '';

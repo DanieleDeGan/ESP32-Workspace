@@ -1122,6 +1122,13 @@ senza di loro si somiglierebbero (schermo che non cambia).
     dimenticanza: un pannello che ruota fra sei pagine diventa un salvaschermo
     che nessuno legge, mentre il valore dell'e-ink è che l'informazione *sta
     lì* e la si guarda passando.
+  - **Una pagina non si aggiunge due volte** (da `v20`): il grafico è unico, e
+    la stessa immagine non entra in elenco due volte. Non era così — si poteva
+    accumulare lo stesso grafico all'infinito. Sul pannello un doppione non si
+    vede come un errore: si vede come una **rotazione che si inceppa**, perché
+    mostra la stessa cosa due volte di fila pagando due refresh completi da
+    2,2 s. Il rifiuto sta nel server (409) *e* nel pulsante, che si spegne: un
+    pulsante premibile che non fa niente è il difetto tolto dal `postJson()`.
   - **Lo slot 0 è la pagina dei nodi e non si può togliere**: un elenco vuoto
     lascerebbe il pannello senza niente da mostrare e senza modo di rimediare
     dal tasto BOOT, che è l'unico comando quando la rete non c'è. Per lo stesso motivo,
