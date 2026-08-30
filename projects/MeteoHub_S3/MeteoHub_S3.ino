@@ -95,7 +95,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v16";
+static const char FW_VERSION[] = "v17";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -142,6 +142,7 @@ static uint32_t           s_bootCount   = 0;
 // card. Servono a rendere verificabile il conto: senza, "pacchetti
 // diversi da righe" non distingue una perdita reale da uno scarto
 // voluto, e un controllo che si allarma da solo non lo guarda nessuno.
+static bool     s_graficoDirty = false;  // vedi onDatoNodo(): primo dato di un nodo
 static uint32_t s_scartatiOra = 0;   // arrivati prima del primo sync NTP
 static uint32_t s_scrittureKo = 0;   // card piena, assente o in errore
 static uint32_t s_epdRefresh   = 0;
@@ -981,7 +982,15 @@ static void onDatoNodo(const RemoteNode* n)
   // riavvio dell'''hub il pannello mostrerebbe "in attesa del primo dato" per
   // tutto quel tempo, pur avendo gia''' i valori in mano. Vale solo qui, dove
   // il ritardo si vedrebbe come uno schermo che non sa niente.
-  if (n->pacchetti <= 1) s_nodiUltimoMs = millis() - NODI_MIN_MS;
+  if (n->pacchetti <= 1) {
+    s_nodiUltimoMs = millis() - NODI_MIN_MS;
+    // E lo stesso per il grafico, che altrimenti resterebbe fino a mezz'ora
+    // con la legenda muta: e' stato disegnato al boot, quando nessun nodo
+    // aveva ancora parlato, e la sua cadenza di ridisegno e' lo slot da 30
+    // minuti. Visto sul pannello il 2026-08-30: valori assenti in legenda
+    // mentre /api/nodi li aveva gia' da un quarto d'ora.
+    s_graficoDirty = true;
+  }
 
   // Prima del primo sync NTP l'orologio riporta l'ora di COMPILAZIONE, che e'
   // identica ad ogni riavvio: righe cosi' non datano niente, e il CSV di un
@@ -1725,6 +1734,15 @@ void loop()
   // scatta mai, e senza questo resterebbe fermo all'ora in cui e' comparso.
   if (tipoCur == PT_GRAFICO)
   {
+    // Primo dato di un nodo: si ridisegna subito, senza aspettare lo slot.
+    // Costa al massimo un refresh per nodo dopo un riavvio.
+    if (s_graficoDirty)
+    {
+      s_graficoDirty = false;
+      showPage(pages_current());
+      return;
+    }
+
     static uint32_t s_graficoUltimoSlot = 0;
     const uint32_t slotOra = (uint32_t)(time(nullptr) / (time_t)REMOTE_TEMP_SLOT_S);
     if (s_graficoUltimoSlot == 0) s_graficoUltimoSlot = slotOra;
