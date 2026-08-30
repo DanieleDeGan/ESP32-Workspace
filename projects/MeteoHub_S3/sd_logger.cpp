@@ -193,8 +193,19 @@ bool sd_log_sample(time_t ts, const char* timeSource, float tempC, float humPct)
     return false;
   }
   if (isNew) f.println(LOG_HEADER);
-  f.printf("%s,%lu,%s,%.1f,%.1f\n", isoDateTime, (unsigned long)ts, timeSource, tempC, humPct);
+  const size_t scritti = f.printf("%s,%lu,%s,%.1f,%.1f\n", isoDateTime,
+                                  (unsigned long)ts, timeSource, tempC, humPct);
   f.close();
+
+  // Le print() non alzano il writeError del core (File::write si limita a
+  // ritornare i byte scritti), quindi l'unico modo di sapere se la riga e'
+  // finita davvero sulla card e' guardare quel ritorno. Senza, una card
+  // piena o sfilata a caldo produce il guasto peggiore per un logger: la
+  // funzione dice "fatto", il contatore sale, e il CSV non cresce.
+  if (scritti == 0) {
+    strlcpy(s_lastError, "riga non scritta: card piena o assente?", sizeof(s_lastError));
+    return false;
+  }
 
   s_recordsToday++;
   s_recordsTotal++;
@@ -314,16 +325,29 @@ bool sd_log_remote(const char* nodeName, const char* mac, time_t ts,
     strlcpy(s_lastError, "scrittura CSV nodo fallita", sizeof(s_lastError));
     return false;
   }
-  if (isNew) f.println(NODI_HEADER);
+  const size_t intestazione = isNew ? f.println(NODI_HEADER) : 1;
 
-  f.printf("%s,%lu,%s,%s,%lu,", isoDateTime, (unsigned long)ts,
-           timeSource ? timeSource : "", mac ? mac : "", (unsigned long)seq);
+  const size_t riga = f.printf("%s,%lu,%s,%s,%lu,", isoDateTime, (unsigned long)ts,
+                               timeSource ? timeSource : "", mac ? mac : "", (unsigned long)seq);
   appendCsvFloat(f, value[0], 2); f.print(',');
   appendCsvFloat(f, value[1], 2); f.print(',');
   appendCsvFloat(f, value[2], 2); f.print(',');
   if (batteryMv) f.print(batteryMv);   // 0 = non misurata: campo vuoto
-  f.println();
+  const size_t chiusa = f.println();
   f.close();
+
+  // Le print() non alzano il writeError del core (File::write si limita a
+  // ritornare i byte scritti), quindi l'unico modo di sapere se la riga e'
+  // finita davvero sulla card e' guardare quel ritorno. Senza, una card
+  // piena o sfilata a caldo produce il guasto peggiore per un logger: la
+  // funzione dice "fatto", il contatore sale, e il CSV non cresce.
+  //
+  // Qui pesa piu' che sul log locale: il CSV dell'hub e' l'UNICO posto dove
+  // la lettura di un nodo a batteria esiste, e il nodo ha gia' ridormito.
+  if (intestazione == 0 || riga == 0 || chiusa == 0) {
+    strlcpy(s_lastError, "riga nodo non scritta: card piena o assente?", sizeof(s_lastError));
+    return false;
+  }
   return true;
 }
 

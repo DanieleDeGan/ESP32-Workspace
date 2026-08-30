@@ -308,6 +308,14 @@ static void take_sample(void)
 void setup()
 {
     Serial.begin(115200);
+#if ARDUINO_USB_CDC_ON_BOOT
+    // Su C3/S3 la Serial dell'USB e' la CDC del chip, non una UART: se il PC
+    // ha riconosciuto la porta e nessuno la sta leggendo, il buffer si riempie
+    // e ogni print() BLOCCA loop(). Con timeout 0 il log si butta invece di
+    // fermare lo sketch. Il #if serve perche' con CDC On Boot: Disabled la
+    // Serial torna a essere una UART, che quel metodo non ce l'ha.
+    Serial.setTxTimeoutMs(0);
+#endif
 
     // Prima della UI: ui_create() scrive il numero di avvio nel titolo.
     s_boot_id = boot_id_next();

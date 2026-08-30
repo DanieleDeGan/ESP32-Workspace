@@ -31,6 +31,17 @@ bool link_parse_message(const uint8_t *data, int len, link_message_t *out)
         return false;
     }
     memcpy(out, data, sizeof(link_message_t));
+
+    // Il nome arriva dalla radio e NIENTE garantisce che chi l'ha spedito lo
+    // abbia terminato: sedici byte pieni sono un payload legittimo. Qui la
+    // struct e' locale e i campi che seguono name (seq, battery_mv, value[])
+    // limitano il danno a un nome sporco invece che a una lettura fuori
+    // memoria — ma la callback applicativa riceve questo puntatore e puo'
+    // passare msg->name a printf o a String(), che si fermano al primo NUL.
+    // Terminarlo qui, nell'unico punto da cui ogni messaggio passa, mette al
+    // sicuro anche il codice applicativo che verra' scritto dopo.
+    out->name[LINK_NAME_LEN - 1] = '\0';
+
     return out->protocol_version == LINK_PROTOCOL_VERSION;
 }
 

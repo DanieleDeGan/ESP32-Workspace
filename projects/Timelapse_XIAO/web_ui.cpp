@@ -356,6 +356,7 @@ static void handleStato() {
            "\"sd_liberi\":%llu,\"min_liberi\":%lu,\"politica\":%d,"
            "\"sensore\":\"%s\",\"size\":%d,\"size_nome\":\"%s\",\"sizes\":%s,"
            "\"qualita\":%d,\"vflip\":%s,\"hmirror\":%s,"
+           "\"invii_interrotti\":%lu,"
            "\"uptime\":%lu,\"heap\":%lu}",
            app_node_name(), app_fw_version(),
            net_isConnected() ? "true" : "false", net_ip().c_str(), net_rssi(),
@@ -372,6 +373,7 @@ static void handleStato() {
            camera_sensor_name(), camera_size_index(), camera_size_name(camera_size_index()),
            sizes.c_str(), camera_quality(),
            camera_vflip() ? "true" : "false", camera_hmirror() ? "true" : "false",
+           (unsigned long)web_invii_interrotti(),
            (unsigned long)(millis() / 1000), (unsigned long)ESP.getFreeHeap());
   net_server().send(200, "application/json", buf);
 }
@@ -453,6 +455,75 @@ static void handleFotoList() {
   server.sendContent("");   // chunk vuoto: chiude il trasferimento
 }
 
+// ---------------------------------------------------------------------
+//  Invio limitato: un client morto non deve poter fermare la scheda
+//
+//  WebServer::streamFile() finisce in NetworkClient::write(Stream&), che
+//  IGNORA il valore di ritorno della write() e prosegue fino a fine file
+//  anche quando il client non accetta piu' un byte. E ogni write() aspetta
+//  che il socket torni scrivibile con dieci select() da un secondo l'uno.
+//  Un client che smette di dare ACK senza chiudere il socket - telefono che
+//  si addormenta, WiFi che cade, coperchio del portatile - tiene quindi
+//  loop() dentro l'handler finche' non e' lo stack TCP a rinunciare al peer.
+//  Sono minuti, e non e' un caso limite: e' il modo normale in cui muore una
+//  pagina lasciata aperta.
+//
+//  QUI PESA PIU' CHE ALTROVE. Sulla scheda ambientale il guasto e' stato
+//  misurato in 456 s di blocco; qui la scheda ferma dentro un handler
+//  non fa scattare il timelapse, e gli slot persi non si recuperano perche'
+//  sono ancorati all'orologio. Un cliente andato via a meta' scaricamento
+//  lascia quindi un buco nella sequenza, che e' proprio cio' che un
+//  timelapse non deve avere.
+//  E le foto sono il caso peggiore per costruzione: un CSV di un giorno sta
+//  in poche decine di kB, una foto da 300 kB sono ~220 chunk, e la galleria
+//  ne carica decine per volta.
+//
+//  Rimedio: ci si ferma al primo chunk che il client non accetta per intero
+//  - il controllo che manca al core - e comunque a fine budget. Il costo
+//  residuo e' UNA write bloccata (~10 s): quel numero sta dentro il core e
+//  da qui non si abbassa.
+// ---------------------------------------------------------------------
+static constexpr uint32_t INVIO_BUDGET_MS = 20000;   // su una LAN una foto vola: 20 s e' larghissimo
+
+static uint32_t s_invii_interrotti = 0;   // quante volte e' scattato il taglio, da questo avvio
+
+uint32_t web_invii_interrotti() { return s_invii_interrotti; }
+
+static void invioInterrotto(const char* perche) {
+  s_invii_interrotti++;
+  Serial.printf("[web] invio interrotto: %s\n", perche);
+}
+
+// Come streamFile(), ma si arrende invece di trascinarsi dietro la scheda.
+static bool streamFileLimitato(WebServer& srv, File& f, const char* contentType) {
+  srv.setContentLength(f.size());
+  srv.send(200, contentType, "");
+
+  NetworkClient& cli = srv.client();
+  uint8_t buf[1024];
+  const uint32_t t0 = millis();
+
+  while (f.available()) {
+    if (!cli.connected()) { invioInterrotto("il client ha chiuso"); return false; }
+
+    const int letti = f.read(buf, sizeof(buf));
+    if (letti <= 0) break;
+
+    // E' il controllo che manca al core, ed e' tutto qui: se il client non
+    // ha preso l'intero chunk non ne prendera' altri, e ogni giro in piu'
+    // costa dieci secondi.
+    if (cli.write(buf, (size_t)letti) != (size_t)letti) {
+      invioInterrotto("il client non accetta piu' dati");
+      return false;
+    }
+    if (millis() - t0 > INVIO_BUDGET_MS) {
+      invioInterrotto("oltre il budget di tempo");
+      return false;
+    }
+  }
+  return true;
+}
+
 static void handleFoto() {
   if (!authed()) return;
   WebServer& server = net_server();
@@ -462,7 +533,7 @@ static void handleFoto() {
     return;
   }
   server.sendHeader("Cache-Control", "max-age=86400");   // i file non cambiano mai
-  server.streamFile(f, "image/jpeg");
+  streamFileLimitato(server, f, "image/jpeg");
   f.close();
 }
 
@@ -476,7 +547,7 @@ static void handleLog() {
     return;
   }
   server.sendHeader("Content-Disposition", "attachment; filename=" + day + ".csv");
-  server.streamFile(f, "text/csv");
+  streamFileLimitato(server, f, "text/csv");
   f.close();
 }
 

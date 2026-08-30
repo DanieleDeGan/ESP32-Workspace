@@ -47,6 +47,9 @@ static LinkPeer *hub_insert_peer(const uint8_t mac[6], link_node_type_t type,
                                  const char *name, bool queue_welcome,
                                  const link_message_t *first_data)
 {
+    // Primo controllo: serve solo a non costruire un LinkPeer che quasi
+    // certamente andrebbe buttato. Quello che DECIDE e' il secondo, in fondo
+    // alla funzione — qui il lock si rilascia prima di allocare.
     portENTER_CRITICAL(&s_registry_mux);
     bool full = (s_peer_count >= ESPNOW_LINK_MAX_PEERS);
     bool duplicato = false;
@@ -82,9 +85,47 @@ static LinkPeer *hub_insert_peer(const uint8_t mac[6], link_node_type_t type,
         peer->hasData = true;
     }
 
+    // Il controllo di capienza e doppioni si RIFA' qui, e non e' pignoleria:
+    // fra il primo e questo il lock e' stato rilasciato, perche' new e
+    // addPeer() allocano memoria e chiamano il driver, cose che dentro una
+    // portENTER_CRITICAL (spinlock con interrupt disabilitati) non si
+    // possono fare. In quella finestra l'ALTRO contesto puo' aver inserito:
+    // le due strade che arrivano qui girano su task diversi — la scoperta
+    // radio sul task del driver WiFi, il ripristino da NVS in loop() — e si
+    // sovrappongono davvero all'avvio dell'hub, quando si rimettono i peer
+    // salvati mentre i nodi stanno gia' trasmettendo.
+    //
+    // Il caso che fa danno e' il registro pieno: due inserimenti che passano
+    // entrambi il primo controllo con s_peer_count == MAX-1 scrivono uno
+    // oltre la fine di s_peers[]. E' improbabile — servono venti nodi — ma
+    // una scrittura fuori array su una scheda accesa per settimane si
+    // manifesta come un riavvio inspiegabile, cioe' nel modo piu' difficile
+    // da ricondurre a qui.
+    bool inserito = false;
     portENTER_CRITICAL(&s_registry_mux);
-    s_peers[s_peer_count++] = peer;
+    if (s_peer_count < ESPNOW_LINK_MAX_PEERS) {
+        bool doppione = false;
+        for (int i = 0; i < s_peer_count && !doppione; i++) {
+            if (s_peers[i] != nullptr && memcmp(s_peers[i]->addr(), mac, 6) == 0) {
+                doppione = true;
+            }
+        }
+        if (!doppione) {
+            s_peers[s_peer_count++] = peer;
+            inserito = true;
+        }
+    }
     portEXIT_CRITICAL(&s_registry_mux);
+
+    if (!inserito) {
+        // Perso il ballottaggio: si disfa quello che si era preparato. Prima
+        // si toglie dal driver (addPeer() lo ha registrato), poi si libera —
+        // qui il delete immediato e' sicuro, perche' questo peer non e' mai
+        // entrato nel registro e nessuna callback puo' averlo in mano.
+        ESP_NOW.removePeer(*peer);
+        delete peer;
+        return nullptr;
+    }
     return peer;
 }
 

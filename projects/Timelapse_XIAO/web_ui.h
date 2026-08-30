@@ -43,6 +43,12 @@
 // Da chiamare in setup() dopo net_begin().
 void web_ui_begin();
 
+// Quante volte un invio di file e' stato troncato perche' il client aveva
+// smesso di leggere. Zero e' il valore normale; se sale, qualcuno chiude le
+// pagine a meta' scaricamento — ed e' l'unico modo di accorgersene, perche'
+// senza il taglio il sintomo sarebbero scatti mancanti senza spiegazione.
+uint32_t web_invii_interrotti();
+
 // ---------------------------------------------------------------------
 //  Ganci implementati nello sketch (.ino): la web UI legge lo stato e
 //  chiede le azioni attraverso queste funzioni. Orario, SD e camera li
