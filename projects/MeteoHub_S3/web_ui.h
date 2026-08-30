@@ -24,12 +24,16 @@ void web_ui_begin();
 const char* app_fw_version();      // versione del firmware, per /api/stato
 const char* app_hub_nome();        // nome con cui l'hub si presenta ai nodi
 uint32_t    app_righe_scritte();   // righe di CSV scritte da questo avvio
+uint32_t    app_scartati_ora();    // DATA arrivati prima del primo sync NTP
+uint32_t    app_boot_count();      // avvii totali (NVS): sopravvive al riavvio
+const char* app_reset_reason();    // perche' e' ripartita: SW, PANIC, BROWNOUT...
+uint32_t    app_scritture_ko();    // DATA che la card ha rifiutato
 uint32_t    app_epd_refresh();     // refresh del pannello da questo avvio
-uint32_t    app_epd_ultimo_ms();
- uint32_t    app_epd_orologio_ms();
+uint32_t    app_epd_ultimo_ms();   // quanto e' costato l'ultimo refresh
+uint32_t    app_epd_orologio_ms(); // e quanto costa il solo orologio
 
 // Comandi verso il pannello: si ACCODANO e li esegue il loop(). Un refresh
 // sono ~2,2 s: dentro un handler HTTP terrebbe fermo il server, l'OTA e il
 // prelievo dei DATA dei nodi dal driver ESP-NOW, che tiene solo l'ultimo.
 void app_chiedi_refresh();
-void app_chiedi_pagina(uint8_t indice); // e quanto costa il solo orologio   // quanto e' costato l'ultimo refresh
+void app_chiedi_pagina(uint8_t indice);

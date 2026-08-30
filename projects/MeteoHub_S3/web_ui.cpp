@@ -158,6 +158,91 @@ static bool streamFileLimitato(WebServer& srv, File& f, const char* contentType)
   return true;
 }
 
+// ---------------------------------------------------------------------
+//  GET /api/salute — i controlli incrociati, fatti dalla scheda
+//
+//  Nasce da una verifica che finora si faceva a mano: leggere /api/stato e
+//  /api/nodi e confrontare i contatori di moduli diversi. Il controllo che
+//  vale davvero e' questo:
+//
+//      pacchetti ricevuti  ==  righe scritte + scartati + scritture fallite
+//
+//  e regge perche' remote_nodes incrementa `pacchetti` e chiama la callback
+//  nello STESSO punto: ad ogni pacchetto contato corrisponde esattamente un
+//  tentativo di scrittura, che finisce in uno dei tre contatori. Sono numeri
+//  tenuti da moduli che non si conoscono fra loro — remote_nodes, sd_logger e
+//  lo sketch — quindi se non tornano il guasto sta nel mezzo, fra la radio e
+//  la card, che e' esattamente il tratto in cui nessun altro contatore guarda.
+//
+//  Tutti i valori sono "da questo avvio": vivono in RAM, come il resto della
+//  diagnostica di questa scheda. Un riavvio li azzera, ed e' giusto cosi' —
+//  dopo un riavvio il conto ripartirebbe comunque sfasato.
+// ---------------------------------------------------------------------
+static void handleApiSalute() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+
+  const uint32_t righe    = app_righe_scritte();
+  const uint32_t scartati = app_scartati_ora();
+  const uint32_t fallite  = app_scritture_ko();
+
+  uint32_t pacchetti = 0, persi = 0;
+  int muti = 0;
+  const int n = remote_count();
+  for (int i = 0; i < n; i++) {
+    RemoteNode nodo;
+    if (!remote_get(i, &nodo)) continue;
+    pacchetti += nodo.pacchetti;
+    persi     += nodo.persi;
+    if (!nodo.online && nodo.hasData) muti++;
+  }
+
+  const uint32_t contati = righe + scartati + fallite;
+  const bool torna = (contati == pacchetti);
+
+  // I problemi si elencano in ordine di gravita': chi legge si ferma al primo.
+  String guai = "[";
+  int gravi = 0, avvisi = 0;
+  auto guaio = [&](const char* testo, bool grave) {
+    if (guai.length() > 1) guai += ',';
+    appendJsonString(guai, testo);
+    if (grave) gravi++; else avvisi++;
+  };
+
+  if (!sd_mounted())  guaio("la microSD non e' montata: nessun dato viene registrato", true);
+  if (fallite > 0)    guaio("la card ha rifiutato delle righe: piena o in errore", true);
+  if (!torna)         guaio("il conto non torna: pacchetti ricevuti e righe scritte non corrispondono", true);
+  if (n == 0)         guaio("nessun nodo in elenco", true);
+  else if (muti == n) guaio("tutti i nodi sono muti", true);
+  else if (muti > 0)  guaio("un nodo non parla da piu' del suo intervallo", false);
+
+  if (!rtctime_isSynced())        guaio("orario mai sincronizzato via NTP", false);
+  if (!net_isConnected())         guaio("WiFi non connesso", false);
+  if (s_invii_interrotti > 0) guaio("qualche invio di file e' stato troncato: un client se n'e' andato a meta'", false);
+  if (ESP.getFreeHeap() < 60000)  guaio("memoria libera sotto i 60 kB", false);
+  guai += ']';
+
+  String j = "{\"stato\":\"";
+  j += gravi ? "guasto" : (avvisi ? "attenzione" : "ok");
+  j += "\",\"problemi\":" + guai;
+  j += ",\"conto\":{\"pacchetti\":" + String(pacchetti);
+  j += ",\"righe\":"             + String(righe);
+  j += ",\"scartati_ora\":"      + String(scartati);
+  j += ",\"scritture_fallite\":" + String(fallite);
+  j += ",\"torna\":"             + String(torna ? "true" : "false") + "}";
+  j += ",\"persi_radio\":"       + String(persi);
+  j += ",\"nodi\":"              + String(n);
+  j += ",\"nodi_muti\":"         + String(muti);
+  j += ",\"sd\":"                + String(sd_mounted() ? "true" : "false");
+  j += ",\"orario\":\""          + String(rtctime_source()) + "\"";
+  j += ",\"invii_interrotti\":"  + String(s_invii_interrotti);
+  j += ",\"heap\":"              + String((unsigned long)ESP.getFreeHeap());
+  j += ",\"reset_reason\":\""  + String(app_reset_reason()) + "\"";
+  j += ",\"boot_count\":"       + String(app_boot_count());
+  j += ",\"uptime\":"            + String((unsigned long)(millis() / 1000)) + "}";
+
+  net_server().send(200, "application/json", j);
+}
+
 static void handleApiNodi() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
 
@@ -541,6 +626,8 @@ static void handleApiStato() {
   j += "\"epd_ultimo_ms\":"    + String(app_epd_ultimo_ms())  + ",";
   j += "\"epd_orologio_ms\":"  + String(app_epd_orologio_ms()) + ",";
   j += "\"invii_interrotti\":" + String(s_invii_interrotti)   + ",";
+  j += "\"reset_reason\":\"" + String(app_reset_reason())    + "\",";
+  j += "\"boot_count\":"      + String(app_boot_count())      + ",";
   j += "\"uptime\":" + String(millis() / 1000) + ",";
   j += "\"heap\":"   + String(ESP.getFreeHeap());
   j += '}';
@@ -1524,6 +1611,7 @@ void web_ui_begin() {
   srv.addMiddleware(&s_cors);
   srv.on("/",                    HTTP_GET,  handleRoot);
   srv.on("/api/stato",           HTTP_GET,  handleApiStato);
+  srv.on("/api/salute",          HTTP_GET,  handleApiSalute);
   srv.on("/api/nodi",            HTTP_GET,  handleApiNodi);
   srv.on("/api/pairing",         HTTP_POST, handleApiPairing);
   srv.on("/api/nodi/dimentica",  HTTP_POST, handleApiNodiDimentica);

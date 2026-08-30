@@ -81,6 +81,8 @@
 
 
 #include <WiFi.h>          // solo per WiFi.localIP(), da mostrare sul pannello
+#include <esp_system.h>    // esp_reset_reason(): perche' la scheda e' ripartita
+#include <Preferences.h>   // boot_count: l'unico contatore che sopravvive al riavvio
 #include <EspNowLink.h>    // ESPNOW_LINK_CHANNEL_CURRENT
 #include "remote_nodes.h"  // hub ESP-NOW, trapiantato da projects/EnvNode_C3/
 #include "forecast.h"      // i nomi TREND_*: remote_nodes.h non lo include
@@ -93,7 +95,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v12";
+static const char FW_VERSION[] = "v13";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -122,6 +124,26 @@ static const uint32_t PAIRING_MANUALE_S = 120;
 // quando questa scheda e' accesa", e scriverli in NVS costerebbe un'erase per
 // pacchetto.
 static uint32_t s_righeScritte = 0;
+
+// Diagnostica del boot, gemella di quella di MeteoNode_C3 (v5). Tutti gli
+// altri contatori di questa scheda vivono in RAM e ripartono da zero: e'
+// proprio questo che rende un riavvio invisibile da remoto, perche' da fuori
+// si vede solo un hub che "ha registrato poco". Queste due cose dicono invece
+// che un riavvio c'e' stato, e perche'.
+//
+// Serve davvero: il 2026-08-30, leggendo un uptime di 0,7 h, e' stato
+// necessario incrociare l'ora corrente con quella dell'ultimo OTA e i CSV dei
+// nodi per stabilire che non era successo niente di strano. Con questi due
+// campi sarebbe stata una riga.
+static esp_reset_reason_t s_resetReason = ESP_RST_UNKNOWN;
+static uint32_t           s_bootCount   = 0;
+
+// I due modi in cui un pacchetto ricevuto NON diventa una riga sulla
+// card. Servono a rendere verificabile il conto: senza, "pacchetti
+// diversi da righe" non distingue una perdita reale da uno scarto
+// voluto, e un controllo che si allarma da solo non lo guarda nessuno.
+static uint32_t s_scartatiOra = 0;   // arrivati prima del primo sync NTP
+static uint32_t s_scrittureKo = 0;   // card piena, assente o in errore
 static uint32_t s_epdRefresh   = 0;
 static uint32_t s_epdUltimoMs  = 0;
 static uint32_t s_epdOrologioMs = 0;   // quanto costa il refresh del solo orologio
@@ -129,6 +151,45 @@ static uint32_t s_epdOrologioMs = 0;   // quanto costa il refresh del solo orolo
 const char* app_fw_version()    { return FW_VERSION; }
 const char* app_hub_nome()      { return HUB_NOME; }
 uint32_t    app_righe_scritte() { return s_righeScritte; }
+uint32_t    app_scartati_ora()  { return s_scartatiOra; }
+uint32_t    app_boot_count()    { return s_bootCount; }
+
+// La causa in chiaro. Quelle che contano qui: SW e' ESP.restart(), cioe' un OTA
+// riuscito oppure il watchdog di riconnessione di net_ota; PANIC e' un crash;
+// BROWNOUT e' l'alimentazione scesa sotto soglia. POWERON e' qualcuno che ha
+// tolto e rimesso la corrente — che su una scheda a muro vuol dire quasi
+// sempre un intervento umano, non un guasto.
+const char* app_reset_reason() {
+  switch (s_resetReason) {
+    case ESP_RST_POWERON:   return "POWERON";
+    case ESP_RST_EXT:       return "EXT";
+    case ESP_RST_SW:        return "SW";
+    case ESP_RST_PANIC:     return "PANIC";
+    case ESP_RST_INT_WDT:   return "WDT_INT";
+    case ESP_RST_TASK_WDT:  return "WDT_TASK";
+    case ESP_RST_WDT:       return "WDT";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT";
+    case ESP_RST_SDIO:      return "SDIO";
+    default:                return "UNKNOWN";
+  }
+}
+
+// Il conteggio sta in NVS perche' deve sopravvivere proprio all'evento che
+// misura. Una scrittura per avvio: su una scheda sempre accesa sono una
+// manciata nella sua vita, ben lontano dai cicli di erase che altrove in
+// questo repo si evitano con cura.
+static void bootDiagBegin() {
+  s_resetReason = esp_reset_reason();
+
+  Preferences p;
+  if (p.begin("meteohub", false)) {
+    s_bootCount = p.getULong("boot_n", 0) + 1;
+    p.putULong("boot_n", s_bootCount);
+    p.end();
+  }
+}
+uint32_t    app_scritture_ko()  { return s_scrittureKo; }
 uint32_t    app_epd_refresh()   { return s_epdRefresh; }
 uint32_t    app_epd_ultimo_ms() { return s_epdUltimoMs; }
 uint32_t    app_epd_orologio_ms() { return s_epdOrologioMs; }
@@ -918,7 +979,7 @@ static void onDatoNodo(const RemoteNode* n)
   // per un istante sbagliato. Passati cinque minuti si registra lo stesso, con
   // fonte_ora=STIMA: un hub rimasto senza rete che smette di registrare per
   // sempre sarebbe un guasto peggiore di un orario impreciso.
-  if (!orario_registrabile()) return;
+  if (!orario_registrabile()) { s_scartatiOra++; return; }
 
   char mac[18];
   snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X",
@@ -928,6 +989,13 @@ static void onDatoNodo(const RemoteNode* n)
                     n->seq, n->value, n->batteria_mv))
   {
     s_righeScritte++;
+  }
+  else
+  {
+    // Da quando sd_log_remote() guarda il ritorno delle print(), questo ramo
+    // distingue "card che ha rifiutato" da "riga scritta": prima la funzione
+    // rispondeva sempre true e il contatore saliva comunque.
+    s_scrittureKo++;
   }
   Serial.printf("[hub] %s  %.1f C  %.0f %%  %.1f hPa  seq %lu%s\n",
                 n->nome, n->value[0], n->value[1], n->value[2],
@@ -1198,6 +1266,12 @@ void setup()
   Serial.setTxTimeoutMs(0);
   const uint32_t t_wait = millis();
   while (!Serial && millis() - t_wait < 3000) delay(10);
+
+  // Prima di ogni altra cosa: se il boot si interrompesse piu' avanti, questo
+  // e' comunque gia' registrato.
+  bootDiagBegin();
+  Serial.printf("[boot] avvio n. %lu, causa %s\n",
+                (unsigned long)s_bootCount, app_reset_reason());
 
   pinMode(PIN_BOOT, INPUT_PULLUP);
 
