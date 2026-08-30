@@ -1280,8 +1280,13 @@ senza di loro si somiglierebbero (schermo che non cambia).
     forma della tabella: stanno lì con `handler == nullptr`, documentate, e si
     registrano a mano subito sotto.
 
-- **Tutte le pagine del firmware portano lo STESSO piede di navigazione**
-  (nodi, pannello, immagini, dashboard, aggiornamento). Non e' pignoleria
+- **Tutte le pagine portano lo STESSO piede di navigazione**: `/` &middot;
+  `/pannello` &middot; `/immagini` &middot; `/pagine` &middot; `/api` &middot;
+  `/update` (aggiornato in `v19`; prima c'era `/dashboard-upload`, che resta
+  funzionante ma non è più la via consigliata — `/pagine` fa la stessa cosa per
+  tutte le pagine). Vale anche per la dashboard sulla card e per la pagina
+  `/update`, che sta in `net_ota.cpp`: sono **sette** posti da toccare insieme,
+  ed è il prezzo di non avere un template condiviso. Non e' pignoleria
   estetica: `/` puo' essere sostituita da una dashboard personalizzata sulla
   card, e se quella non mette i link — o e' rotta — le altre pagine
   resterebbero raggiungibili solo digitando l'URL a memoria. Con il piede

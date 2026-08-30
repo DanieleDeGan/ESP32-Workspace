@@ -467,7 +467,7 @@ static const char HUB_PAGE[] PROGMEM = R"HTML(
  stanno molto piu' vicini di cosi'.</p>
 </div>
 <div id="lista"></div>
-<p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/dashboard-upload">dashboard personalizzata</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
+<p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/pagine">pagine</a> &mdash; <a href="/api">API</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
 <p class="muted">I registri dei nodi stanno su microSD, un file per giorno per nodo.</p>
 <script>
 const E=document.getElementById.bind(document);
@@ -1054,7 +1054,7 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
 
 <nav>
  <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/immagini">Componi immagine</a>
- <a href="/dashboard-upload">Dashboard</a><a href="/update">Aggiorna firmware</a>
+ <a href="/pagine">Pagine</a><a href="/api">API</a><a href="/update">Aggiorna firmware</a>
 </nav>
 <script>
 const E=document.getElementById.bind(document);
@@ -1532,7 +1532,7 @@ static const char DASH_UPLOAD_PAGE[] PROGMEM = R"HTML(
  <progress id="p" value="0" max="100" hidden></progress></form>
  <p class="muted" id="s"></p>
  <button id="br" class="dan">Ripristina dashboard di default</button>
- <p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/dashboard-upload">dashboard personalizzata</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
+ <p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/pagine">pagine</a> &mdash; <a href="/api">API</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
 <script>
 const f=document.getElementById('f'),b=document.getElementById('b'),p=document.getElementById('p'),s=document.getElementById('s'),br=document.getElementById('br');
 f.addEventListener('submit',e=>{e.preventDefault();const fd=new FormData(f),x=new XMLHttpRequest();

@@ -55,7 +55,7 @@ static const char UPDATE_PAGE[] PROGMEM = R"HTML(
  <progress id="p" value="0" max="100" hidden></progress></form>
  <p class="muted" id="s">Seleziona il .bin generato da Arduino IDE:
  <br>Sketch &gt; Export Compiled Binary, poi prendi il file <code>*.ino.bin</code>.
- <br><br><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/dashboard-upload">dashboard personalizzata</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
+ <br><br><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/pagine">pagine</a> &mdash; <a href="/api">API</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
 <script>
 const f=document.getElementById('f'),b=document.getElementById('b'),p=document.getElementById('p'),s=document.getElementById('s');
 f.addEventListener('submit',e=>{e.preventDefault();const fd=new FormData(f),x=new XMLHttpRequest();

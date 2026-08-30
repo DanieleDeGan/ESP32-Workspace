@@ -4,7 +4,7 @@
 //  GENERATO DA www/gen_page.py - NON MODIFICARE A MANO.
 //  La sorgente e' www/dither.html: si modifica quella e si
 //  rilancia  python www/gen_page.py  prima di ricompilare.
-//  (38595 byte di pagina, serviti su /immagini)
+//  (38598 byte di pagina, serviti su /immagini)
 // ============================================================
 
 static const char DITHER_PAGE[] PROGMEM = R"DITHERPAGE(
@@ -267,7 +267,7 @@ static const char DITHER_PAGE[] PROGMEM = R"DITHERPAGE(
 
 <footer id="nav" style="display:none;max-width:1200px;margin:0 auto;padding:0 16px 24px;
   font-size:13px;color:var(--dim)">
-  <a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/dashboard-upload">dashboard personalizzata</a> &mdash; <a href="/update">aggiornamento firmware</a>
+  <a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/pagine">pagine</a> &mdash; <a href="/api">API</a> &mdash; <a href="/update">aggiornamento firmware</a>
 </footer>
 
 <details class="spec">
