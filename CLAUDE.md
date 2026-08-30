@@ -81,6 +81,7 @@ toccare) vedi `docs/FILES.md`. Per il pinout/hardware della board AMOLED vedi
 | `examples/DHT11_SD_Logger/` | demo: DHT11 cablato su un GPIO libero, temperatura/umidità/conteggio campioni a schermo e log CSV ogni 60 s sulla microSD onboard (colonne `boot_id,n,secondi_da_accensione,temperatura_C,umidita_pct`) |
 | `examples/Diag_Hub/` + `examples/Diag_Node/` | diagnostica ESP-NOW usa e getta su `esp_now.h` grezzo (nessuna libreria di questo repo): il nodo spara un contatore in broadcast, l'hub misura la perdita reale contando i buchi nel `seq`. In modalità Long Range, quindi **non** interoperabili con `EspNowLink` |
 | `docs/FILES.md` | reference file-per-file di tutto il repo |
+| `docs/Feature-Backlog.md` | **il taccuino delle cose da fare**: idee pronte, idee vecchie raccolte dagli altri documenti, e quelle valutate e scartate col perché. Da qui si pesca quando c'è voglia di aggiungere qualcosa |
 | `docs/ESP32-S3-AMOLED-1.91-Guide.md` | guida hardware/pinout della board AMOLED |
 | `docs/*.pdf` | datasheet/reference (ESP32-S3, SH8601/RM67162, QMI8658, guida LVGL+SquareLine) — consultarli per dettagli di registro/timing, non riscriverne il contenuto nel codice |
 
