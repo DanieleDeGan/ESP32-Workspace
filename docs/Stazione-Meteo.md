@@ -1,5 +1,120 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-08-30 (2) — `v12`: il testo sopra le foto, e un elenco solo
+
+Due richieste dell'utente, e una terza cosa trovata mentre si guardava.
+
+**Il biglietto si compone nel browser** (`www/dither.html`, quindi anche
+`/immagini` sulla scheda). Nuovo pannello con testo, quattro caratteri, corpo,
+altezza, e tre modi di staccarlo dallo sfondo: banda piena, alone attorno alle
+lettere, o nudo sulla foto.
+
+Il punto tecnico e' che **il testo non passa dal dithering**: si disegna su un
+canvas a parte, si legge a soglia secca e si stende sopra i bit gia' retinati.
+Una lettera ditherata perde i tratti sottili, e a 400x300 su un pannello a 1 bit
+diventa illeggibile — e' lo stesso motivo per cui non si rimpicciolisce a bordo
+un `.bin` gia' retinato, visto dall'altro lato.
+
+**Cosi' la regola "immagine + altro non si fa" resta vera dov'e' vera.** Il
+divieto in CLAUDE.md riguarda il RICAMPIONAMENTO, non l'accostamento: comporre
+alla dimensione finale, dove il ricampionamento non esiste, e' sempre stato
+lecito. Il firmware infatti non ha imparato niente di nuovo — un biglietto e'
+un'immagine come le altre e passa da `/api/immagini`.
+
+**Il messaggio testuale NON e' stato toccato** (`messages.*` non e' nemmeno fra
+i file modificati): restano NVS, archivio, scadenza, urgenza e la fascia sulla
+pagina nodi. Sono due strade con due mestieri — il bigliettino scritto in dieci
+secondi che sopravvive senza card, e il biglietto illustrato preparato con calma.
+
+**`/pannello` ha un elenco solo.** Prima ogni immagine compariva due volte: in
+cima come slot (solo testo) e in fondo nella galleria (con l'anteprima) — e
+quella che mostrava la figura era proprio quella da cui non si governava la
+pagina. Ora l'anteprima sta nell'elenco, e sotto restano solo le immagini della
+card **non ancora** in uso. In piu': riordino con le frecce (lo slot 0 resta
+ancorato, ed e' il posto fisso da cui riparte il tasto BOOT) e il conteggio dei
+posti liberi.
+
+**Il difetto trovato per caso, ed e' quello che rendeva la pagina "difficile da
+usare"**: gli slot erano **8 su 8** e il pulsante "Aggiungi" rispondeva 507
+correttamente, ma il JavaScript faceva `.then(r => r.json())` senza guardare
+`r.ok`. Su una risposta d'errore in `text/plain` la promise andava in eccezione
+e **il pulsante non faceva niente, in silenzio**. Lo schema era su tutti i
+pulsanti della pagina: ora c'e' `postJson()`, che mostra il testo del server.
+Da ricordare come forma: *un errore gestito dal server non e' un errore
+mostrato all'utente* — in mezzo c'e' un client che puo' ingoiarlo.
+
+**`PAGES_MAX` da 8 a 16, con migrazione `PAG1` -> `PAG2`.** La validita' del
+blob NVS si controlla anche sulla lunghezza, quindi allungare l'elenco lo
+avrebbe reso irriconoscibile: le cinque pagine immagine sarebbero sparite
+durante l'OTA, in silenzio, con le immagini ancora sulla card. Il blob vecchio
+viene riconosciuto, copiato nei primi otto slot e riscritto nel formato nuovo
+una volta sola.
+
+**Caricato e verificato sull'hardware** (OTA, 1,38 MB in **8,1 s**):
+
+| verifica | esito |
+|---|---|
+| migrazione NVS | 8 pagine su 8 **identiche** (tipo, param, attiva, durata), rotazione/silenzio/fascia invariati |
+| slot | 8 su **16**, 8 liberi |
+| riordino su/giu' | funziona nei due versi, configurazione riportata identica |
+| slot 0 | rifiutato con **409** e un messaggio leggibile, come previsto |
+| nodi dopo il riavvio | tutti e due consegnano entro un minuto, `persi: 0` |
+| `righe_scritte` | 2, cioe' la somma dei pacchetti dei due nodi |
+
+**Quello che NON e' stato verificato**: la resa visiva. L'estensione Chrome non
+era connessa, quindi la tipografia del biglietto (interlinea, margini della
+banda, scelta dei caratteri) e' ragionata e provata **solo** con nove controlli
+in node sui bit — banda, alone, inversione, testo vuoto, blocco ai bordi, testo
+lunghissimo — non guardata a occhio.
+
+## Aggiornamento del 2026-08-30 — il quarto segmento di scarica, il primo pulito
+
+Verifica di salute di hub e nodi, e una lettura al multimetro. **La cella non è
+mai stata ricaricata dal 23/08**, quindi i quattro segmenti sono una curva sola:
+
+| | seg. 1 (`v9`) | seg. 2 (`v10`) | seg. 3 (`v10`) | **seg. 4 (`v13`)** |
+|---|---|---|---|---|
+| cadenza | 60 s | 300 s | 300 s | **300 s** |
+| finestra | 20,41 h | 24,93 h | 23,43 h | **~59 h** |
+| interventi della rete di sicurezza | 0 | 1 | 2 | **0** |
+| batteria (multimetro, a riposo) | 4,18 → 4,12 V | 4,12 → 4,10 V | 4,10 → 4,08 V | **4,07 → 4,06 V** |
+| caduta oraria | −2,94 mV/h | −0,80 mV/h | −0,85 mV/h | **−0,17 mV/h** |
+
+In totale **4,18 → 4,06 V in 6,4 giorni**. Il segmento 4 è il primo dopo la
+Fase 9, cioè il primo **senza un solo riavvio**: la pendenza cala di cinque
+volte, che è il verso giusto e quantifica quanto pesavano quegli episodi
+(~6,7 mAh l'uno, più di un giorno di funzionamento regolare). Vale però la
+stessa avvertenza di sempre, anzi più forte: **10 mV sono UNA cifra sul
+multimetro**, quindi è un indizio concorde, non una misura.
+
+**L'estrapolazione non si può fare, e conviene vedere di quanto sbaglierebbe.**
+Da 4,06 V a 3,9 V mancano 160 mV, che valgono **8 giorni** con la pendenza del
+segmento 3 e **39 giorni** con quella del segmento 4: un fattore cinque fra due
+letture entrambe difendibili. Sul plateau della LiPo la tensione non è una
+misura di carica, e nessun altro punto preso quassù lo cambierà — il dato utile
+arriverà **sotto i 3,9 V**, dove la curva torna a pendere. Fino ad allora
+l'unico strumento vero resta il partitore su D1/GPIO3 (`BATTERY_ADC_ENABLED 0`,
+componenti non ancora arrivati).
+
+**Il resto della rete, alle 07:00**: hub `v11` con uptime 32,6 h (nessun riavvio
+dal 28/08 22:26), AP tornato sul **canale 1** dopo essere stato sul 13, card
+14,9 GB, heap 222 kB, `invii_interrotti: 0`. Nodo a muro `v13`: `errors: 0` su
+1260 letture, **0 invii ESP-NOW falliti**, `espnow_canale: 1` — cioè il campo
+corretto il 29/08 ora segue davvero la radio. Nodo a batteria: 390 pacchetti,
+`persi: 0`.
+
+CSV del 29-30/08: gap **299-301 s** per il nodo a batteria e **59-61 s** per
+quello a muro, zero campi vuoti, zero righe con `fonte_ora != NTP`. I due soli
+reset di `seq` sono voluti (OTA del nodo a muro il 29/08 alle 10:02, power-cycle
+del nodo a batteria alle 15:55). **Nessuna traccia della rete di sicurezza**
+nemmeno con l'AP che si è spostato di nuovo: la Fase 9 regge alla seconda prova
+sul campo.
+
+Un controllo incrociato che vale la pena rifare ad ogni verifica:
+`righe_scritte` dell'hub (2346) è **esattamente** la somma dei `pacchetti` dei
+due nodi (1956 + 390). Sono contatori tenuti da moduli diversi — se un giorno
+non tornassero, il guasto starebbe fra la radio e la scrittura su card.
+
 ## Aggiornamento del 2026-08-28 — la Fase 9 regge 24 ore, e l'AP si è spostato davvero
 
 Prima finestra lunga dopo la Fase 9, letta dai CSV dell'hub

@@ -1068,7 +1068,16 @@ senza di loro si somiglierebbero (schermo che non cambia).
     lì* e la si guarda passando.
   - **Lo slot 0 è la pagina dei nodi e non si può togliere**: un elenco vuoto
     lascerebbe il pannello senza niente da mostrare e senza modo di rimediare
-    dal tasto BOOT, che è l'unico comando quando la rete non c'è.
+    dal tasto BOOT, che è l'unico comando quando la rete non c'è. Per lo stesso motivo,
+    da `v12`, **non si può nemmeno spostare**: è il posto fisso da cui riparte
+    il tasto.
+  - **`PAGES_MAX` è 16 da `v12`, e alzarlo ancora richiede una migrazione.**
+    `sizeof(PagBlob)` entra nel confronto che valida il blob NVS, quindi un
+    numero diverso rende **irriconoscibile la configurazione salvata**: le
+    pagine sparirebbero durante un OTA, in silenzio, con le immagini ancora
+    sulla card. Il magic è passato da `PAG1` a `PAG2` e `pages_begin()` legge
+    entrambi, convertendo una volta sola. **Guardare qui prima di toccare
+    quella costante.**
   - **BOOT breve scorre anche le pagine escluse dalla rotazione.** Il tasto è
     la via di governo quando la rete è giù: non deve dipendere da come è
     configurata la rotazione.
@@ -1098,6 +1107,17 @@ senza di loro si somiglierebbero (schermo che non cambia).
     essere quello per cui l'hub esiste.
   - Il pulsante **"manda al pannello" è esplicito apposta**: aggiornare mentre
     si scrive costerebbe un refresh da 2,2 s per carattere.
+- **Un errore che il server gestisce non è un errore che l'utente vede**: in
+  mezzo c'è un client che può ingoiarlo. Su `/pannello` il pulsante "Aggiungi"
+  faceva `.then(r => r.json())` senza guardare `r.ok`, quindi il `507 non c'è
+  più posto nell'elenco` — perfettamente corretto lato scheda — mandava la
+  promise in eccezione e **il pulsante non faceva niente, in silenzio**. Con
+  gli slot esauriti (erano 8 su 8) il sintomo era "la pagina è difficile da
+  usare", che punta lontanissimo dalla causa. Da `v12` c'è `postJson()`, che
+  mostra il testo della risposta. Vale per ogni `fetch` di questo repo: se non
+  si guarda `r.ok`, il messaggio d'errore scritto con cura non arriva a
+  nessuno.
+
 - **Un byte che non è UTF-8 rende non parsabile l'INTERA risposta JSON**, ed è
   la stessa trappola del `NAN` emesso come `"nan"` su `EnvNode_C3`: la pagina
   resta vuota per colpa di un solo campo, e il guasto non somiglia alla causa.
@@ -1201,6 +1221,17 @@ senza di loro si somiglierebbero (schermo che non cambia).
     la strada giusta è comporla **dentro l'immagine nel browser**
     (`www/dither.html` lavora già su un canvas): costo zero per il firmware e
     tipografia libera.
+    - **Fatto da `v12`** (2026-08-30): `dither.html` ha il pannello del testo,
+      con banda, alone o testo nudo. Il divieto qui sopra riguarda il
+      **ricampionamento**, non l'accostamento — comporre alla dimensione finale
+      è sempre stato lecito, ed è esattamente ciò che fa il browser.
+    - **Il testo NON passa dal dithering**: si disegna su un canvas a parte, si
+      legge a soglia secca e si stende sopra i bit già retinati. Una lettera
+      ditherata perde i tratti sottili e a 400×300 diventa illeggibile.
+    - **Non sostituisce il messaggio testuale** (`messages.*`, NVS, archivio,
+      scadenza, urgenza, fascia): quello resta la via veloce, e sopravvive
+      anche con la card tolta. Il biglietto illustrato è un file da 15 kB sulla
+      card e non ha nessuna di quelle proprietà.
   - **Su e-ink il tempo è la dimensione in più**: per "vedere tutto" c'è la
     rotazione, che alterna pagine intere e leggibili invece di comprimerne tre
     in 400×300.
