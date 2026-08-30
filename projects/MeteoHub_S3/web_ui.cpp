@@ -705,6 +705,27 @@ static void handleApiPannelloAggiungi() {
   handleApiPannello();
 }
 
+static void handleApiPannelloSposta() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+  if (!srv.hasArg("i") || !srv.hasArg("dir")) { srv.send(400, "text/plain", "manca i o dir"); return; }
+
+  const int i   = srv.arg("i").toInt();
+  const int dir = srv.arg("dir").toInt();
+  if (i < 0 || i >= pages_slots()) { srv.send(400, "text/plain", "indice fuori range"); return; }
+
+  if (!pages_move((uint8_t)i, dir)) {
+    // I "no" hanno ragioni diverse (gia' agli estremi, slot 0, slot libero)
+    // ma per chi guarda la pagina sono la stessa cosa: la freccia non aveva
+    // dove portare. Agli estremi le frecce sono gia' disabilitate — questo
+    // resta per il caso di due schede aperte sulla stessa scheda.
+    srv.send(409, "text/plain", "la pagina non si puo' spostare li'");
+    return;
+  }
+  pages_save();
+  handleApiPannello();
+}
+
 static void handleApiPannelloRimuovi() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
   WebServer& srv = net_server();
@@ -808,6 +829,24 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  .im .nm span{color:var(--dim);font-size:.75rem;margin-left:auto}
  .im .azioni{margin-top:8px}
 
+ /* --- una riga dell'elenco: miniatura a sinistra, comandi a destra ---
+    L'anteprima sta NELL'elenco, non in una galleria a parte: prima ogni
+    immagine compariva due volte, e quella che mostrava la figura era
+    proprio quella da cui non si governava la pagina. --- */
+ .cap{display:flex;gap:12px;align-items:flex-start}
+ .mini{flex:none;width:116px;border-radius:8px;overflow:hidden;background:#fff;
+  border:1px solid var(--bordo)}
+ .mini canvas{width:100%;height:auto;display:block;image-rendering:pixelated}
+ .mini.gen{background:var(--card2);color:var(--dim);height:87px;font-size:1.9rem;
+  display:flex;align-items:center;justify-content:center}
+ .testa{flex:1;min-width:0}
+ .ord{flex:none;display:flex;flex-direction:column;gap:5px}
+ .ord button{min-height:0;height:34px;width:40px;padding:0;font-size:.95rem;
+  background:var(--card2);border:1px solid var(--bordo);color:var(--txt)}
+ .ord button:disabled{opacity:.25}
+ .conta{font-weight:400;text-transform:none;letter-spacing:0}
+ @media (max-width:420px){ .mini{width:92px} .mini.gen{height:69px} }
+
  .arch p{background:var(--card2);border-left:3px solid var(--bordo);border-radius:0 8px 8px 0;
   padding:10px 12px;margin:8px 0;font-size:.9rem;cursor:pointer;min-height:44px;
   display:flex;align-items:center}
@@ -828,8 +867,9 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  <div class="esito" id="srf"></div>
 </div>
 
-<h2>Pagine</h2>
+<h2>Pagine del pannello <span class="conta" id="conta"></span></h2>
 <div id="lista"></div>
+<div class="esito" id="sord"></div>
 
 <div class="card">
  <label class="sw"><span>Messaggio anche sulla pagina nodi</span>
@@ -877,17 +917,24 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  <div class="arch" id="arch"></div>
 </div>
 
-<h2>Immagini</h2>
+<h2>Sulla card, non in elenco <span class="conta" id="contaCard"></span></h2>
+<div class="gal" id="limg"></div>
+<div class="card" id="cardVuota" style="display:none">
+ <p class="muted" style="margin:0">Tutte le immagini della card sono gi&agrave; fra le
+ pagine qui sopra.</p>
+</div>
+
+<h2>Aggiungere un'immagine</h2>
 <div class="card">
  <button class="full" onclick="location.href='/immagini'">Componi un'immagine</button>
- <p class="muted">Ritaglio, luminosit&agrave;, gamma e dithering nel browser. Qui sotto
- si carica un <code>.bin</code> gi&agrave; pronto (15.000 byte esatti).</p>
+ <p class="muted">Ritaglio, luminosit&agrave;, gamma, dithering e il testo sopra la
+ foto, tutto nel browser. Qui sotto si carica un <code>.bin</code> gi&agrave;
+ pronto (15.000 byte esatti).</p>
  <div class="riga" style="border:0;padding-top:0"><input type="file" id="fimg" accept=".bin"></div>
  <div class="duo"><input type="text" id="nimg" placeholder="nome" maxlength="20">
   <button class="sec" id="bimg" style="flex:0 0 auto">Carica</button></div>
  <div class="esito" id="simg"></div>
 </div>
-<div class="gal" id="limg"></div>
 
 <nav>
  <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/immagini">Componi immagine</a>
@@ -915,47 +962,141 @@ for(let h=0;h<24;h++){const t=('0'+h).slice(-2)+':00';
  E('sda').insertAdjacentHTML('beforeend','<option value="'+h+'">'+t+'</option>');
  E('sa').insertAdjacentHTML('beforeend','<option value="'+h+'">'+t+'</option>');}
 
+// Ogni POST puo' fallire con un testo che dice perche'. Prima si faceva
+// .then(r=>r.json()) senza guardare r.ok: su una risposta d'errore in
+// text/plain la promise andava in eccezione e il pulsante NON FACEVA NIENTE,
+// in silenzio. E' cosi' che il 507 "non c'e' piu' posto nell'elenco" e'
+// rimasto invisibile per giorni, con gli slot esauriti.
+function postJson(u,esito){
+ return post(u).then(r=>{
+  if(!r.ok) return r.text().then(t=>{throw new Error(t||('errore '+r.status));});
+  return r.json();
+ }).then(d=>{render(d);return d;})
+  .catch(e=>{flash(esito||E('sord'),e.message||'hub non raggiungibile',1);});
+}
+
+// I 15.000 byte di ogni immagine si scaricano UNA volta sola: la stessa
+// figura puo' stare in piu' slot, e la pagina si ridisegna ogni 15 secondi.
+const BIN={};
+function anteprima(box,nome){
+ const cv=document.createElement('canvas'); cv.width=400; cv.height=300;
+ box.appendChild(cv);
+ const dipingi=by=>{
+  const ctx=cv.getContext('2d'),img=ctx.createImageData(400,300);
+  for(let y=0;y<300;y++)for(let x=0;x<400;x++){
+   const bit=(by[y*50+(x>>3)]>>(7-(x&7)))&1,o=(y*400+x)*4,v=bit?255:0;
+   img.data[o]=img.data[o+1]=img.data[o+2]=v;img.data[o+3]=255;}
+  ctx.putImageData(img,0,0);};
+ if(BIN[nome]){dipingi(BIN[nome]);return;}
+ fetch('/api/immagini/scarica?nome='+encodeURIComponent(nome))
+  .then(r=>r.ok?r.arrayBuffer():Promise.reject())
+  .then(b=>{BIN[nome]=new Uint8Array(b);dipingi(BIN[nome]);})
+  .catch(()=>{box.className='mini gen';box.innerHTML='&#9888;';});
+}
+
+const GLIFO={nodi:'&#9925;',messaggio:'&#9993;',bianca:'&#9634;'};
+var ULTIMO=null, SULLACARD=[];
+
 function render(d){
+ ULTIMO=d;
  const box=E('lista'); box.innerHTML='';
+ const usate=d.pagine.map(p=>p.i);
+ const primoMobile=usate.length>1?usate[1]:-1, ultimo=usate[usate.length-1];
+
  d.pagine.forEach(p=>{
   const el=document.createElement('div');
   el.className='pg'+(p.corrente?' now':'');
+  const fisso=(p.i===usate[0]);
   el.innerHTML=
-   '<div class="top"><span class="nome">'+esc(p.tipo)+
-     (p.param?' <span class="par">'+esc(p.param)+'</span>':'')+'</span>'+
-     (p.corrente?'<span class="badge">A SCHERMO</span>':'')+'</div>'+
-   '<label class="sw"><span>Nel cambio automatico</span>'+
-     '<input type="checkbox" data-a="'+p.i+'"'+(p.attiva?' checked':'')+'><span class="track"></span></label>'+
-   '<div class="riga"><label>Resta a schermo</label>'+
-     '<select data-d="'+p.i+'">'+optDur(p.durata_s)+'</select></div>'+
+   '<div class="cap">'+
+    '<div class="mini'+(p.tipo=='immagine'?'':' gen')+'" data-mini="'+esc(p.param)+
+      '" data-tipo="'+esc(p.tipo)+'">'+(p.tipo=='immagine'?'':(GLIFO[p.tipo]||'?'))+'</div>'+
+    '<div class="testa">'+
+     '<div class="top"><span class="nome">'+esc(p.tipo)+
+       (p.param?' <span class="par">'+esc(p.param)+'</span>':'')+'</span>'+
+       (p.corrente?'<span class="badge">A SCHERMO</span>':'')+'</div>'+
+     '<label class="sw"><span>Nel cambio automatico</span>'+
+       '<input type="checkbox" data-a="'+p.i+'"'+(p.attiva?' checked':'')+'><span class="track"></span></label>'+
+     '<div class="riga"><label>Resta a schermo</label>'+
+       '<select data-d="'+p.i+'">'+optDur(p.durata_s)+'</select></div>'+
+    '</div>'+
+    '<div class="ord">'+
+     '<button data-su="'+p.i+'"'+(fisso||p.i===primoMobile?' disabled':'')+' title="Su">&#9650;</button>'+
+     '<button data-giu="'+p.i+'"'+(fisso||p.i===ultimo?' disabled':'')+' title="Gi&ugrave;">&#9660;</button>'+
+    '</div>'+
+   '</div>'+
    '<div class="azioni">'+
      (p.corrente?'':'<button class="sec" data-v="'+p.i+'">Mostra ora</button>')+
      '<button class="sec' + (p.corrente?' sol':'') + '" data-f="'+p.i+'">Solo questa</button>'+
      (p.tipo=='immagine'?'<button class="dan sol" data-x="'+p.i+'">Togli dall\'elenco</button>':'')+
    '</div>';
   box.appendChild(el);
-  if(p.corrente) E('oraNome').textContent = p.tipo + (p.param? ' — '+p.param : '');
+  if(p.corrente) E('oraNome').textContent = p.tipo + (p.param? ' \u2014 '+p.param : '');
  });
- // Il polling non tocca i campi mentre un salvataggio e' in volo: senza
- // questo, la risposta di una richiesta partita prima riscriverebbe quello
- // che si sta impostando adesso.
+
+ box.querySelectorAll('[data-mini]').forEach(m=>{
+  if(m.dataset.tipo=='immagine'&&m.dataset.mini) anteprima(m,m.dataset.mini);});
+
+ // Quanti posti restano: il numero che prima non compariva da nessuna parte,
+ // e la cui assenza faceva sembrare rotto il pulsante che li riempiva.
+ const tot=d.slot_totali;
+ E('conta').textContent = tot? ('\u2014 '+d.pagine.length+' su '+tot+
+   ((tot-d.pagine.length)?', '+(tot-d.pagine.length)+' liberi':', elenco pieno')) : '';
+
  if(!salvaTimer){
   E('rot').checked=d.rotazione; E('sda').value=d.silenzio_da; E('sa').value=d.silenzio_a;
  }
  E('fas').checked=d.fascia;
 
  box.querySelectorAll('[data-a]').forEach(c=>c.onchange=()=>
-   post('/api/pannello/pagina?i='+c.dataset.a+'&attiva='+(c.checked?1:0)).then(r=>r.json()).then(render));
+   postJson('/api/pannello/pagina?i='+c.dataset.a+'&attiva='+(c.checked?1:0)));
  box.querySelectorAll('[data-d]').forEach(c=>c.onchange=()=>
-   post('/api/pannello/pagina?i='+c.dataset.d+'&durata='+c.value).then(r=>r.json()).then(render));
+   postJson('/api/pannello/pagina?i='+c.dataset.d+'&durata='+c.value));
  box.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>{
    b.disabled=true;b.textContent='in coda...';
    post('/api/pannello/vai?i='+b.dataset.v).then(()=>setTimeout(carica,3500));});
  box.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>
-   post('/api/pannello/pagina?i='+b.dataset.f+'&fissa=1').then(r=>r.json()).then(render));
+   postJson('/api/pannello/pagina?i='+b.dataset.f+'&fissa=1'));
+ box.querySelectorAll('[data-su]').forEach(b=>b.onclick=()=>
+   postJson('/api/pannello/sposta?dir=-1&i='+b.dataset.su));
+ box.querySelectorAll('[data-giu]').forEach(b=>b.onclick=()=>
+   postJson('/api/pannello/sposta?dir=1&i='+b.dataset.giu));
  box.querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>{
    if(!confirm('Togliere questa pagina? L\'immagine resta sulla card.'))return;
-   post('/api/pannello/rimuovi?i='+b.dataset.x).then(r=>r.json()).then(render);});
+   postJson('/api/pannello/rimuovi?i='+b.dataset.x);});
+
+ disegnaCard();
+}
+
+// Le immagini della card che NON sono gia' una pagina. Un'immagine in uso sta
+// in un posto solo — l'elenco — con la sua anteprima e i suoi comandi accanto.
+function disegnaCard(){
+ const box=E('limg'); if(!box) return;
+ const inUso={};
+ if(ULTIMO) ULTIMO.pagine.forEach(p=>{if(p.tipo=='immagine'&&p.param)inUso[p.param]=1;});
+ const fuori=SULLACARD.filter(im=>!inUso[im.nome]);
+
+ box.innerHTML='';
+ E('contaCard').textContent = SULLACARD.length? ('\u2014 '+fuori.length+' di '+SULLACARD.length):'';
+ E('cardVuota').style.display = (SULLACARD.length&&!fuori.length)?'block':'none';
+
+ fuori.forEach(im=>{
+  const el=document.createElement('div'); el.className='im';
+  el.innerHTML='<div class="mini" style="width:100%" data-mini="'+esc(im.nome)+'"></div>'+
+   '<div class="nm"><b>'+esc(im.nome)+'</b><span>'+(im.ok?'ok':im.byte+' byte, non valida')+'</span></div>'+
+   '<div class="azioni"><button class="sec" data-add="'+esc(im.nome)+'">Mettila fra le pagine</button>'+
+   '<button class="dan" data-del="'+esc(im.nome)+'">Elimina</button></div>';
+  box.appendChild(el);
+  if(im.ok) anteprima(el.querySelector('[data-mini]'),im.nome);
+ });
+
+ box.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>
+   postJson('/api/pannello/aggiungi?param='+encodeURIComponent(b.dataset.add),E('simg'))
+     .then(()=>window.scrollTo({top:0,behavior:'smooth'})));
+ box.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{
+   if(!confirm('Eliminare '+b.dataset.del+' dalla card?'))return;
+   delete BIN[b.dataset.del];
+   post('/api/immagini/elimina?nome='+encodeURIComponent(b.dataset.del)).then(caricaImmagini);});
 }
 
 function carica(){
@@ -975,33 +1116,10 @@ function carica(){
 
 function caricaImmagini(){
  fetch('/api/immagini').then(r=>r.json()).then(d=>{
-  const box=E('limg'); box.innerHTML='';
-  if(!d.sd||!d.immagini.length)return;
-  d.immagini.forEach(im=>{
-   const el=document.createElement('div'); el.className='im';
-   el.innerHTML='<canvas width="400" height="300"></canvas>'+
-    '<div class="nm"><b>'+esc(im.nome)+'</b><span>'+(im.ok?'ok':im.byte+' byte, non valida')+'</span></div>'+
-    '<div class="azioni"><button class="sec" data-add="'+esc(im.nome)+'">Aggiungi</button>'+
-    '<button class="dan" data-del="'+esc(im.nome)+'">Elimina</button></div>';
-   box.appendChild(el);
-   if(im.ok) fetch('/api/immagini/scarica?nome='+encodeURIComponent(im.nome))
-     .then(r=>r.arrayBuffer()).then(b=>{
-      // Gli STESSI 15.000 byte che finiscono nel controller: l'anteprima e'
-      // 1:1 per costruzione, non una simulazione.
-      const by=new Uint8Array(b),cv=el.querySelector('canvas'),W=400,H=300,RB=50;
-      const ctx=cv.getContext('2d'),img=ctx.createImageData(W,H);
-      for(let y=0;y<H;y++)for(let x=0;x<W;x++){
-       const bit=(by[y*RB+(x>>3)]>>(7-(x&7)))&1,o=(y*W+x)*4,v=bit?255:0;
-       img.data[o]=img.data[o+1]=img.data[o+2]=v;img.data[o+3]=255;}
-      ctx.putImageData(img,0,0);});
-  });
-  box.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>
-    post('/api/pannello/aggiungi?param='+encodeURIComponent(b.dataset.add))
-      .then(r=>r.json()).then(d=>{render(d);window.scrollTo({top:0,behavior:'smooth'});}));
-  box.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{
-    if(!confirm('Eliminare '+b.dataset.del+' dalla card?'))return;
-    post('/api/immagini/elimina?nome='+encodeURIComponent(b.dataset.del)).then(caricaImmagini);});
- });}
+  SULLACARD = (d.sd && d.immagini) ? d.immagini : [];
+  disegnaCard();
+ });
+}
 
 // Rotazione e ore di silenzio si salvano al tocco, come tutto il resto della
 // pagina. Prima stavano dietro un pulsante "Salva", e non era solo
@@ -1101,7 +1219,9 @@ static void handleApiPannello() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
 
   const uint8_t corrente = pages_current();
-  String j = "{\"rotazione\":";
+  String j = "{\"slot_totali\":";
+  j += pages_slots();
+  j += ",\"rotazione\":";
   j += pages_rotazione() ? "true" : "false";
   j += ",\"silenzio_da\":"; j += pages_silenzio_da();
   j += ",\"silenzio_a\":";  j += pages_silenzio_a();
@@ -1437,4 +1557,5 @@ void web_ui_begin() {
   srv.on("/api/immagini/scarica",    HTTP_GET,  handleApiImmaginiScarica);
   srv.on("/api/pannello/aggiungi",   HTTP_POST, handleApiPannelloAggiungi);
   srv.on("/api/pannello/rimuovi",    HTTP_POST, handleApiPannelloRimuovi);
+  srv.on("/api/pannello/sposta",     HTTP_POST, handleApiPannelloSposta);
 }

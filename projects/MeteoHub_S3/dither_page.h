@@ -4,7 +4,7 @@
 //  GENERATO DA www/gen_page.py - NON MODIFICARE A MANO.
 //  La sorgente e' www/dither.html: si modifica quella e si
 //  rilancia  python www/gen_page.py  prima di ricompilare.
-//  (31678 byte di pagina, serviti su /immagini)
+//  (38595 byte di pagina, serviti su /immagini)
 // ============================================================
 
 static const char DITHER_PAGE[] PROGMEM = R"DITHERPAGE(
@@ -185,6 +185,41 @@ static const char DITHER_PAGE[] PROGMEM = R"DITHERPAGE(
       </div>
       <div class="row" style="margin-bottom:0">
         <label class="check"><input type="checkbox" id="inv"> inverti bianco/nero</label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Testo sopra (dopo il dithering)</h2>
+      <div class="row">
+        <textarea id="txt" rows="2" spellcheck="false" style="width:100%;resize:vertical;
+         background:#0f151c;color:inherit;border:1px solid var(--bordo);border-radius:8px;
+         padding:9px 10px;font:inherit" placeholder="Buon compleanno!"></textarea>
+      </div>
+      <div class="row">
+        <select id="txtFont" style="flex:1">
+          <option value="system-ui,Segoe UI,Arial,sans-serif">Bastone</option>
+          <option value="Georgia,Times New Roman,serif">Grazie</option>
+          <option value="Impact,Haettenschweiler,Arial Black,sans-serif">Manifesto</option>
+          <option value="Segoe Script,Comic Sans MS,cursive">Mano libera</option>
+        </select>
+        <label class="check"><input type="checkbox" id="txtBold" checked> grassetto</label>
+      </div>
+      <label class="f"><span>Corpo <b id="vTxtSize">30</b> px</span>
+        <input type="range" id="txtSize" min="10" max="90" value="30"></label>
+      <label class="f"><span>Altezza <b id="vTxtY">82</b>%</span>
+        <input type="range" id="txtY" min="0" max="100" value="82"></label>
+      <div class="row">
+        <select id="txtBg" style="flex:1">
+          <option value="band" selected>su una banda piena</option>
+          <option value="outline">con l'alone attorno</option>
+          <option value="none">nudo sull'immagine</option>
+        </select>
+        <label class="check"><input type="checkbox" id="txtInv"> chiaro su scuro</label>
+      </div>
+      <div class="stat" style="margin-bottom:0">
+        Il testo <b>non passa dal dithering</b>: si stende a soglia secca sopra i
+        pixel gi&agrave; retinati. Una lettera ditherata perde i tratti sottili e a
+        400&times;300 diventa illeggibile.
       </div>
     </div>
 
@@ -578,6 +613,110 @@ function paint(bits) {
 }
 
 // =====================================================================
+//  Testo sopra l'immagine — a soglia secca, DOPO il dithering
+// =====================================================================
+// Il testo non passa per il dithering, ed e' tutto il punto di questa
+// sezione: una lettera retinata perde i tratti sottili, e a 400x300 su un
+// pannello a 1 bit diventa illeggibile. Si disegna quindi su un canvas a
+// parte, si legge con una soglia secca sull'alpha e si stende sopra i bit
+// gia' prodotti dalla foto.
+//
+// E' anche la ragione per cui comporre il biglietto QUI e non a bordo e'
+// la strada giusta: il firmware riceve 15.000 byte gia' pronti e non deve
+// sapere niente di font, a capo e centrature.
+const tcan = document.createElement('canvas');
+tcan.width = OUT_W; tcan.height = OUT_H;
+const tctx = tcan.getContext('2d', { willReadFrequently: true });
+
+// A capo sulla larghezza utile, rispettando gli a capo scritti a mano.
+function wrapTesto(ctx, testo, maxW) {
+  const righe = [];
+  testo.split('\n').forEach(par => {
+    const parole = par.split(/\s+/).filter(Boolean);
+    if (!parole.length) { righe.push(''); return; }
+    let riga = parole[0];
+    for (let i = 1; i < parole.length; i++) {
+      const prova = riga + ' ' + parole[i];
+      if (ctx.measureText(prova).width <= maxW) riga = prova;
+      else { righe.push(riga); riga = parole[i]; }
+    }
+    righe.push(riga);
+  });
+  return righe;
+}
+
+function applicaTesto(bits) {
+  const testo = $('txt').value.replace(/\s+$/, '');
+  if (!testo.trim()) return;
+
+  const size   = +$('txtSize').value;
+  const chiaro = $('txtInv').checked;     // inchiostro bianco su fondo nero
+  const fondo  = $('txtBg').value;
+  const MARG   = 14;
+
+  tctx.clearRect(0, 0, OUT_W, OUT_H);
+  tctx.font = ($('txtBold').checked ? '700 ' : '400 ') + size + 'px ' + $('txtFont').value;
+  tctx.textAlign = 'center';
+  tctx.textBaseline = 'alphabetic';
+
+  const righe = wrapTesto(tctx, testo, OUT_W - 2 * MARG);
+  const passo = Math.round(size * 1.22);
+  const alt   = righe.length * passo;
+
+  // Lo slider muove il CENTRO del blocco, non la prima riga: cosi' si
+  // comporta allo stesso modo con una riga o con cinque.
+  const meta = alt / 2;
+  let cy = Math.round(OUT_H * (+$('txtY').value) / 100);
+  cy = clamp(cy, meta + 4, Math.max(meta + 4, OUT_H - meta - 4));
+  const y0 = cy - meta;
+
+  // La banda si stende PRIMA, sui bit della foto: deve coprirla, non
+  // fondersi con lei.
+  if (fondo === 'band') {
+    const yA = clamp(Math.round(y0 - size * 0.34), 0, OUT_H);
+    const yB = clamp(Math.round(y0 + alt + size * 0.20), 0, OUT_H);
+    const v  = chiaro ? 0 : 1;
+    for (let y = yA; y < yB; y++) bits.fill(v, y * OUT_W, y * OUT_W + OUT_W);
+  }
+
+  tctx.fillStyle = '#fff';
+  righe.forEach((r, i) => {
+    if (r) tctx.fillText(r, OUT_W / 2, y0 + i * passo + size * 0.80);
+  });
+
+  const px  = tctx.getImageData(0, 0, OUT_W, OUT_H).data;
+  const ink = chiaro ? 1 : 0;
+
+  // Alone: senza, un testo nero su una zona scura della foto sparisce, e la
+  // banda non sempre si vuole. Si dilata la maschera di 2 px e la corona si
+  // tinge del colore opposto.
+  if (fondo === 'outline') {
+    const m = new Uint8Array(OUT_W * OUT_H);
+    for (let i = 0, p = 3; i < m.length; i++, p += 4) m[i] = px[p] > 128 ? 1 : 0;
+    const R = 2;
+    for (let y = 0; y < OUT_H; y++) {
+      for (let x = 0; x < OUT_W; x++) {
+        if (m[y * OUT_W + x]) continue;
+        let vicino = false;
+        for (let dy = -R; dy <= R && !vicino; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= OUT_H) continue;
+          for (let dx = -R; dx <= R; dx++) {
+            const xx = x + dx;
+            if (xx < 0 || xx >= OUT_W) continue;
+            if (m[yy * OUT_W + xx]) { vicino = true; break; }
+          }
+        }
+        if (vicino) bits[y * OUT_W + x] = ink ? 0 : 1;
+      }
+    }
+  }
+
+  for (let i = 0, p = 3; i < bits.length; i++, p += 4)
+    if (px[p] > 128) bits[i] = ink;
+}
+
+// =====================================================================
 //  Render completo, coalescato su requestAnimationFrame
 // =====================================================================
 let pending = false;
@@ -587,19 +726,29 @@ function render() {
   requestAnimationFrame(() => {
     pending = false;
     drawStage();
-    if (showingBin || !srcCanvas) return;
+    if (showingBin) return;
+    // Senza foto ma con del testo si compone lo stesso: un biglietto di sole
+    // parole su carta bianca e' una pagina legittima del pannello.
+    if (!srcCanvas && !$('txt').value.trim()) return;
 
-    drawCrop(wctx);
-    const gray = toGray(wctx.getImageData(0, 0, OUT_W, OUT_H));
-
-    const algo = $('algo').value, serp = $('serp').checked;
     let bits;
-    if (algo === 'fs')         bits = ditherDiffuse(gray, K_FS, serp);
-    else if (algo === 'atk')   bits = ditherDiffuse(gray, K_ATKINSON, serp);
-    else if (algo === 'bayer') bits = ditherOrdered(gray);
-    else                       bits = ditherThreshold(gray);
+    if (srcCanvas) {
+      drawCrop(wctx);
+      const gray = toGray(wctx.getImageData(0, 0, OUT_W, OUT_H));
 
-    if ($('inv').checked) for (let i = 0; i < bits.length; i++) bits[i] ^= 1;
+      const algo = $('algo').value, serp = $('serp').checked;
+      if (algo === 'fs')         bits = ditherDiffuse(gray, K_FS, serp);
+      else if (algo === 'atk')   bits = ditherDiffuse(gray, K_ATKINSON, serp);
+      else if (algo === 'bayer') bits = ditherOrdered(gray);
+      else                       bits = ditherThreshold(gray);
+
+      if ($('inv').checked) for (let i = 0; i < bits.length; i++) bits[i] ^= 1;
+    } else {
+      bits = new Uint8Array(OUT_W * OUT_H).fill(1);   // carta bianca
+    }
+
+    // Dopo l'inversione, o si ribalterebbe anche il testo.
+    applicaTesto(bits);
 
     paint(bits);
     lastPacked = pack(bits);
@@ -701,6 +850,24 @@ $('btnReset').onclick = () => {
 
 ['algo', 'serp', 'inv'].forEach(id =>
   $(id).addEventListener('change', () => { showingBin = false; render(); }));
+// Testo: ogni ritocco ridisegna. E il testo da solo rende esportabile la
+// pagina, anche senza nessuna foto caricata — altrimenti i due pulsanti
+// resterebbero spenti davanti a un biglietto perfettamente pronto.
+function testoCambiato() {
+  if ($('txt').value.trim() || srcCanvas)
+    ['btnSave', 'btnSend'].forEach(id => $(id).disabled = false);
+  showingBin = false;
+  render();
+}
+$('txt').addEventListener('input', testoCambiato);
+['txtFont', 'txtBold', 'txtBg', 'txtInv'].forEach(id =>
+  $(id).addEventListener('change', testoCambiato));
+[['txtSize', 'vTxtSize'], ['txtY', 'vTxtY']].forEach(([id, lbl]) =>
+  $(id).addEventListener('input', () => {
+    $(lbl).textContent = $(id).value;
+    testoCambiato();
+  }));
+
 $('inkSim').addEventListener('change', render);
 $('zoom2').addEventListener('change', e => preview.classList.toggle('z2', e.target.checked));
 

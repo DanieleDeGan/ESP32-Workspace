@@ -35,10 +35,21 @@ enum PageType : uint8_t
   PT_COUNT
 };
 
-// Slot liberi oltre ai tre di default: ci andranno le pagine immagine,
-// che hanno un parametro (quale immagine) e quindi possono essere piu'
-// di una dello stesso tipo.
-#define PAGES_MAX 8
+// Slot liberi oltre ai tre di default: ci vanno le pagine immagine, che
+// hanno un parametro (quale immagine) e quindi possono essere piu' di una
+// dello stesso tipo.
+//
+// Portato da 8 a 16 il 2026-08-30: con tre pagine di sistema restavano
+// cinque posti, e cinque immagini li esaurivano. Il limite non si vedeva
+// come "elenco pieno" ma come un pulsante che non faceva niente, perche'
+// la web UI ingoiava il 507 del server.
+//
+// ATTENZIONE se lo si cambia ancora: sizeof(PagBlob) entra nel confronto
+// che valida il blob NVS, quindi un valore nuovo INVALIDA la configurazione
+// salvata. Serve un magic nuovo e la conversione da quello vecchio, come
+// e' stato fatto qui per PAG1 -> PAG2, o le pagine configurate spariscono
+// dopo l'aggiornamento senza dire niente.
+#define PAGES_MAX 16
 
 struct PageCfg
 {
@@ -103,6 +114,11 @@ bool pages_set_durata(uint8_t i, uint16_t durata_s);
 // modalita' a parte, e' un'operazione sull'elenco — cosi' non esiste uno
 // stato "fissato" che possa andare fuori sincrono con la lista.
 bool pages_fissa(uint8_t i);
+
+// Sposta uno slot di un posto (dir < 0 su, dir > 0 giu'), scambiandolo con
+// il vicino USATO. L'ordine degli slot e' l'ordine della rotazione, quindi
+// riordinare e' l'unico modo di decidere in che sequenza si susseguono.
+bool pages_move(uint8_t i, int dir);
 
 // Aggiunge/rimuove uno slot (per le pagine immagine del passo successivo).
 int  pages_add(uint8_t tipo, const char* param);   // -1 se non c'e' posto
