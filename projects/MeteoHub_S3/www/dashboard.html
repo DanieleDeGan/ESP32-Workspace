@@ -145,6 +145,8 @@ button:disabled{opacity:.45;cursor:default}
 input[type=number],input[type=text]{font:inherit;font-size:.85rem;color:var(--tx);
   background:var(--inset);border:1px solid var(--line2);border-radius:8px;padding:.35rem .5rem;width:7rem}
 .ctrls{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+#ante{width:100%;max-width:400px;display:block;border-radius:8px;
+  background:#fff;image-rendering:pixelated}
 .msg{font-size:.78rem;margin-left:.3rem}
 .msg.ok{color:var(--ok)} .msg.err{color:var(--bad)}
 .muted{color:var(--tx3);font-size:.78rem}
@@ -182,6 +184,20 @@ nav{margin:1.6rem 0 .5rem;display:flex;flex-wrap:wrap;gap:.4rem 1rem;font-size:.
 <section class="card">
   <h2>I nodi adesso <span class="hint" id="hUpd"></span></h2>
   <div class="tiles" id="tiles"><div class="muted">lettura…</div></div>
+</section>
+
+<!-- ============ il pannello adesso ============ -->
+<!-- Non si rilegge da sola col resto della pagina: sono 15 kB per volta su un
+     server sincrono, e chiederli ogni pochi secondi toglierebbe tempo ai nodi
+     e all'OTA. Una lettura all'apertura, poi solo a richiesta. -->
+<section class="card">
+  <h2>Sul pannello adesso
+    <span class="hint" id="hAnte">&mdash;</span></h2>
+  <canvas id="ante" width="400" height="300"></canvas>
+  <div class="ctrls" style="margin-top:.6rem">
+    <button id="bAnte">rileggi</button>
+    <span class="msg" id="mAnte"></span>
+  </div>
 </section>
 
 <!-- ============ confronto fra nodi ============ -->
@@ -335,10 +351,11 @@ function oggiISO(){
 // Una fetch alla volta: il WebServer della scheda e' sincrono, e due
 // richieste in volo si mettono in coda invece di andare piu' veloci.
 let CODA = Promise.resolve();
-function api(path, opts){
+function api(path, opts, come){
   const run = async () => {
     const r = await fetch(path, Object.assign({cache:'no-store'}, opts||{}));
     if (!r.ok) throw new Error(r.status+' '+r.statusText);
+    if (come === 'bin') return r.arrayBuffer();
     const ct = r.headers.get('content-type')||'';
     return ct.includes('json') ? r.json() : r.text();
   };
@@ -932,6 +949,42 @@ async function caricaSalute(){
     : '';
 }
 
+// ====================================================================
+//  L'anteprima del pannello
+// ====================================================================
+// I 15.000 byte sono quelli che l'hub ha disegnato sul vetro: 400x300 a 1 bit,
+// MSB per primo, 50 byte per riga, 1 = bianco. Lo stesso formato dei .bin, per
+// cui questo disegno vale anche per loro.
+//
+// Da tenere a mente leggendola: mostra cio' che l'hub HA DISEGNATO, non i
+// fotoni sul pannello. Se il display non rispondesse, l'anteprima sarebbe
+// comunque giusta.
+async function leggiAnte(){
+  const b = $('bAnte');
+  b.disabled = true;
+  setMsg($('mAnte'), 'lettura…', '');
+  try{
+    const buf = new Uint8Array(await api('/api/pannello/anteprima', null, 'bin'));
+    if (buf.length !== 15000) throw new Error(buf.length + ' byte invece di 15000');
+    const cv = $('ante'), ctx = cv.getContext('2d'), img = ctx.createImageData(400, 300);
+    let neri = 0;
+    for (let y = 0; y < 300; y++) for (let x = 0; x < 400; x++){
+      const bit = (buf[y*50 + (x>>3)] >> (7 - (x&7))) & 1;
+      const o = (y*400 + x) * 4, v = bit ? 255 : 0;
+      if (!bit) neri++;
+      img.data[o] = img.data[o+1] = img.data[o+2] = v;
+      img.data[o+3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    $('hAnte').textContent = 'letta alle ' + new Date().toLocaleTimeString()
+      + ' · ' + (neri/1200).toFixed(1) + '% di nero';
+    setMsg($('mAnte'), '', '');
+  }catch(e){
+    setMsg($('mAnte'), 'non disponibile: ' + e.message + ' (serve il firmware v22)', 'err');
+  }finally{ b.disabled = false; }
+}
+$('bAnte').onclick = leggiAnte;
+
 async function giro(){
   await caricaStato();
   await caricaNodi();
@@ -941,6 +994,7 @@ async function avvio(){
   readColors();
   await giro();
   await caricaGiorni();
+  await leggiAnte();
   timer = setInterval(giro, POLL_MS);
 }
 // Con la scheda a fare da server, una pagina lasciata aperta in secondo
