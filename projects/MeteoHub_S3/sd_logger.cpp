@@ -636,6 +636,43 @@ int sd_img_page(sd_img_cb_t cb, void* arg, int da, int quante,
   return dati;
 }
 
+bool sd_log_refresh(const char* motivo, bool completo, uint32_t ms) {
+  if (!sd_mounted()) return false;
+
+  // Un file al mese: cosi' resta leggibile e si puo' cancellare un mese
+  // vecchio senza toccare il resto.
+  char nomeFile[40];
+  time_t ora = time(nullptr);
+  struct tm tmv;
+  localtime_r(&ora, &tmv);
+  snprintf(nomeFile, sizeof(nomeFile), "/epd/%04d-%02d.csv",
+           tmv.tm_year + 1900, tmv.tm_mon + 1);
+
+  if (!SD.exists("/epd")) SD.mkdir("/epd");
+
+  const bool nuovo = !SD.exists(nomeFile);
+  File f = SD.open(nomeFile, FILE_APPEND);
+  if (!f) return false;
+
+  size_t scritti = 0;
+  if (nuovo) scritti += f.println("ts_iso,motivo,tipo,ms");
+
+  char ts[24] = "";
+  strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", &tmv);
+  scritti += f.print(ts);
+  scritti += f.print(',');
+  scritti += f.print(motivo);
+  scritti += f.print(completo ? ",completo," : ",parziale,");
+  scritti += f.println(ms);
+  f.close();
+
+  // File::write() non alza il writeError: su una card piena o sfilata la
+  // print() torna 0 e basta. Senza questo controllo il contatore salirebbe
+  // mentre il file non cresce -- e' la stessa trappola gia' corretta in
+  // sd_log_sample().
+  return scritti > 0;
+}
+
 bool sd_img_mini(const char* nome, uint8_t* out) {
   if (out == nullptr) return false;
   File f = sd_img_open(nome);

@@ -46,6 +46,9 @@ bool app_pannello_sospeso();
 // identico a quello gia' a schermo.
 uint32_t app_refresh_evitati();
 
+// Refresh totali da quando il pannello esiste (NVS), non da questo avvio.
+uint32_t app_epd_totale();
+
 // Comandi verso il pannello: si ACCODANO e li esegue il loop(). Un refresh
 // sono ~2,2 s: dentro un handler HTTP terrebbe fermo il server, l'OTA e il
 // prelievo dei DATA dei nodi dal driver ESP-NOW, che tiene solo l'ultimo.

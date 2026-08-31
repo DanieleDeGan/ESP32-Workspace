@@ -247,6 +247,25 @@ int sd_img_page(sd_img_cb_t cb, void* arg, int da, int quante,
 #define MINI_BYTES  (MINI_STRIDE * MINI_H)
 bool sd_img_mini(const char* nome, uint8_t* out);
 
+// ---------------------------------------------------------------------
+//  Registro dei refresh del pannello
+// ---------------------------------------------------------------------
+// Una riga per refresh in /epd/AAAA-MM.csv, con il motivo e quanto e'
+// costato. Serve a rispondere a domande che il contatore in RAM non puo':
+// quanti ne ho fatti questo mese, quanti erano completi, se la cadenza sta
+// peggiorando.
+//
+// PERCHE' SULLA CARD E NON IN NVS: la flash interna ha cicli di erase finiti
+// e la NVS e' anche il posto dove vivono le pagine e il registro dei nodi --
+// roba che non si puo' permettere di consumare per un contatore. La microSD
+// ha spazio (157 refresh al giorno sono ~10 kB al mese su 14,9 GB) e cicli
+// che qui non si esauriranno mai.
+//
+// Colonne: ts_iso,motivo,tipo,ms
+//   motivo  stato | valori | ghosting | pagina | silenzio
+//   tipo    completo | parziale
+bool sd_log_refresh(const char* motivo, bool completo, uint32_t ms);
+
 bool sd_img_exists(const char* nome);
 File sd_img_open(const char* nome);              // lettura, File falsy se assente
 File sd_img_open_for_write(const char* nome);    // crea /images, tronca

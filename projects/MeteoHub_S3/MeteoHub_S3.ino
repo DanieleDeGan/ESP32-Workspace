@@ -97,7 +97,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v33";
+static const char FW_VERSION[] = "v34";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -236,6 +236,23 @@ static bool nodoInRitardo(int i, const RemoteNode& n)
   if (s_ritardoDa[i] == 0) { s_ritardoDa[i] = millis(); return false; }
   return (millis() - s_ritardoDa[i]) >= RITARDO_CONFERMA_MS;
 }
+
+// Totale dei refresh da quando il pannello esiste, non da questo avvio. Vive
+// in NVS ma si scrive ogni EPD_SALVA_OGNI, mai ad ogni refresh: a 157 al
+// giorno sono ~1,5 scritture invece di 157. E' la stessa regola dei contatori
+// di sd_logger, e per lo stesso motivo -- i cicli di erase della flash sono
+// finiti, e li' dentro ci vivono anche le pagine e il registro dei nodi.
+//
+// Il prezzo e' che un riavvio brutale perde fino a EPD_SALVA_OGNI conteggi:
+// su un totale che serve a stimare l'usura, e' rumore.
+// Ogni 20 e non ogni 100: a 157 refresh al giorno sono 8 scritture NVS
+// giornaliere invece di 1,5 -- che su cicli di erase nell'ordine delle
+// centinaia di migliaia restano niente -- e in cambio un riavvio perde al
+// massimo 20 conteggi invece di 100. Il numero PRECISO sta comunque sulla
+// card: il totale in NVS serve solo a non ripartire da zero.
+static const uint32_t EPD_SALVA_OGNI = 20;
+static uint32_t s_epdTotale     = 0;
+static uint32_t s_epdDaSalvare  = 0;
 
 static uint32_t s_firmaStato    = 0;
 static uint32_t s_firmaValori   = 0;
@@ -429,6 +446,21 @@ U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
 // l'anteprima: quel cambiamento tocca il tratto tela->vetro, l'unico che
 // l'anteprima NON puo' verificare, perche' lei mostra la tela. Andrebbe
 // provato da chi il pannello lo sta guardando.
+// Registra un refresh: contatore in RAM, totale in NVS (di rado) e una riga
+// sulla card. Sta in un punto solo, cosi' non si puo' aggiungere una pagina
+// nuova e dimenticare di contarla.
+static void contaRefresh(const char* motivo, bool completo, uint32_t ms)
+{
+  s_epdRefresh++;
+  s_epdTotale++;
+  if (++s_epdDaSalvare >= EPD_SALVA_OGNI) {
+    s_epdDaSalvare = 0;
+    Preferences p;
+    if (p.begin("hubepd", false)) { p.putULong("tot", s_epdTotale); p.end(); }
+  }
+  sd_log_refresh(motivo, completo, ms);
+}
+
 static void telaSulPannello(bool full, int16_t x = 0, int16_t y = 0,
                             int16_t w = IMG_W, int16_t h = IMG_H)
 {
@@ -1228,6 +1260,7 @@ size_t         app_tela_bytes()  { return IMG_BYTES; }
 // modo di distinguerle sarebbe guardare l'ora e fidarsi.
 bool app_pannello_sospeso()        { return s_inSilenzio; }
 uint32_t app_refresh_evitati()     { return s_nodiInvariati; }
+uint32_t app_epd_totale()          { return s_epdTotale; }
 
 void app_chiedi_refresh()          { s_refreshChiesto = true; }
 void app_chiedi_pagina(uint8_t i)  { s_paginaChiesta  = (int16_t)i; }
@@ -1991,7 +2024,7 @@ static void showPage(uint8_t i)
   }
 
   pannello.hibernate();
-  s_epdRefresh++;
+  contaRefresh("pagina", true, millis() - t0);
   s_epdUltimoMs   = millis() - t0;
   s_fullUltimoMs  = millis();   // il cambio pagina e' sempre un completo
   pages_disegnata(millis());
@@ -2041,6 +2074,12 @@ void setup()
   // 50 ms di reset e' quello che usa l'esempio ufficiale WeAct (il default di
   // GxEPD2 e' 10 ms). Se il pannello sembrasse morto, e' il primo numero da
   // toccare.
+  {
+    Preferences p;
+    if (p.begin("hubepd", true)) { s_epdTotale = p.getULong("tot", 0); p.end(); }
+    Serial.printf("[epd] refresh totali finora: %lu\n", (unsigned long)s_epdTotale);
+  }
+
   pannello.init(115200, true, 50, false);
   pannello.setRotation(0);          // 0 = 400x300 nativo, come il formato .bin
 
@@ -2387,7 +2426,8 @@ void loop()
     s_nodiDirty    = false;
     s_nodiUltimoMs = millis();
       if (full) s_fullUltimoMs = millis();
-    s_epdRefresh++;
+    contaRefresh(statoCambia ? "stato" : (perValori ? "valori" : "ghosting"),
+                 full, millis() - t0);
     s_epdUltimoMs  = millis() - t0;
     Serial.printf("[epd] nodi %s (%s): %lu ms\n",
                   full ? "COMPLETO" : "parziale",

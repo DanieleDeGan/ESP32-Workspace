@@ -633,6 +633,7 @@ static void handleApiStato() {
   j += "\"epd_ultimo_ms\":"    + String(app_epd_ultimo_ms())  + ",";
   j += "\"epd_orologio_ms\":"  + String(app_epd_orologio_ms()) + ",";
   j += "\"refresh_evitati\":" + String(app_refresh_evitati()) + ",";
+  j += "\"epd_totale\":"      + String(app_epd_totale()) + ",";
   j += "\"invii_interrotti\":" + String(s_invii_interrotti)   + ",";
   j += "\"reset_reason\":\"" + String(app_reset_reason())    + "\",";
   j += "\"boot_count\":"      + String(app_boot_count())      + ",";
@@ -780,6 +781,37 @@ static void handleApiImmaginiElimina() {
   // peggio — l'utente potrebbe ricaricare lo stesso nome fra un minuto, e
   // si ritroverebbe la pagina sparita senza averlo chiesto.
   srv.send(ok ? 200 : 404, "text/plain", ok ? "ok" : "non trovata");
+}
+
+// GET /api/epd/registro?m=AAAA-MM — il registro dei refresh del pannello
+//
+// Senza questa rotta il registro sarebbe un file scritto e mai letto: la card
+// si legge solo smontandola, ed e' esattamente il modo in cui un contatore
+// diventa inutile. Con m si sceglie il mese; senza, quello corrente.
+static void handleApiEpdRegistro() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+
+  char nomeFile[40];
+  if (srv.hasArg("m")) {
+    const String m = srv.arg("m");
+    // Il nome non arriva mai dalla rete come pezzo di path: si accetta solo
+    // AAAA-MM e lo si ricompone qui. Stessa regola dei nomi delle immagini.
+    if (m.length() != 7 || m[4] != '-') { srv.send(400, "text/plain", "mese non valido"); return; }
+    for (size_t i = 0; i < m.length(); i++)
+      if (i != 4 && !isdigit((unsigned char)m[i])) { srv.send(400, "text/plain", "mese non valido"); return; }
+    snprintf(nomeFile, sizeof(nomeFile), "/epd/%s.csv", m.c_str());
+  } else {
+    time_t ora = time(nullptr);
+    struct tm tmv;
+    localtime_r(&ora, &tmv);
+    snprintf(nomeFile, sizeof(nomeFile), "/epd/%04d-%02d.csv", tmv.tm_year + 1900, tmv.tm_mon + 1);
+  }
+
+  File f = SD.open(nomeFile, FILE_READ);
+  if (!f) { srv.send(404, "text/plain", "nessun registro per quel mese"); return; }
+  streamFileLimitato(srv, f, "text/csv; charset=utf-8");
+  f.close();
 }
 
 // GET /api/immagini/mini?nome=xxx — 600 byte invece di 15.000
@@ -2009,6 +2041,7 @@ static const Rotta ROTTE[] = {
   { HTTP_POST, "/api/messaggio/cancella",handleApiMessaggioCancella, "toglie il messaggio dal pannello", "" },
 
   { HTTP_GET,  "/api/immagini",         handleApiImmagini,           "le immagini sulla card, a pagine, col totale filtrato", "da=0&quante=12&cerca=TESTO" },
+  { HTTP_GET,  "/api/epd/registro",     handleApiEpdRegistro,        "il registro dei refresh del pannello, un file al mese", "m=AAAA-MM" },
   { HTTP_GET,  "/api/immagini/mini",    handleApiImmaginiMini,       "la miniatura 80x60 di un'immagine (600 byte)", "nome=NOME" },
   { HTTP_POST, "/api/immagini",         nullptr,                     "carica un'immagine da 15.000 byte esatti (multipart, campo 'img')", "nome=NOME" },
   { HTTP_POST, "/api/immagini/elimina", handleApiImmaginiElimina,    "elimina un'immagine dalla card", "nome=NOME" },
