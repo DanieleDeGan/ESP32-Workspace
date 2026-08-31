@@ -97,7 +97,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v35";
+static const char FW_VERSION[] = "v36";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -540,10 +540,7 @@ static uint8_t bootEvent()
 // nuovo, completo all'ingresso nella pagina e ogni NODI_FULL_OGNI parziali,
 // altrimenti il ghosting si accumula.
 
-static const int16_t NODI_TOP       = 38;   // sotto l'intestazione
-// I 4 px in piu' rispetto a v22 sono per la barra nera del primo nodo, che
-// senza respiro si appiccicava alla doppia linea dell'intestazione e le due
-// sembravano un unico blocco.
+static const int16_t NODI_TOP       = 2;    // da v36 non c'e' piu' intestazione
 static const int16_t NODI_BOT       = 266;  // sopra il piede
 
 // Con la fascia del messaggio accesa il corpo si ferma piu' in alto e i nodi
@@ -830,38 +827,38 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
   if (isfinite(n.value[0])) {
     // Allineata al centro del numero, non alla sua base: un'icona appoggiata
     // sulla riga di scrittura sembra caduta.
-    tela.drawBitmap(10, y + 34, IC_TERMOMETRO, IC_TERMOMETRO_W, IC_TERMOMETRO_H,
+    tela.drawBitmap(10, y + 44, IC_TERMOMETRO, IC_TERMOMETRO_W, IC_TERMOMETRO_H,
                     GxEPD_BLACK);
     tela.setFont(&FreeSansBold24pt7b);
-    tela.setCursor(36, y + 62);
+    tela.setCursor(36, y + 72);
     tela.print(fmtNum(n.value[0], 1));
     int16_t bx, by; uint16_t bw, bh;
-    tela.getTextBounds(fmtNum(n.value[0], 1), 36, y + 62, &bx, &by, &bw, &bh);
+    tela.getTextBounds(fmtNum(n.value[0], 1), 36, y + 72, &bx, &by, &bw, &bh);
     const int16_t xu = 36 + (int16_t)bw + 7;
-    drawGrado(xu + 3, y + 38, 4);
+    drawGrado(xu + 3, y + 48, 4);
     tela.setFont(&FreeSansBold12pt7b);
-    tela.setCursor(xu + 10, y + 62);
+    tela.setCursor(xu + 10, y + 72);
     tela.print("C");
   }
 
   tela.setFont(&FreeSansBold12pt7b);
   if (isfinite(n.value[1])) {
-    tela.drawBitmap(184, y + 36, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
-    tela.setCursor(210, y + 53);
+    tela.drawBitmap(184, y + 46, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
+    tela.setCursor(210, y + 63);
     tela.print(fmtNum(n.value[1], 0) + "%");
   }
   if (isfinite(n.value[2])) {
     tela.setFont(&FreeSansBold12pt7b);
-    drawRight(fmtNum(n.value[2], 1), W - 46, y + 53);
+    drawRight(fmtNum(n.value[2], 1), W - 46, y + 63);
     tela.setFont(&FreeSans9pt7b);
-    tela.setCursor(W - 42, y + 53);
+    tela.setCursor(W - 42, y + 63);
     tela.print("hPa");
   }
 
   // --- riga del trend barometrico: l'unica freccia della pagina ------------
-  drawFrecciaTrend(26, y + 82, n.trend);
+  drawFrecciaTrend(26, y + 104, n.trend);
   tela.setFont(&FreeSans9pt7b);
-  tela.setCursor(44, y + 88);
+  tela.setCursor(44, y + 110);
   tela.print(n.trend == TREND_IGNOTO ? "raccolgo dati" : remote_trend_label(n.trend));
 }
 
@@ -924,16 +921,6 @@ static void drawNodoCompatto(const RemoteNode& n, int16_t y, int indice)
 // orologio fermo che si spaccia per corrente e' peggio di nessun orologio:
 // e' la stessa ragione per cui i nodi mostrano l'ora del loro ultimo
 // pacchetto invece di "38 s fa".
-static void drawOra()
-{
-  char buf[8] = "";
-  if (!rtctime_format(rtctime_now(), "%H:%M", buf, sizeof(buf))) return;
-  tela.setFont(&FreeSans9pt7b);
-  tela.setTextColor(GxEPD_BLACK);
-  drawRight(String("agg. ") + (rtctime_isSynced() ? "" : "~") + buf,
-            tela.width() - 12, 23);
-}
-
 static void screenNodi(bool full)
 {
   const int16_t W = tela.width();
@@ -943,16 +930,11 @@ static void screenNodi(bool full)
     tela.fillScreen(GxEPD_WHITE);
     tela.setTextColor(GxEPD_BLACK);
 
-    // --- intestazione ---
-    tela.setFont(&FreeSansBold12pt7b);
-    tela.setCursor(12, 23);
-    tela.print("STAZIONE METEO");
-
-    // La tilde dentro drawOra() dice che l'ora e' la stima da build-time e non
-    // NTP: senza, un orario preciso e sbagliato sembrerebbe vero.
-    drawOra();
-    tela.drawFastHLine(0, 32, W, GxEPD_BLACK);
-    tela.drawFastHLine(0, 33, W, GxEPD_BLACK);
+    // Niente intestazione (da v36). "STAZIONE METEO" occupava 38 px su 300 --
+    // il 13% della pagina -- per dire una cosa che non cambia mai e che chi
+    // guarda il pannello sa gia'. L'ora dell'ultimo aggiornamento e' scesa nel
+    // piede, dove c'era spazio avanzato. Quei 38 px vanno ai nodi, che sono il
+    // motivo per cui la pagina esiste.
 
     // --- la fascia si prende il suo spazio PRIMA che i nodi si dividano il
     //     resto: e' l'unica cosa che cambia il layout, e deve deciderla una
@@ -1069,8 +1051,30 @@ static void screenNodi(bool full)
     if (n > NODI_VISIBILI)    piede += String(" (+") + (n - NODI_VISIBILI) + " non mostrati)";
     if (net_isConnected())    piede += "   " + WiFi.localIP().toString();
     else                      piede += "   WiFi assente";
+    // L'ora in coda alla riga di SINISTRA e non allineata a destra: li' ci
+    // sono gia' lo spazio della card e gli avvisi, e due testi che finiscono
+    // nello stesso punto si sovrappongono -- successo in v36, dove si leggeva
+    // "SD ad9009ME".
+    //
+    // E si MISURA prima di scriverla: anche da sinistra, una riga troppo lunga
+    // arriva a toccare quella di destra. Se non ci sta, l'ora salta -- e' la
+    // voce meno importante delle tre, e la stessa regola della riga di
+    // riepilogo dei nodi: si sacrifica l'ornamento, mai il dato.
+    {
+      char ora[8] = "";
+      if (rtctime_format(rtctime_now(), "%H:%M", ora, sizeof(ora))) {
+        const String conOra = piede + "   agg. " +
+                              (rtctime_isSynced() ? "" : "~") + ora;
+        int16_t bx, by; uint16_t bw, bh;
+        tela.getTextBounds(conOra, 0, 0, &bx, &by, &bw, &bh);
+        // 96 px sono lo spazio che serve a "SD 14,9 GB" e agli avvisi.
+        if (12 + (int16_t)bw < W - 96) piede = conOra;
+      }
+    }
     tela.setCursor(12, 288);
     tela.print(piede);
+
+
 
     // A destra: cio' che sta succedendo adesso, in ordine di urgenza.
     if (remote_pairing_active()) {
@@ -1093,9 +1097,12 @@ static void screenNodi(bool full)
       tela.setTextColor(GxEPD_BLACK);
     }
     else {
-      char buf[24];
-      snprintf(buf, sizeof(buf), "SD %lu MB", (unsigned long)sd_free_mb());
-      drawRight(buf, W - 12, 288);
+      // In GB e non in MB: "14,9 GB" si legge meglio di "14900 MB" e occupa
+      // meno, che in questo piede e' diventato il vincolo.
+      // fmtNum() e non snprintf: mette la VIRGOLA decimale come tutto il
+      // resto della pagina. Con "%.1f" usciva "14.6 GB" accanto a "27,4 C",
+      // due convenzioni diverse a tre centimetri di distanza.
+      drawRight("SD " + fmtNum(sd_free_mb() / 1024.0f, 1) + " GB", W - 12, 288);
     }
   }
   telaSulPannello(full);
