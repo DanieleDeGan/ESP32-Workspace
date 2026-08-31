@@ -212,6 +212,41 @@ bool sd_img_name_safe(const char* nome, char* out, size_t outCap);
 typedef void (*sd_img_cb_t)(const char* nome, size_t bytes, void* arg);
 int sd_img_list(sd_img_cb_t cb, void* arg, int maxItems);
 
+// Elenco A PAGINE, con il filtro sul nome. Serve perche' la card ne tiene
+// quante ne vuole (15.000 byte l'una su 14,9 GB) mentre la pagina web ne puo'
+// mostrare una dozzina: senza paginazione l'unico modo di limitare il costo
+// era il tetto di maxItems, che oltre a essere arbitrario era MUTO -- la
+// trentatreesima immagine non compariva e nessuno lo diceva.
+//
+//   da      quante saltarne (0 = dall'inizio)
+//   quante  quante consegnarne al massimo
+//   cerca   se non vuoto, tiene solo i nomi che lo contengono (senza
+//           distinguere maiuscole e minuscole)
+//   totale  se non nullptr, riceve quante ne esistono DOPO il filtro: e' il
+//           numero che permette alla pagina di dire "12 di 87" invece di
+//           lasciare l'utente a indovinare se ce ne sono altre
+//
+// Torna quante ne ha consegnate.
+int sd_img_page(sd_img_cb_t cb, void* arg, int da, int quante,
+                const char* cerca, int* totale);
+
+// La miniatura di un'immagine: 80x60 a 1 bit, 10 byte per riga, 600 byte
+// esatti. E' l'immagine da 400x300 sottocampionata a blocchi di 5x5, con il
+// blocco che diventa nero se lo sono almeno 13 dei suoi 25 pixel.
+//
+// Esiste per la banda, non per la grafica: un'anteprima piena sono 15.000
+// byte, e una pagina con dodici anteprime ne sarebbe 180.000 su un web server
+// SINCRONO -- cioe' altrettanti byte durante i quali l'hub non preleva i DATA
+// dei nodi. Cosi' sono 7.200.
+//
+// out dev'essere grande almeno MINI_BYTES. Torna false se l'immagine non c'e'
+// o non e' lunga 15.000 byte.
+#define MINI_W      80
+#define MINI_H      60
+#define MINI_STRIDE (MINI_W / 8)
+#define MINI_BYTES  (MINI_STRIDE * MINI_H)
+bool sd_img_mini(const char* nome, uint8_t* out);
+
 bool sd_img_exists(const char* nome);
 File sd_img_open(const char* nome);              // lettura, File falsy se assente
 File sd_img_open_for_write(const char* nome);    // crea /images, tronca

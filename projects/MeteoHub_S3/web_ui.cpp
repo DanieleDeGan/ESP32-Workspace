@@ -667,13 +667,28 @@ static void imgListCb(const char* nome, size_t bytes, void* arg) {
 static void handleApiImmagini() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
 
+  WebServer& srv = net_server();
+  const int  da     = srv.hasArg("da")     ? srv.arg("da").toInt()     : 0;
+  int        quante = srv.hasArg("quante") ? srv.arg("quante").toInt() : 12;
+  const String cerca = srv.hasArg("cerca") ? srv.arg("cerca") : String("");
+
+  // Un tetto c'e' comunque, ma ora e' dichiarato e la pagina sa quante ne
+  // restano: il vecchio 32 fisso faceva sparire la trentatreesima immagine
+  // senza dirlo a nessuno.
+  if (quante < 1)  quante = 1;
+  if (quante > 48) quante = 48;
+
+  int totale = 0;
   String j = "{\"sd\":";
   j += sd_mounted() ? "true" : "false";
   j += ",\"byte_attesi\":"; j += (unsigned long)IMG_BYTES_ESATTI;
+  j += ",\"da\":";     j += da;
+  j += ",\"quante\":"; j += quante;
   j += ",\"immagini\":[";
-  sd_img_list(imgListCb, &j, 32);
-  j += "]}";
-  net_server().send(200, "application/json", j);
+  sd_img_page(imgListCb, &j, da, quante, cerca.c_str(), &totale);
+  j += "],\"totale\":"; j += totale;
+  j += "}";
+  srv.send(200, "application/json", j);
 }
 
 // POST /api/immagini?nome=xxx  (multipart, campo "img")
@@ -764,6 +779,32 @@ static void handleApiImmaginiElimina() {
   // peggio — l'utente potrebbe ricaricare lo stesso nome fra un minuto, e
   // si ritroverebbe la pagina sparita senza averlo chiesto.
   srv.send(ok ? 200 : 404, "text/plain", ok ? "ok" : "non trovata");
+}
+
+// GET /api/immagini/mini?nome=xxx — 600 byte invece di 15.000
+//
+// La stessa immagine sottocampionata 5x. Serve per la galleria: dodici
+// anteprime piene sono 180 kB su un web server SINCRONO, cioe' altrettanto
+// tempo in cui l'hub non preleva i DATA dei nodi dal driver ESP-NOW, che
+// tiene solo l'ultimo. Con le miniature sono 7,2 kB.
+//
+// Si calcola ad ogni richiesta invece di tenerla sulla card: sono pochi ms di
+// lettura, e una miniatura salvata sarebbe un secondo file da creare,
+// cancellare e tenere allineato all'originale -- tre modi in piu' di andare
+// fuori sincrono per risparmiare una cosa che non costa.
+static void handleApiImmaginiMini() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+  if (!srv.hasArg("nome")) { srv.send(400, "text/plain", "manca nome"); return; }
+
+  uint8_t mini[MINI_BYTES];
+  if (!sd_img_mini(srv.arg("nome").c_str(), mini)) {
+    srv.send(404, "text/plain", "non trovata o non valida");
+    return;
+  }
+  srv.setContentLength(MINI_BYTES);
+  srv.send(200, "application/octet-stream", "");
+  srv.sendContent((const char*)mini, MINI_BYTES);
 }
 
 // GET /api/pannello/anteprima — quello che il pannello sta mostrando.
@@ -1096,11 +1137,19 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  <div class="arch" id="arch"></div>
 </div>
 
-<h2>Sulla card, non in elenco <span class="conta" id="contaCard"></span></h2>
+<h2>Immagini sulla card <span class="conta" id="contaCard"></span></h2>
+<div class="card">
+ <div class="riga">
+  <input type="search" id="cerca" placeholder="cerca per nome&hellip;"
+         autocomplete="off" style="flex:1">
+  <button class="sec" id="cprev" title="pagina precedente">&larr;</button>
+  <button class="sec" id="cnext" title="pagina successiva">&rarr;</button>
+ </div>
+ <p class="muted" id="cardNota" style="margin:.2rem 0 0">&mdash;</p>
+</div>
 <div class="gal" id="limg"></div>
 <div class="card" id="cardVuota" style="display:none">
- <p class="muted" style="margin:0">Tutte le immagini della card sono gi&agrave; fra le
- pagine qui sopra.</p>
+ <p class="muted" style="margin:0">Nessuna immagine con questo nome.</p>
 </div>
 
 <h2>Altre pagine</h2>
@@ -1175,12 +1224,14 @@ function postJson(u,esito){
 // bianco. Una funzione sola per le anteprime delle immagini E per quella del
 // pannello, perche' e' lo stesso formato -- due copie divergerebbero, ed e'
 // la stessa regola per cui a bordo l'ora la disegna una funzione sola.
-function dipingi15k(cv,by){
- const ctx=cv.getContext('2d'),img=ctx.createImageData(400,300);
- for(let y=0;y<300;y++)for(let x=0;x<400;x++){
-  const bit=(by[y*50+(x>>3)]>>(7-(x&7)))&1,o=(y*400+x)*4,v=bit?255:0;
+function dipingiBit(cv,by,w,h){
+ const stride=w>>3, ctx=cv.getContext('2d'), img=ctx.createImageData(w,h);
+ for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+  const bit=(by[y*stride+(x>>3)]>>(7-(x&7)))&1,o=(y*w+x)*4,v=bit?255:0;
   img.data[o]=img.data[o+1]=img.data[o+2]=v;img.data[o+3]=255;}
+ cv.width=w; cv.height=h;
  ctx.putImageData(img,0,0);}
+function dipingi15k(cv,by){ dipingiBit(cv,by,400,300); }
 
 // L'anteprima di cio' che il pannello mostra ADESSO. Non si aggiorna da sola
 // col resto della pagina (ogni 15 s): sono 15 kB su un server sincrono, e
@@ -1203,14 +1254,34 @@ function leggiAnte(){
 // I 15.000 byte di ogni immagine si scaricano UNA volta sola: la stessa
 // figura puo' stare in piu' slot, e la pagina si ridisegna ogni 15 secondi.
 const BIN={};
+// Miniatura, non immagine piena: 600 byte contro 15.000. Con una dozzina di
+// riquadri la differenza e' fra 7 kB e 180 kB chiesti a un server SINCRONO --
+// cioe' fra un'attesa impercettibile e un pezzo di minuto in cui l'hub non
+// preleva i DATA dei nodi.
 function anteprima(box,nome){
- const cv=document.createElement('canvas'); cv.width=400; cv.height=300;
+ const cv=document.createElement('canvas'); cv.width=80; cv.height=60;
  box.appendChild(cv);
- if(BIN[nome]){dipingi15k(cv,BIN[nome]);return;}
- fetch('/api/immagini/scarica?nome='+encodeURIComponent(nome))
+ if(BIN[nome]){dipingiBit(cv,BIN[nome],80,60);return;}
+ fetch('/api/immagini/mini?nome='+encodeURIComponent(nome),{cache:'no-store'})
   .then(r=>r.ok?r.arrayBuffer():Promise.reject())
-  .then(b=>{BIN[nome]=new Uint8Array(b);dipingi15k(cv,BIN[nome]);})
+  .then(b=>{BIN[nome]=new Uint8Array(b);dipingiBit(cv,BIN[nome],80,60);})
   .catch(()=>{box.className='mini gen';box.innerHTML='&#9888;';});
+}
+
+// Si scaricano solo le miniature che entrano davvero nello schermo: con
+// cinquanta immagini, quelle sotto il bordo non costano niente finche' non le
+// si va a cercare. Senza observer si torna al comportamento di prima, che e'
+// corretto e solo piu' avido.
+const VISTA = ('IntersectionObserver' in window)
+ ? new IntersectionObserver((voci,obs)=>{voci.forEach(v=>{
+     if(!v.isIntersecting) return;
+     obs.unobserve(v.target);
+     anteprima(v.target, v.target.dataset.mini);
+   });},{rootMargin:'200px'})
+ : null;
+function anteprimaPigra(box,nome){
+ box.dataset.mini=nome;
+ if(VISTA) VISTA.observe(box); else anteprima(box,nome);
 }
 
 const GLIFO={nodi:'&#9925;',messaggio:'&#9993;',bianca:'&#9634;',grafico:'&#128200;'};
@@ -1297,26 +1368,38 @@ function render(d){
  disegnaCard();
 }
 
-// Le immagini della card che NON sono gia' una pagina. Un'immagine in uso sta
-// in un posto solo — l'elenco — con la sua anteprima e i suoi comandi accanto.
+// La galleria mostra TUTTE le immagini della pagina corrente, comprese quelle
+// gia' in elenco: nasconderle come si faceva prima faceva ballare i conti
+// ("12 di 87" e poi nove riquadri), e con molte immagini un conteggio che non
+// torna e' peggio di una riga in piu'. Quelle in uso si marcano e il loro
+// pulsante si spegne.
 function disegnaCard(){
  const box=E('limg'); if(!box) return;
  const inUso={};
  if(ULTIMO) ULTIMO.pagine.forEach(p=>{if(p.tipo=='immagine'&&p.param)inUso[p.param]=1;});
- const fuori=SULLACARD.filter(im=>!inUso[im.nome]);
 
  box.innerHTML='';
- E('contaCard').textContent = SULLACARD.length? ('\u2014 '+fuori.length+' di '+SULLACARD.length):'';
- E('cardVuota').style.display = (SULLACARD.length&&!fuori.length)?'block':'none';
+ const fine=CARD_DA+SULLACARD.length;
+ E('contaCard').textContent = CARD_TOT
+   ? ('\u2014 '+(CARD_DA+1)+'-'+fine+' di '+CARD_TOT) : '';
+ E('cardNota').textContent = CARD_TOT
+   ? (CARD_CERCA ? ('filtrate per "'+CARD_CERCA+'"') : 'in ordine di come stanno sulla card')
+   : (CARD_CERCA ? '' : 'nessuna immagine sulla card');
+ E('cardVuota').style.display = (CARD_TOT===0 && CARD_CERCA)?'block':'none';
+ E('cprev').disabled = (CARD_DA<=0);
+ E('cnext').disabled = (fine>=CARD_TOT);
 
- fuori.forEach(im=>{
+ SULLACARD.forEach(im=>{
+  const usata=!!inUso[im.nome];
   const el=document.createElement('div'); el.className='im';
-  el.innerHTML='<div class="mini" style="width:100%" data-mini="'+esc(im.nome)+'"></div>'+
-   '<div class="nm"><b>'+esc(im.nome)+'</b><span>'+(im.ok?'ok':im.byte+' byte, non valida')+'</span></div>'+
-   '<div class="azioni"><button class="sec" data-add="'+esc(im.nome)+'">Mettila fra le pagine</button>'+
+  el.innerHTML='<div class="mini" style="width:100%"></div>'+
+   '<div class="nm"><b>'+esc(im.nome)+'</b><span>'+
+   (im.ok?(usata?'gi&agrave; fra le pagine':'ok'):im.byte+' byte, non valida')+'</span></div>'+
+   '<div class="azioni"><button class="sec" data-add="'+esc(im.nome)+'"'+
+   (usata?' disabled':'')+'>Mettila fra le pagine</button>'+
    '<button class="dan" data-del="'+esc(im.nome)+'">Elimina</button></div>';
   box.appendChild(el);
-  if(im.ok) anteprima(el.querySelector('[data-mini]'),im.nome);
+  if(im.ok) anteprimaPigra(el.querySelector('.mini'),im.nome);
  });
 
  box.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>
@@ -1343,12 +1426,32 @@ function carica(){
  });
 }
 
+var CARD_DA=0, CARD_TOT=0, CARD_CERCA='';
+const CARD_PER_PAGINA=12;
+
 function caricaImmagini(){
- fetch('/api/immagini').then(r=>r.json()).then(d=>{
+ const q='/api/immagini?da='+CARD_DA+'&quante='+CARD_PER_PAGINA+
+         (CARD_CERCA?('&cerca='+encodeURIComponent(CARD_CERCA)):'');
+ fetch(q,{cache:'no-store'}).then(r=>r.json()).then(d=>{
   SULLACARD = (d.sd && d.immagini) ? d.immagini : [];
+  CARD_TOT  = d.totale||0;
+  // Se si cancella l'ultima immagine di una pagina, quella pagina non esiste
+  // piu': senza questo si resterebbe a guardare un elenco vuoto con il
+  // contatore che dice che ce ne sono.
+  if(CARD_DA>0 && !SULLACARD.length){ CARD_DA=Math.max(0,CARD_DA-CARD_PER_PAGINA); caricaImmagini(); return; }
   disegnaCard();
  });
 }
+
+// La ricerca aspetta che si smetta di digitare: ogni battuta e' una scansione
+// della directory sulla card, e il server e' sincrono.
+var cercaTimer=null;
+E('cerca').addEventListener('input',()=>{
+ clearTimeout(cercaTimer);
+ cercaTimer=setTimeout(()=>{CARD_CERCA=E('cerca').value.trim();CARD_DA=0;caricaImmagini();},350);
+});
+E('cprev').onclick=()=>{ if(CARD_DA>0){CARD_DA-=CARD_PER_PAGINA;caricaImmagini();} };
+E('cnext').onclick=()=>{ if(CARD_DA+CARD_PER_PAGINA<CARD_TOT){CARD_DA+=CARD_PER_PAGINA;caricaImmagini();} };
 
 // Rotazione e ore di silenzio si salvano al tocco, come tutto il resto della
 // pagina. Prima stavano dietro un pulsante "Salva", e non era solo
@@ -1798,7 +1901,8 @@ static const Rotta ROTTE[] = {
   { HTTP_POST, "/api/messaggio",        handleApiMessaggioSet,       "scrive il messaggio sul pannello (form-urlencoded)", "t=testo, min=minuti, urg=0|1" },
   { HTTP_POST, "/api/messaggio/cancella",handleApiMessaggioCancella, "toglie il messaggio dal pannello", "" },
 
-  { HTTP_GET,  "/api/immagini",         handleApiImmagini,           "le immagini sulla card e se sono valide", "" },
+  { HTTP_GET,  "/api/immagini",         handleApiImmagini,           "le immagini sulla card, a pagine, col totale filtrato", "da=0&quante=12&cerca=TESTO" },
+  { HTTP_GET,  "/api/immagini/mini",    handleApiImmaginiMini,       "la miniatura 80x60 di un'immagine (600 byte)", "nome=NOME" },
   { HTTP_POST, "/api/immagini",         nullptr,                     "carica un'immagine da 15.000 byte esatti (multipart, campo 'img')", "nome=NOME" },
   { HTTP_POST, "/api/immagini/elimina", handleApiImmaginiElimina,    "elimina un'immagine dalla card", "nome=NOME" },
   { HTTP_GET,  "/api/immagini/scarica", handleApiImmaginiScarica,    "i 15.000 byte di un'immagine (per l'anteprima)", "nome=NOME" },

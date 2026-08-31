@@ -586,6 +586,90 @@ static bool imgPath(const char* nome, char* out, size_t outCap) {
   return true;
 }
 
+// Confronto senza distinguere maiuscole e minuscole: chi cerca "gig" deve
+// trovare "GigiFeligi", o la ricerca sembra rotta.
+static bool nomeContiene(const char* nome, const char* cerca) {
+  if (cerca == nullptr || *cerca == 0) return true;
+  const size_t ln = strlen(nome), lc = strlen(cerca);
+  if (lc > ln) return false;
+  for (size_t i = 0; i + lc <= ln; i++) {
+    size_t k = 0;
+    while (k < lc && tolower((unsigned char)nome[i + k]) == tolower((unsigned char)cerca[k])) k++;
+    if (k == lc) return true;
+  }
+  return false;
+}
+
+int sd_img_page(sd_img_cb_t cb, void* arg, int da, int quante,
+                const char* cerca, int* totale) {
+  if (totale) *totale = 0;
+  if (cb == nullptr || !sd_mounted()) return 0;
+
+  File dir = SD.open(IMG_DIR);
+  if (!dir || !dir.isDirectory()) { if (dir) dir.close(); return 0; }
+
+  int visti = 0, dati = 0;
+  for (;;) {
+    File f = dir.openNextFile();
+    if (!f) break;
+    if (!f.isDirectory()) {
+      const char* base = strrchr(f.name(), '/');
+      String nome = base ? String(base + 1) : String(f.name());
+      if (nome.endsWith(".bin")) {
+        nome.remove(nome.length() - 4);
+        if (nomeContiene(nome.c_str(), cerca)) {
+          // Si continua a scorrere anche dopo aver riempito la pagina: il
+          // totale serve tutto, ed e' l'unico modo di dire "12 di 87" invece
+          // di fermarsi a un numero che non vuol dire niente.
+          if (visti >= da && dati < quante) {
+            cb(nome.c_str(), (size_t)f.size(), arg);
+            dati++;
+          }
+          visti++;
+        }
+      }
+    }
+    f.close();
+  }
+  dir.close();
+  if (totale) *totale = visti;
+  return dati;
+}
+
+bool sd_img_mini(const char* nome, uint8_t* out) {
+  if (out == nullptr) return false;
+  File f = sd_img_open(nome);
+  if (!f) return false;
+  if (f.size() != (size_t)((IMG_W_PX / 8) * IMG_H_PX)) { f.close(); return false; }
+
+  memset(out, 0, MINI_BYTES);
+
+  // Si legge una BANDA di 5 righe per volta (250 byte) invece di tutta
+  // l'immagine: 15 kB in RAM ci starebbero, ma non c'e' motivo di prenderli
+  // per un lavoro che scorre in avanti e non torna mai indietro.
+  uint8_t banda[5 * (IMG_W_PX / 8)];
+  for (int my = 0; my < MINI_H; my++) {
+    if (f.read(banda, sizeof(banda)) != (int)sizeof(banda)) { f.close(); return false; }
+    for (int mx = 0; mx < MINI_W; mx++) {
+      int neri = 0;
+      for (int dy = 0; dy < 5; dy++) {
+        const uint8_t* riga = banda + dy * (IMG_W_PX / 8);
+        for (int dx = 0; dx < 5; dx++) {
+          const int px = mx * 5 + dx;
+          // bit 1 = bianco, come in tutta la catena: il nero e' lo zero.
+          if (((riga[px >> 3] >> (7 - (px & 7))) & 1) == 0) neri++;
+        }
+      }
+      // Maggioranza dei 25: sotto soglia il blocco resta bianco. Con il
+      // minimo (>=1 nero) una foto ditherata diventerebbe una macchia nera,
+      // perche' in un dithering il nero e' sparso ovunque.
+      if (neri < 13) out[my * MINI_STRIDE + (mx >> 3)] |= (uint8_t)(0x80 >> (mx & 7));
+    }
+  }
+  f.close();
+  return true;
+}
+
 int sd_img_list(sd_img_cb_t cb, void* arg, int maxItems) {
   if (cb == nullptr || !sd_mounted()) return 0;
 
