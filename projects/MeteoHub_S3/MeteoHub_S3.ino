@@ -97,7 +97,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v29";
+static const char FW_VERSION[] = "v31";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -149,7 +149,7 @@ static uint32_t s_scartatiOra = 0;   // arrivati prima del primo sync NTP
 static uint32_t s_scrittureKo = 0;   // card piena, assente o in errore
 static uint32_t s_epdRefresh   = 0;
 static uint32_t s_epdUltimoMs  = 0;
-static uint32_t s_epdOrologioMs = 0;   // quanto costa il refresh del solo orologio
+static uint32_t s_epdOrologioMs = 0;   // da v30 resta a zero: l'orologio non c'e' piu'
 
 const char* app_fw_version()    { return FW_VERSION; }
 const char* app_hub_nome()      { return HUB_NOME; }
@@ -206,12 +206,18 @@ static bool     s_nodiDirty     = false;
 // Ore di silenzio: dentro la fascia il pannello non si tocca. s_pagPrimaSil
 // serve a rimettere le cose come stavano all'uscita, s_pagSilScelta a sapere
 // SU QUALE pagina si e' finiti (con il sorteggio non e' quella configurata).
+// Firma dell'ultima pagina disegnata, e quante volte si e' evitato di
+// ridisegnare perche' non era cambiato niente. Il contatore serve a saperlo
+// da remoto: senza, "il pannello non si aggiorna" e "non c'e' niente da
+// aggiornare" sarebbero indistinguibili.
+static uint32_t s_firmaNodi     = 0;
+static uint32_t s_nodiInvariati = 0;
+
 static bool     s_inSilenzio    = false;
 static uint8_t  s_pagPrimaSil   = 0;
 static uint8_t  s_pagSilScelta  = PAG_SIL_NESSUNA;
 static uint32_t s_nodiUltimoMs  = 0;
 static uint8_t  s_nodiParziali  = 0;
-static uint32_t s_oraUltimoMs   = 0;   // ultimo refresh del solo orologio
 static uint32_t s_fullUltimoMs  = 0;   // ultimo refresh COMPLETO, per l'alone
 
 // Un dato nuovo si aspetta almeno questo prima di finire sul pannello. Con i
@@ -229,7 +235,6 @@ static const uint32_t NODI_MAX_MS = 300000UL;
 // L'orologio in alto a destra si aggiorna da solo ogni minuto. Costa poco
 // perche' NON ridisegna la pagina: la finestra parziale copre solo il suo
 // rettangolo, poche decine di righe invece di trecento.
-static const uint32_t ORA_MS = 60000UL;
 
 // ...ma un rettangolo riscritto sessanta volte l'ora si sporca, mentre il resto
 // della pagina resta pulito: l'alone diventa una macchia localizzata, ed e' il
@@ -514,7 +519,6 @@ static const int NODI_COMODI_FINO_A = 2;
 // Il rettangolo dell'ora, in alto a destra. Sta qui e non dentro le due
 // funzioni che lo usano perche' devono per forza combaciare: se la finestra
 // parziale e il disegno non coincidono, l'ora vecchia resta sotto la nuova.
-static const int16_t ORA_X = 268, ORA_Y = 0, ORA_W = 132, ORA_H = 31;
 
 // Virgola decimale: e' un pannello che sta in casa, non un log da macchina.
 static String fmtNum(float v, int dec)
@@ -707,15 +711,27 @@ static void drawBarraNodo(const RemoteNode& n, int16_t y, int16_t h)
     tela.print("MUTO");
   }
 
-  if (n.hasData && n.ultimoTs != 0) {
+  // L'ora dell'ultimo pacchetto NON si scrive piu' (da v31). Non e' per fare
+  // spazio: e' che finche' il pannello mostra qualcosa che cambia da solo --
+  // un orologio, un "ultimo alle" -- ogni refresh e' obbligato, anche quando i
+  // numeri sono identici. Tolta anche quella, la pagina cambia SOLO quando
+  // cambiano le misure, e un refresh che ridisegnerebbe gli stessi pixel si
+  // puo' non fare. Il quando sta nella web UI, che quei dettagli li ha tutti.
+  //
+  // Resta il RITARDO, che e' l'unica cosa che il pannello deve dire da solo:
+  // se un nodo tace da piu' della sua cadenza osservata, un punto esclamativo
+  // in fondo alla barra. Non dice quanto -- dice "vai a guardare".
+  if (n.hasData && !n.online) {
+    // Muto: oltre la soglia (~2,5 cadenze). Il badge scritto, che si legge
+    // anche da lontano.
     tela.setFont(&FreeSansBold9pt7b);
-    const String ora = fmtOra(n.ultimoTs);
-    int16_t bx, by; uint16_t bw, bh;
-    tela.getTextBounds(ora, 0, 0, &bx, &by, &bw, &bh);
-    tela.drawBitmap(W - 12 - (int16_t)bw - IC_OROLOGIO_W - 5,
-                    y + (h - IC_OROLOGIO_H) / 2,
-                    IC_OROLOGIO, IC_OROLOGIO_W, IC_OROLOGIO_H, GxEPD_WHITE);
-    drawRight(ora, W - 10, y + h - 7);
+    drawRight("MUTO", W - 10, y + h - 7);
+  }
+  else if (n.hasData && n.intervalloS > 0 && n.silenzioS > n.intervalloS * 2) {
+    // In ritardo ma non ancora muto: due cadenze saltate. Il punto
+    // esclamativo e' l'unico segno che a 1 bit si riconosce senza leggerlo.
+    tela.setFont(&FreeSansBold12pt7b);
+    drawRight("!", W - 14, y + h - 6);
   }
 
   tela.setTextColor(GxEPD_BLACK);
@@ -857,22 +873,19 @@ static void drawNodoCompatto(const RemoteNode& n, int16_t y)
 // viene nemmeno toccato. Il contenuto dev'essere identico a quello che disegna
 // screenNodi() nella stessa posizione, o al primo refresh grande l'ora
 // "salterebbe" di qualche pixel.
+// L'ora in intestazione e' quella dell'ULTIMO AGGIORNAMENTO, non "adesso".
+// Senza il refresh al minuto le due cose divergono fino a dieci minuti, e un
+// orologio fermo che si spaccia per corrente e' peggio di nessun orologio:
+// e' la stessa ragione per cui i nodi mostrano l'ora del loro ultimo
+// pacchetto invece di "38 s fa".
 static void drawOra()
 {
   char buf[8] = "";
   if (!rtctime_format(rtctime_now(), "%H:%M", buf, sizeof(buf))) return;
-  tela.setFont(&FreeSansBold12pt7b);
+  tela.setFont(&FreeSans9pt7b);
   tela.setTextColor(GxEPD_BLACK);
-  drawRight(String(rtctime_isSynced() ? "" : "~") + buf, tela.width() - 12, 23);
-}
-
-static void screenOrologio()
-{
-  // Solo il suo rettangolo, sulla tela e sul vetro: il resto della pagina e'
-  // gia' li' e non va ridisegnato.
-  tela.fillRect(ORA_X, ORA_Y, ORA_W, ORA_H, GxEPD_WHITE);
-  drawOra();
-  telaSulPannello(false, ORA_X, ORA_Y, ORA_W, ORA_H);
+  drawRight(String("agg. ") + (rtctime_isSynced() ? "" : "~") + buf,
+            tela.width() - 12, 23);
 }
 
 static void screenNodi(bool full)
@@ -1184,6 +1197,7 @@ size_t         app_tela_bytes()  { return IMG_BYTES; }
 // cose si somigliano - il display non cambia - e senza questo campo l'unico
 // modo di distinguerle sarebbe guardare l'ora e fidarsi.
 bool app_pannello_sospeso()        { return s_inSilenzio; }
+uint32_t app_refresh_evitati()     { return s_nodiInvariati; }
 
 void app_chiedi_refresh()          { s_refreshChiesto = true; }
 void app_chiedi_pagina(uint8_t i)  { s_paginaChiesta  = (int16_t)i; }
@@ -1819,6 +1833,70 @@ static uint8_t immagineACaso()
   return cand[esp_random() % n];
 }
 
+// Ogni quanto ridisegnare la pagina dei nodi, dedotto dalla cadenza OSSERVATA
+// dei nodi invece che da una costante scelta a tavolino.
+//
+// Si prende il nodo piu' LENTO, non il piu' veloce: la pagina li mostra tutti,
+// e ridisegnarla al ritmo del piu' veloce significa riscrivere i numeri degli
+// altri identici a se stessi. Su un pannello che si guarda passando, cinque
+// minuti di ritardo non si notano; 288 refresh in piu' al giorno si'.
+//
+// Gli estremi restano: mai piu' spesso di NODI_MIN_MS (un e-ink lampeggia, e
+// due minuti sono gia' piu' di quanto serva a chi passa davanti) e mai piu'
+// raro di CADENZA_MAX_MS, o un nodo configurato a un'ora renderebbe il
+// pannello vecchio di un'ora.
+static const uint32_t CADENZA_MAX_MS = 600000UL;   // 10 minuti
+
+static uint32_t cadenzaNodiMs()
+{
+  uint32_t lento = 0;
+  for (int i = 0; i < remote_count(); i++) {
+    RemoteNode n;
+    if (!remote_get(i, &n)) continue;
+    // Un nodo muto o appena visto non ha ancora una cadenza: escluderlo
+    // evita che un intervallo a zero faccia collassare il conto sul minimo.
+    if (!n.hasData || n.intervalloS == 0) continue;
+    const uint32_t ms = n.intervalloS * 1000UL;
+    if (ms > lento) lento = ms;
+  }
+  if (lento < NODI_MIN_MS)     lento = NODI_MIN_MS;
+  if (lento > CADENZA_MAX_MS)  lento = CADENZA_MAX_MS;
+  return lento;
+}
+
+// Una firma di TUTTO cio' che finisce sulla pagina dei nodi. Se non cambia,
+// ridisegnare significherebbe riscrivere pixel identici: 2,2 s di lampeggio e
+// un pezzo di vita del pannello per niente.
+//
+// Ci entrano i valori mostrati (arrotondati COME si mostrano: 27,25 e 27,24
+// sono lo stesso "27,2" sul pannello), lo stato online/ritardo, il trend e il
+// numero di nodi. NON ci entra l'ora: e' proprio per questo che l'ora non si
+// mostra piu'.
+static uint32_t firmaNodi()
+{
+  uint32_t f = 2166136261u;                       // FNV-1a
+  auto mescola = [&f](int32_t v) {
+    for (int b = 0; b < 4; b++) { f ^= (uint8_t)(v >> (b * 8)); f *= 16777619u; }
+  };
+  mescola(remote_count());
+  mescola(pages_fascia() ? 1 : 0);
+  for (int i = 0; i < remote_count(); i++) {
+    RemoteNode n;
+    if (!remote_get(i, &n)) continue;
+    for (int k = 0; k < 3; k++)
+      mescola(isfinite(n.value[k]) ? (int32_t)lroundf(n.value[k] * 10.0f) : INT32_MIN);
+    mescola(n.online ? 1 : 0);
+    mescola((n.intervalloS > 0 && n.silenzioS > n.intervalloS * 2) ? 1 : 0);
+    mescola((int32_t)n.trend);
+    mescola((int32_t)n.hasData);
+    for (const char* c = n.nome; *c; c++) mescola((int32_t)(uint8_t)*c);
+  }
+  // Il messaggio in fascia fa parte della pagina: se cambia, la pagina cambia.
+  const Message* m = pages_fascia() ? msg_active(time(nullptr)) : nullptr;
+  if (m) for (const char* c = m->testo; *c; c++) mescola((int32_t)(uint8_t)*c);
+  return f;
+}
+
 static void showPage(uint8_t i)
 {
   const PageCfg* pg = pages_get(i);
@@ -1863,7 +1941,6 @@ static void showPage(uint8_t i)
   s_epdRefresh++;
   s_epdUltimoMs   = millis() - t0;
   s_fullUltimoMs  = millis();   // il cambio pagina e' sempre un completo
-  s_oraUltimoMs   = millis();
   pages_disegnata(millis());
   Serial.printf("[epd] pagina %u (%s): %lu ms\n", (unsigned)i,
                 pages_tipo_nome(pg->tipo), (unsigned long)s_epdUltimoMs);
@@ -2192,23 +2269,39 @@ void loop()
 
   if (tipoCur == PT_NODI)
   {
-    // L'orologio per primo: e' il refresh piu' economico e il piu' frequente.
-    // Se scatta anche quello della pagina intera, quello ridisegna comunque
-    // l'ora e rimette a zero questo timer, quindi non si sovrappongono.
-    if (millis() - s_oraUltimoMs >= ORA_MS)
-    {
-      const uint32_t t0 = millis();
-      screenOrologio();
-      pannello.hibernate();
-      s_oraUltimoMs  = millis();
-      s_epdRefresh++;
-      s_epdOrologioMs = millis() - t0;
-    }
+    // L'orologio al minuto NON C'E' PIU' (da v30). Era meta' di tutti i
+    // refresh della giornata -- 720 su 1440 -- per riscrivere sempre lo
+    // stesso rettangolo, che e' anche il modo peggiore in cui un e-ink
+    // invecchia. L'ora non e' sparita dal pannello: ogni nodo ha la sua nella
+    // barra ("ultimo alle 15:23"), e quella e' un ISTANTE, che resta vero
+    // anche se la pagina non si ridisegna da un pezzo. In intestazione ora
+    // c'e' l'ora dell'ultimo aggiornamento, che e' un istante pure lei.
 
+    // La cadenza la dettano i NODI, non una costante: aggiornare piu' spesso
+    // di quanto arrivino i dati significa ridisegnare gli stessi numeri.
+    const uint32_t cadenza = cadenzaNodiMs();
     const uint32_t da = millis() - s_nodiUltimoMs;
-    const bool perDato   = s_nodiDirty && da >= NODI_MIN_MS;
-    const bool perTempo  = da >= NODI_MAX_MS;
+    const bool perDato   = s_nodiDirty && da >= cadenza;
+    const bool perTempo  = da >= (cadenza > NODI_MAX_MS ? cadenza : NODI_MAX_MS);
     if (!perDato && !perTempo) return;
+
+    // Il contenuto e' identico a quello gia' a schermo? Allora non si tocca
+    // niente. Il timer si riarma comunque, o si ricadrebbe qui ad ogni giro
+    // di loop a rifare il conto della firma.
+    //
+    // L'unica eccezione e' il completo periodico: quello serve al GHOSTING,
+    // non a mostrare dati nuovi, e va fatto anche se la pagina e' identica --
+    // anzi soprattutto allora, perche' una pagina che non cambia da ore e'
+    // quella che si imprime.
+    const uint32_t firma = firmaNodi();
+    const bool fullPerGhosting = (millis() - s_fullUltimoMs >= FULL_OGNI_MS);
+    if (firma == s_firmaNodi && !fullPerGhosting) {
+      s_nodiUltimoMs = millis();
+      s_nodiDirty    = false;
+      s_nodiInvariati++;
+      return;
+    }
+    s_firmaNodi = firma;
 
     // Parziale spesso, completo ogni tanto: senza, il ghosting si accumula.
     // Il tempo conta quanto il conteggio — in una giornata senza novita' i
@@ -2223,8 +2316,7 @@ void loop()
     s_nodiParziali = full ? 0 : s_nodiParziali + 1;
     s_nodiDirty    = false;
     s_nodiUltimoMs = millis();
-    s_oraUltimoMs  = millis();     // l'ora e' appena stata ridisegnata con tutto il resto
-    if (full) s_fullUltimoMs = millis();
+      if (full) s_fullUltimoMs = millis();
     s_epdRefresh++;
     s_epdUltimoMs  = millis() - t0;
     Serial.printf("[epd] nodi %s (%s): %lu ms\n",

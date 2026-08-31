@@ -42,6 +42,10 @@ size_t         app_tela_bytes();
 // true mentre il pannello e' fermo per le ore di silenzio.
 bool app_pannello_sospeso();
 
+// Quante volte il pannello NON e' stato ridisegnato perche' il contenuto era
+// identico a quello gia' a schermo.
+uint32_t app_refresh_evitati();
+
 // Comandi verso il pannello: si ACCODANO e li esegue il loop(). Un refresh
 // sono ~2,2 s: dentro un handler HTTP terrebbe fermo il server, l'OTA e il
 // prelievo dei DATA dei nodi dal driver ESP-NOW, che tiene solo l'ultimo.

@@ -632,6 +632,7 @@ static void handleApiStato() {
   j += "\"epd_refresh\":"      + String(app_epd_refresh())    + ",";
   j += "\"epd_ultimo_ms\":"    + String(app_epd_ultimo_ms())  + ",";
   j += "\"epd_orologio_ms\":"  + String(app_epd_orologio_ms()) + ",";
+  j += "\"refresh_evitati\":" + String(app_refresh_evitati()) + ",";
   j += "\"invii_interrotti\":" + String(s_invii_interrotti)   + ",";
   j += "\"reset_reason\":\"" + String(app_reset_reason())    + "\",";
   j += "\"boot_count\":"      + String(app_boot_count())      + ",";
