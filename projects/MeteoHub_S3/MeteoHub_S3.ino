@@ -95,7 +95,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v21";
+static const char FW_VERSION[] = "v22";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -312,20 +312,97 @@ static const int8_t  EPD_MOSI = 9;   // D10
 // reset si entra nel bootloader), ma premerlo a scheda avviata e' innocuo.
 static const int8_t  PIN_BOOT = 0;
 
-// Il pannello sta tutto in RAM: 400 x 300 / 8 = 15.000 byte, quindi
-// full-buffer (secondo parametro = HEIGHT) e niente paginazione.
-GxEPD2_BW<EPD_DRIVER, EPD_DRIVER::HEIGHT> display(EPD_DRIVER(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
-
-// Testo UTF-8 sopra lo stesso canvas: serve alla pagina messaggio, dove
-// "perché" con i font Adafruit_GFX (ASCII puro) diventerebbe "perch?".
-U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
-
-// Formato del progetto: quello che dither.html produce e che un domani
-// arrivera' dalla SD gia' impacchettato.
+// Formato del progetto: quello che dither.html produce, quello che si legge
+// da /images/<nome>.bin, e -- da v22 -- anche il formato della tela qui sotto
+// e dell'anteprima. Un formato solo per tutta la catena.
 static const int    IMG_W      = 400;
 static const int    IMG_H      = 300;
 static const size_t IMG_STRIDE = IMG_W / 8;            // 50 byte per riga
 static const size_t IMG_BYTES  = IMG_STRIDE * IMG_H;   // 15.000 byte esatti
+
+// Il pannello sta tutto in RAM: 400 x 300 / 8 = 15.000 byte, quindi
+// full-buffer (secondo parametro = HEIGHT) e niente paginazione.
+GxEPD2_BW<EPD_DRIVER, EPD_DRIVER::HEIGHT> pannello(EPD_DRIVER(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
+
+// --- la tela, e perche' esiste ---------------------------------------------
+// Ogni primitiva di disegno va sulla TELA; il PANNELLO riceve solo la tela
+// finita, e da lui passano soltanto finestre, paging e refresh. Il giro non e'
+// gratuito (15.000 byte di RAM) e non serve a disegnare meglio: serve a
+// rendere il pannello OSSERVABILE.
+//
+// Prima non lo era, e non per distrazione. GxEPD2 tiene il suo framebuffer
+// `private` (GxEPD2_BW.h:815): non c'e' getBuffer() e nemmeno una sottoclasse
+// puo' arrivarci. E anche potendo non sarebbe bastato, perche' la pagina
+// immagine scriveva dritta al controller con writeImage(), saltando quel
+// framebuffer del tutto: l'anteprima non avrebbe mai visto proprio le pagine
+// che l'utente compone. La tela invece si legge -- e' cio' che restituisce
+// GET /api/pannello/anteprima -- e sono gli STESSI byte finiti sul vetro,
+// perche' non esiste una seconda strada per arrivarci.
+//
+// Il formato coincide con quello dei .bin per costruzione: 1 bit per pixel,
+// MSB per primo, 50 byte per riga, 1 = bianco. Quindi il browser li disegna
+// con l'unpack() che ha gia', e un'immagine si copia nella tela con memcpy.
+GFXcanvas1 tela(IMG_W, IMG_H);
+
+// Testo UTF-8 sopra la stessa tela: serve alla pagina messaggio, dove
+// "perché" con i font Adafruit_GFX (ASCII puro) diventerebbe "perch?".
+U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
+
+// --- l'unico punto da cui la tela arriva al vetro ---------------------------
+// Se ne esistesse un secondo, l'anteprima potrebbe divergere da cio' che si
+// vede: uno strumento di verifica che mente e' peggio del non averlo.
+// Il rettangolo (x,y,w,h) serve all'orologio, che si riscrive ogni minuto e
+// non deve stressare tutto il pannello: la tela resta intera, cambia solo
+// quanta ne finisce sul vetro.
+//
+// Si copia pixel per pixel DENTRO il paging, non con drawImage(): in GxEPD2
+// drawImage() e writeImage() scrivono dritte al controller e fanno il refresh
+// da se', quindi dentro firstPage()/nextPage() darebbero DUE refresh -- il
+// secondo con il buffer di GxEPD2, che li' e' ancora vuoto. Il pannello
+// resterebbe bianco e l'anteprima direbbe di no: la forma peggiore di guasto,
+// quella in cui lo strumento di verifica mente.
+//
+// Cosi' invece la meccanica di finestre e refresh resta IDENTICA a prima --
+// ed e' la parte tarata a mano (parziali, completi, ghosting) che non conviene
+// rimettere in discussione per avere un'anteprima.
+//
+// COSTO, misurato sull'hardware il 2026-08-31:
+//
+//   refresh completo    2200 -> 2630 ms   (+430, il prezzo vero)
+//   parziale su tutta la pagina  980 -> 1040 ms
+//   solo orologio        810 ->  810 ms   (invariato)
+//
+// L'orologio non paga niente perche' il ciclo gira SOLO sul rettangolo
+// chiesto: 4.092 pixel invece di 120.000. Prima di restringerlo costava 862 ms,
+// e il fatto che ne costasse solo 52 in piu' invece di 430 dice come funziona
+// il clipping -- drawPixel() scarta subito quello che cade fuori dalla finestra
+// parziale, quindi a pesare sono i pixel che entrano, non quelli che si
+// tentano. Restringere resta giusto: 50 ms al minuto sono 72 secondi al giorno.
+//
+// I 430 ms del refresh completo si potrebbero togliere scrivendo la tela con
+// writeImage() fuori dal paging, che e' il percorso nativo (ed era quello che
+// gia' usava la pagina immagine). NON e' stato fatto, e il motivo e' proprio
+// l'anteprima: quel cambiamento tocca il tratto tela->vetro, l'unico che
+// l'anteprima NON puo' verificare, perche' lei mostra la tela. Andrebbe
+// provato da chi il pannello lo sta guardando.
+static void telaSulPannello(bool full, int16_t x = 0, int16_t y = 0,
+                            int16_t w = IMG_W, int16_t h = IMG_H)
+{
+  if (full) pannello.setFullWindow();
+  else      pannello.setPartialWindow(x, y, w, h);
+
+  const uint8_t* b = tela.getBuffer();
+  pannello.firstPage();
+  do
+  {
+    // bit 1 = bianco, la stessa convenzione dei .bin in tutta la catena.
+    for (int16_t yy = y; yy < y + h; yy++)
+      for (int16_t xx = x; xx < x + w; xx++)
+        pannello.drawPixel(xx, yy,
+          (b[yy * IMG_STRIDE + (xx >> 3)] >> (7 - (xx & 7))) & 1 ? GxEPD_WHITE : GxEPD_BLACK);
+  }
+  while (pannello.nextPage());
+}
 
 // ---------------------------------------------------------------------------
 // Pannello a riposo e tasto BOOT
@@ -334,9 +411,8 @@ static void screenBlank()
 {
   // Sempre a finestra intera: pulire in parziale lascerebbe l'alone di quello
   // che c'era prima, ed e' proprio quello che qui non si vuole.
-  display.setFullWindow();
-  display.firstPage();
-  do { display.fillScreen(GxEPD_WHITE); } while (display.nextPage());
+  tela.fillScreen(GxEPD_WHITE);
+  telaSulPannello(true);
 }
 
 // Ritorna true una volta sola per ogni pressione. Antirimbalzo a 40 ms.
@@ -441,9 +517,9 @@ static String fmtNum(float v, int dec)
 static void drawRight(const String& txt, int16_t xRight, int16_t yBase)
 {
   int16_t bx, by; uint16_t bw, bh;
-  display.getTextBounds(txt, 0, 0, &bx, &by, &bw, &bh);
-  display.setCursor(xRight - (int16_t)bw - bx, yBase);
-  display.print(txt);
+  tela.getTextBounds(txt, 0, 0, &bx, &by, &bw, &bh);
+  tela.setCursor(xRight - (int16_t)bw - bx, yBase);
+  tela.print(txt);
 }
 
 // Testo centrato su xCentro. Serve una misura vera: allineare a destra con un
@@ -452,11 +528,11 @@ static void drawRight(const String& txt, int16_t xRight, int16_t yBase)
 static void drawCenter(const String& txt, int16_t xCentro, int16_t yBase)
 {
   int16_t bx, by; uint16_t bw, bh;
-  display.getTextBounds(txt, 0, 0, &bx, &by, &bw, &bh);
+  tela.getTextBounds(txt, 0, 0, &bx, &by, &bw, &bh);
   int16_t x = xCentro - (int16_t)bw / 2 - bx;
   if (x < 2) x = 2;                      // meglio storto che tagliato
-  display.setCursor(x, yBase);
-  display.print(txt);
+  tela.setCursor(x, yBase);
+  tela.print(txt);
 }
 
 // L'ORA dell'ultimo pacchetto, non da quanto tempo e' arrivato. Un istante non
@@ -473,8 +549,8 @@ static String fmtOra(time_t t)
 // Il grado: nei font Adafruit GFX non c'e' (coprono 0x20-0x7E), si disegna.
 static void drawGrado(int16_t x, int16_t y, int16_t r)
 {
-  display.drawCircle(x, y, r, GxEPD_BLACK);
-  if (r > 2) display.drawCircle(x, y, r - 1, GxEPD_BLACK);   // piu' spesso, si vede meglio
+  tela.drawCircle(x, y, r, GxEPD_BLACK);
+  if (r > 2) tela.drawCircle(x, y, r - 1, GxEPD_BLACK);   // piu' spesso, si vede meglio
 }
 
 // La freccia del trend barometrico: l'inclinazione E' il dato. Una parola
@@ -488,8 +564,8 @@ static void drawFrecciaTrend(int16_t x, int16_t y, uint8_t trend)
   if (trend == TREND_IGNOTO) {
     // Storico insufficiente: un punto interrogativo sarebbe rumore, meglio un
     // trattino che dice "non lo so ancora" senza somigliare a "stabile".
-    display.drawFastHLine(x - 8, y, 6, GxEPD_BLACK);
-    display.drawFastHLine(x + 2, y, 6, GxEPD_BLACK);
+    tela.drawFastHLine(x - 8, y, 6, GxEPD_BLACK);
+    tela.drawFastHLine(x + 2, y, 6, GxEPD_BLACK);
     return;
   }
 
@@ -501,13 +577,13 @@ static void drawFrecciaTrend(int16_t x, int16_t y, uint8_t trend)
   const int16_t x1 = x + (int16_t)(dx * L), y1 = y + (int16_t)(dy * L);
 
   // Asta doppia: su un e-ink una linea da un pixel sparisce a distanza.
-  display.drawLine(x0, y0, x1, y1, GxEPD_BLACK);
-  display.drawLine(x0, y0 + 1, x1, y1 + 1, GxEPD_BLACK);
+  tela.drawLine(x0, y0, x1, y1, GxEPD_BLACK);
+  tela.drawLine(x0, y0 + 1, x1, y1 + 1, GxEPD_BLACK);
 
   // Punta: triangolo pieno, ruotato come l'asta.
   const float px = -dy, py = dx;                   // versore perpendicolare
   const int16_t bx = x + (int16_t)(dx * (L - 7)),  by = y + (int16_t)(dy * (L - 7));
-  display.fillTriangle(x1, y1,
+  tela.fillTriangle(x1, y1,
                        bx + (int16_t)(px * 5), by + (int16_t)(py * 5),
                        bx - (int16_t)(px * 5), by - (int16_t)(py * 5),
                        GxEPD_BLACK);
@@ -518,12 +594,12 @@ static void drawFrecciaTrend(int16_t x, int16_t y, uint8_t trend)
 // non dopo, e su bianco e nero il negativo e' l'unico "colore" disponibile.
 static void drawBadgeMuto(int16_t x, int16_t y)
 {
-  display.fillRoundRect(x, y, 54, 18, 4, GxEPD_BLACK);
-  display.setFont(&FreeSansBold9pt7b);
-  display.setTextColor(GxEPD_WHITE);
-  display.setCursor(x + 8, y + 14);
-  display.print("MUTO");
-  display.setTextColor(GxEPD_BLACK);
+  tela.fillRoundRect(x, y, 54, 18, 4, GxEPD_BLACK);
+  tela.setFont(&FreeSansBold9pt7b);
+  tela.setTextColor(GxEPD_WHITE);
+  tela.setCursor(x + 8, y + 14);
+  tela.print("MUTO");
+  tela.setTextColor(GxEPD_BLACK);
 }
 
 // Riga di dettaglio comune ai due formati: umidita' e pressione, allineate a
@@ -537,43 +613,43 @@ static void drawValori(const RemoteNode& n, int16_t yBase)
     riga += fmtNum(n.value[2], 1) + " hPa";
   }
   if (!riga.length()) return;
-  display.setFont(&FreeSansBold9pt7b);
+  tela.setFont(&FreeSansBold9pt7b);
   drawRight(riga, 388, yBase);
 }
 
 // --- blocco COMODO: fino a due nodi ---------------------------------------
 static void drawNodoComodo(const RemoteNode& n, int16_t y)
 {
-  display.setFont(&FreeSansBold12pt7b);
-  display.setCursor(12, y + 22);
-  display.print(n.nome);
+  tela.setFont(&FreeSansBold12pt7b);
+  tela.setCursor(12, y + 22);
+  tela.print(n.nome);
 
   if (!n.online && n.hasData) {
     int16_t bx, by; uint16_t bw, bh;
-    display.getTextBounds(n.nome, 12, y + 22, &bx, &by, &bw, &bh);
+    tela.getTextBounds(n.nome, 12, y + 22, &bx, &by, &bw, &bh);
     drawBadgeMuto(12 + (int16_t)bw + 12, y + 6);
   }
 
   if (!n.hasData) {
-    display.setFont(&FreeSans9pt7b);
-    display.setCursor(12, y + 48);
-    display.print("in attesa del primo dato");
+    tela.setFont(&FreeSans9pt7b);
+    tela.setCursor(12, y + 48);
+    tela.print("in attesa del primo dato");
     return;
   }
 
   // Ora dell'ultimo pacchetto, sotto il nome.
-  display.setFont(&FreeSans9pt7b);
-  display.setCursor(12, y + 46);
-  display.print("ultimo alle " + fmtOra(n.ultimoTs));
+  tela.setFont(&FreeSans9pt7b);
+  tela.setCursor(12, y + 46);
+  tela.print("ultimo alle " + fmtOra(n.ultimoTs));
 
   // Temperatura in grande: e' il numero per cui la pagina esiste.
   if (isfinite(n.value[0])) {
-    display.setFont(&FreeSansBold24pt7b);
+    tela.setFont(&FreeSansBold24pt7b);
     drawRight(fmtNum(n.value[0], 1), 352, y + 52);
     drawGrado(362, y + 26, 4);
-    display.setFont(&FreeSansBold12pt7b);
-    display.setCursor(370, y + 52);
-    display.print("C");
+    tela.setFont(&FreeSansBold12pt7b);
+    tela.setCursor(370, y + 52);
+    tela.print("C");
   }
 
   drawValori(n, y + 76);
@@ -581,9 +657,9 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y)
   // Trend: freccia inclinata piu' la parola, a sinistra.
   if (n.trend != TREND_IGNOTO || n.hasData) {
     drawFrecciaTrend(26, y + 72, n.trend);
-    display.setFont(&FreeSans9pt7b);
-    display.setCursor(44, y + 78);
-    display.print(n.trend == TREND_IGNOTO ? "trend: raccolgo dati"
+    tela.setFont(&FreeSans9pt7b);
+    tela.setCursor(44, y + 78);
+    tela.print(n.trend == TREND_IGNOTO ? "trend: raccolgo dati"
                                           : remote_trend_label(n.trend));
   }
 }
@@ -591,35 +667,35 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y)
 // --- blocco COMPATTO: da tre nodi in su -----------------------------------
 static void drawNodoCompatto(const RemoteNode& n, int16_t y)
 {
-  display.setFont(&FreeSansBold12pt7b);
-  display.setCursor(12, y + 20);
-  display.print(n.nome);
+  tela.setFont(&FreeSansBold12pt7b);
+  tela.setCursor(12, y + 20);
+  tela.print(n.nome);
 
   if (!n.online && n.hasData) {
     int16_t bx, by; uint16_t bw, bh;
-    display.getTextBounds(n.nome, 12, y + 20, &bx, &by, &bw, &bh);
+    tela.getTextBounds(n.nome, 12, y + 20, &bx, &by, &bw, &bh);
     drawBadgeMuto(12 + (int16_t)bw + 10, y + 4);
   }
 
   if (!n.hasData) {
-    display.setFont(&FreeSans9pt7b);
-    display.setCursor(12, y + 42);
-    display.print("in attesa del primo dato");
+    tela.setFont(&FreeSans9pt7b);
+    tela.setCursor(12, y + 42);
+    tela.print("in attesa del primo dato");
     return;
   }
 
   if (isfinite(n.value[0])) {
-    display.setFont(&FreeSansBold18pt7b);
+    tela.setFont(&FreeSansBold18pt7b);
     drawRight(fmtNum(n.value[0], 1), 356, y + 30);
     drawGrado(365, y + 12, 3);
-    display.setFont(&FreeSansBold9pt7b);
-    display.setCursor(371, y + 30);
-    display.print("C");
+    tela.setFont(&FreeSansBold9pt7b);
+    tela.setCursor(371, y + 30);
+    tela.print("C");
   }
 
-  display.setFont(&FreeSans9pt7b);
-  display.setCursor(12, y + 44);
-  display.print(fmtOra(n.ultimoTs));
+  tela.setFont(&FreeSans9pt7b);
+  tela.setCursor(12, y + 44);
+  tela.print(fmtOra(n.ultimoTs));
   drawFrecciaTrend(70, y + 39, n.trend);
 
   drawValori(n, y + 48);
@@ -633,47 +709,39 @@ static void drawOra()
 {
   char buf[8] = "";
   if (!rtctime_format(rtctime_now(), "%H:%M", buf, sizeof(buf))) return;
-  display.setFont(&FreeSansBold12pt7b);
-  display.setTextColor(GxEPD_BLACK);
-  drawRight(String(rtctime_isSynced() ? "" : "~") + buf, display.width() - 12, 23);
+  tela.setFont(&FreeSansBold12pt7b);
+  tela.setTextColor(GxEPD_BLACK);
+  drawRight(String(rtctime_isSynced() ? "" : "~") + buf, tela.width() - 12, 23);
 }
 
 static void screenOrologio()
 {
-  display.setPartialWindow(ORA_X, ORA_Y, ORA_W, ORA_H);
-  display.firstPage();
-  do
-  {
-    display.fillRect(ORA_X, ORA_Y, ORA_W, ORA_H, GxEPD_WHITE);
-    drawOra();
-  }
-  while (display.nextPage());
+  // Solo il suo rettangolo, sulla tela e sul vetro: il resto della pagina e'
+  // gia' li' e non va ridisegnato.
+  tela.fillRect(ORA_X, ORA_Y, ORA_W, ORA_H, GxEPD_WHITE);
+  drawOra();
+  telaSulPannello(false, ORA_X, ORA_Y, ORA_W, ORA_H);
 }
 
 static void screenNodi(bool full)
 {
-  const int16_t W = display.width();
-  const int16_t H = display.height();
+  const int16_t W = tela.width();
+  const int16_t H = tela.height();
 
-  if (full) display.setFullWindow();
-  else      display.setPartialWindow(0, 0, W, H);
-
-  display.firstPage();
-  do
   {
-    display.fillScreen(GxEPD_WHITE);
-    display.setTextColor(GxEPD_BLACK);
+    tela.fillScreen(GxEPD_WHITE);
+    tela.setTextColor(GxEPD_BLACK);
 
     // --- intestazione ---
-    display.setFont(&FreeSansBold12pt7b);
-    display.setCursor(12, 23);
-    display.print("STAZIONE METEO");
+    tela.setFont(&FreeSansBold12pt7b);
+    tela.setCursor(12, 23);
+    tela.print("STAZIONE METEO");
 
     // La tilde dentro drawOra() dice che l'ora e' la stima da build-time e non
     // NTP: senza, un orario preciso e sbagliato sembrerebbe vero.
     drawOra();
-    display.drawFastHLine(0, 32, W, GxEPD_BLACK);
-    display.drawFastHLine(0, 33, W, GxEPD_BLACK);
+    tela.drawFastHLine(0, 32, W, GxEPD_BLACK);
+    tela.drawFastHLine(0, 33, W, GxEPD_BLACK);
 
     // --- la fascia si prende il suo spazio PRIMA che i nodi si dividano il
     //     resto: e' l'unica cosa che cambia il layout, e deve deciderla una
@@ -685,9 +753,9 @@ static void screenNodi(bool full)
     const int n = remote_count();
     if (n == 0)
     {
-      display.setFont(&FreeSansBold24pt7b);
+      tela.setFont(&FreeSansBold24pt7b);
       drawCenter("NESSUN NODO", W / 2, 145);
-      display.setFont(&FreeSans9pt7b);
+      tela.setFont(&FreeSans9pt7b);
       if (remote_pairing_active()) {
         drawCenter("finestra di associazione aperta", W / 2, 180);
         drawCenter("accendi o riavvia il nodo", W / 2, 200);
@@ -719,7 +787,7 @@ static void screenNodi(bool full)
         if (i + 1 < quanti) {
           const int16_t ys = y + h - 6;
           for (int16_t x = 12; x < W - 12; x += 6) {
-            display.drawFastHLine(x, ys, 3, GxEPD_BLACK);
+            tela.drawFastHLine(x, ys, 3, GxEPD_BLACK);
           }
         }
       }
@@ -728,7 +796,7 @@ static void screenNodi(bool full)
     // --- fascia del messaggio ---
     if (msgFascia != nullptr)
     {
-      display.drawFastHLine(0, yBot + 2, W, GxEPD_BLACK);
+      tela.drawFastHLine(0, yBot + 2, W, GxEPD_BLACK);
 
       // U8g2 e non i font Adafruit: qui il testo lo scrive una persona, e in
       // italiano "perche'" con i font GFX diventerebbe "perch?".
@@ -776,14 +844,14 @@ static void screenNodi(bool full)
       // L'urgenza si vede senza leggere: cornice piena attorno alla fascia.
       if (msgFascia->priorita == MSG_URGENTE)
       {
-        display.drawRect(4, yBot + 6, W - 8, FASCIA_H - 10, GxEPD_BLACK);
-        display.drawRect(5, yBot + 7, W - 10, FASCIA_H - 12, GxEPD_BLACK);
+        tela.drawRect(4, yBot + 6, W - 8, FASCIA_H - 10, GxEPD_BLACK);
+        tela.drawRect(5, yBot + 7, W - 10, FASCIA_H - 12, GxEPD_BLACK);
       }
     }
 
     // --- piede ---
-    display.drawFastHLine(0, NODI_BOT + 2, W, GxEPD_BLACK);
-    display.setFont(&FreeSans9pt7b);
+    tela.drawFastHLine(0, NODI_BOT + 2, W, GxEPD_BLACK);
+    tela.setFont(&FreeSans9pt7b);
 
     int muti = 0;
     for (int i = 0; i < n; i++) {
@@ -795,8 +863,8 @@ static void screenNodi(bool full)
     if (n > NODI_VISIBILI)    piede += String(" (+") + (n - NODI_VISIBILI) + " non mostrati)";
     if (net_isConnected())    piede += "   " + WiFi.localIP().toString();
     else                      piede += "   WiFi assente";
-    display.setCursor(12, 288);
-    display.print(piede);
+    tela.setCursor(12, 288);
+    tela.print(piede);
 
     // A destra: cio' che sta succedendo adesso, in ordine di urgenza.
     if (remote_pairing_active()) {
@@ -813,10 +881,10 @@ static void screenNodi(bool full)
       // In negativo: senza card i DATA non li registra nessuno, ed e' il
       // guasto piu' silenzioso che questa scheda possa avere - tutto il resto
       // continua a funzionare come se niente fosse.
-      display.fillRect(W - 130, 274, 118, 18, GxEPD_BLACK);
-      display.setTextColor(GxEPD_WHITE);
+      tela.fillRect(W - 130, 274, 118, 18, GxEPD_BLACK);
+      tela.setTextColor(GxEPD_WHITE);
       drawRight("SD NON MONTATA", W - 16, 288);
-      display.setTextColor(GxEPD_BLACK);
+      tela.setTextColor(GxEPD_BLACK);
     }
     else {
       char buf[24];
@@ -824,7 +892,7 @@ static void screenNodi(bool full)
       drawRight(buf, W - 12, 288);
     }
   }
-  while (display.nextPage());
+  telaSulPannello(full);
 }
 
 // ---------------------------------------------------------------------------
@@ -959,6 +1027,12 @@ static void seedForecastDaSD()
 static volatile bool    s_refreshChiesto = false;
 static volatile int16_t s_paginaChiesta  = -1;
 
+// L'anteprima: gli stessi byte che sono finiti sul vetro, nello stesso
+// formato dei .bin. Non e' una copia dello stato del pannello -- e' lo stato
+// del pannello, perche' non c'e' nessun'altra strada per arrivarci.
+const uint8_t* app_tela()        { return tela.getBuffer(); }
+size_t         app_tela_bytes()  { return IMG_BYTES; }
+
 void app_chiedi_refresh()          { s_refreshChiesto = true; }
 void app_chiedi_pagina(uint8_t i)  { s_paginaChiesta  = (int16_t)i; }
 
@@ -1027,7 +1101,7 @@ static void onDatoNodo(const RemoteNode* n)
 // ---------------------------------------------------------------------------
 // Il testo e' UTF-8 e i font Adafruit_GFX sono ASCII puro: "perché" uscirebbe
 // "perch?". Da qui U8g2_for_Adafruit_GFX, che disegna UTF-8 sullo stesso
-// canvas di GxEPD2 senza portarsi dietro un secondo driver di display.
+// canvas di GxEPD2 senza portarsi dietro un secondo driver di pannello.
 //
 // Il corpo si sceglie da solo: si prova dal piu' grande al piu' piccolo e si
 // tiene il primo che entra nell'area, a capo compresi. Un messaggio corto
@@ -1083,11 +1157,8 @@ static int msgWrap(const char* testo, int16_t larghezza, String* out, int maxRig
 
 static void screenMessaggio(const Message* m)
 {
-  display.setFullWindow();
-  display.firstPage();
-  do
   {
-    display.fillScreen(GxEPD_WHITE);
+    tela.fillScreen(GxEPD_WHITE);
     u8g2Fonts.setForegroundColor(GxEPD_BLACK);
     u8g2Fonts.setBackgroundColor(GxEPD_WHITE);
 
@@ -1098,7 +1169,7 @@ static void screenMessaggio(const Message* m)
     u8g2Fonts.setFont(u8g2_font_helvB10_tf);
     u8g2Fonts.setCursor(MSG_X0, 26);
     u8g2Fonts.print("MESSAGGIO");
-    display.drawFastHLine(MSG_X0, 36, MSG_X1 - MSG_X0, GxEPD_BLACK);
+    tela.drawFastHLine(MSG_X0, 36, MSG_X1 - MSG_X0, GxEPD_BLACK);
 
     if (m == nullptr)
     {
@@ -1107,7 +1178,11 @@ static void screenMessaggio(const Message* m)
       const int16_t w = u8g2Fonts.getUTF8Width(vuoto);
       u8g2Fonts.setCursor((400 - w) / 2, 160);
       u8g2Fonts.print(vuoto);
-      continue;
+      // Qui la pagina e' finita. Era un `continue` del ciclo di paging: ora
+      // che il paging non c'e' piu', si spinge e si esce - che e' anche piu'
+      // chiaro di quanto fosse prima.
+      telaSulPannello(true);
+      return;
     }
 
     if (m->creato != 0)
@@ -1157,7 +1232,7 @@ static void screenMessaggio(const Message* m)
 
     // Piede: urgenza e scadenza, le due cose che cambiano come va letto.
     u8g2Fonts.setFont(u8g2_font_helvR10_tf);
-    display.drawFastHLine(MSG_X0, 278, MSG_X1 - MSG_X0, GxEPD_BLACK);
+    tela.drawFastHLine(MSG_X0, 278, MSG_X1 - MSG_X0, GxEPD_BLACK);
     u8g2Fonts.setCursor(MSG_X0, 294);
     if (m->priorita == MSG_URGENTE) u8g2Fonts.print("URGENTE");
     if (m->scadenza != 0)
@@ -1168,7 +1243,7 @@ static void screenMessaggio(const Message* m)
       u8g2Fonts.print(s);
     }
   }
-  while (display.nextPage());
+  telaSulPannello(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1180,35 +1255,35 @@ static void screenMessaggio(const Message* m)
 // ha fatto il browser (www/dither.html), ed e' tutto il motivo per cui la
 // catena e' fatta cosi'.
 //
-// Il buffer da 15 kB si prende e si rilascia ad ogni disegno invece di
-// tenerlo sempre: una pagina immagine puo' non esserci mai, e 15 kB fissi
-// sarebbero il 6% della RAM tolti a chi lavora sempre.
+// Il malloc da 15 kB non serve piu' (c'era per non tenere un buffer fisso che
+// una pagina immagine poteva non usare mai): la tela e' gia' esattamente
+// quello, stesso formato e stessa dimensione, quindi il file si legge dritto
+// dentro di lei. Un giro di copia in meno E un'allocazione in meno.
+//
+// Prima si andava anche piu' corti: writeImage() spingeva i byte dritti al
+// controller senza passare da nessun buffer. Quella scorciatoia e' proprio
+// cio' che rendeva le pagine immagine invisibili a qualunque anteprima.
 static void screenImmagine(const char* nome)
 {
-  uint8_t* buf = (uint8_t*)malloc(IMG_BYTES);
   File f = (nome && *nome) ? sd_img_open(nome) : File();
   size_t letti = 0;
 
-  if (buf && f) letti = f.read(buf, IMG_BYTES);
+  if (f) letti = f.read(tela.getBuffer(), IMG_BYTES);
   if (f) f.close();
 
-  if (buf && letti == IMG_BYTES)
+  if (letti == IMG_BYTES)
   {
-    display.writeImage(buf, 0, 0, IMG_W, IMG_H, false, false, false);
-    display.refresh(false);
-    free(buf);
+    telaSulPannello(true);
     return;
   }
-  if (buf) free(buf);
+  // Lettura corta o file assente: la tela ora contiene mezza immagine, e la
+  // schermata qui sotto riparte comunque da un fillScreen().
 
   // Il perche' si scrive sul pannello, non solo sulla seriale: il log di boot
   // di questa scheda non e' leggibile via USB, e una pagina che resta com'era
   // somiglia a un display rotto invece che a un file mancante.
-  display.setFullWindow();
-  display.firstPage();
-  do
   {
-    display.fillScreen(GxEPD_WHITE);
+    tela.fillScreen(GxEPD_WHITE);
     u8g2Fonts.setForegroundColor(GxEPD_BLACK);
     u8g2Fonts.setBackgroundColor(GxEPD_WHITE);
     u8g2Fonts.setFont(u8g2_font_helvB14_tf);
@@ -1224,7 +1299,7 @@ static void screenImmagine(const char* nome)
     u8g2Fonts.setCursor((400 - w) / 2, 170);
     u8g2Fonts.print(t2);
   }
-  while (display.nextPage());
+  telaSulPannello(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1324,22 +1399,19 @@ static void screenGrafico()
     vMax += margine;
   }
 
-  display.setFullWindow();
-  display.firstPage();
-  do
   {
-    display.fillScreen(GxEPD_WHITE);
-    display.setTextColor(GxEPD_BLACK);
+    tela.fillScreen(GxEPD_WHITE);
+    tela.setTextColor(GxEPD_BLACK);
 
-    display.setFont(&FreeSansBold12pt7b);
-    display.setCursor(12, 30);
-    display.print("TEMPERATURA");
-    display.setFont(&FreeSans9pt7b);
+    tela.setFont(&FreeSansBold12pt7b);
+    tela.setCursor(12, 30);
+    tela.print("TEMPERATURA");
+    tela.setFont(&FreeSans9pt7b);
     drawRight("ultime 24 ore", 388, 30);
-    display.drawFastHLine(12, 38, 376, GxEPD_BLACK);
+    tela.drawFastHLine(12, 38, 376, GxEPD_BLACK);
 
     if (nSerie == 0) {
-      display.setFont(&FreeSans9pt7b);
+      tela.setFont(&FreeSans9pt7b);
       drawCenter("nessuno storico ancora", 200, 150);
       drawCenter("si riempie con i dati dei nodi", 200, 172);
       return;
@@ -1347,13 +1419,13 @@ static void screenGrafico()
 
     // Cornice e tacche orizzontali: tre linee tratteggiate, che su e-ink si
     // leggono senza rubare contrasto alla curva.
-    display.drawRect(GR_X0, GR_Y0, GR_X1 - GR_X0, GR_Y1 - GR_Y0, GxEPD_BLACK);
-    display.setFont(&FreeSans9pt7b);
+    tela.drawRect(GR_X0, GR_Y0, GR_X1 - GR_X0, GR_Y1 - GR_Y0, GxEPD_BLACK);
+    tela.setFont(&FreeSans9pt7b);
     for (int t = 0; t <= 2; t++) {
       const int16_t y = GR_Y0 + (int16_t)(((int32_t)(GR_Y1 - GR_Y0) * t) / 2);
       const int16_t v = (int16_t)(vMax - (int32_t)(vMax - vMin) * t / 2);
       if (t != 0 && t != 2) {
-        for (int16_t x = GR_X0 + 4; x < GR_X1; x += 8) display.drawPixel(x, y, GxEPD_BLACK);
+        for (int16_t x = GR_X0 + 4; x < GR_X1; x += 8) tela.drawPixel(x, y, GxEPD_BLACK);
       }
       drawRight(fmtNum(v / 10.0f, 1), GR_X0 - 5, y + 5);
     }
@@ -1364,12 +1436,12 @@ static void screenGrafico()
     // dell'ultimo pacchetto invece di "38 s fa".
     for (int t = 0; t <= 4; t++) {
       const int16_t x = GR_X0 + (int16_t)(((int32_t)(GR_X1 - GR_X0) * t) / 4);
-      display.drawFastVLine(x, GR_Y1, 4, GxEPD_BLACK);
+      tela.drawFastVLine(x, GR_Y1, 4, GxEPD_BLACK);
       const time_t q = tsUltimo - (time_t)(24 * 3600) + (time_t)(6 * 3600 * t);
       char ora[8];
       if (rtctime_format(q, "%H:%M", ora, sizeof(ora))) {
         int16_t bx, by; uint16_t bw, bh;
-        display.getTextBounds(ora, 0, 0, &bx, &by, &bw, &bh);
+        tela.getTextBounds(ora, 0, 0, &bx, &by, &bw, &bh);
         // Il limite e' 388, non 398: la cornice di plastica del pannello copre
         // gli ultimi pixel dell'area disegnabile, quindi un'etichetta centrata
         // sull'ultima tacca ci finisce sotto e si legge "19:3" invece di
@@ -1379,8 +1451,8 @@ static void screenGrafico()
         int16_t cx = x - (int16_t)bw / 2;
         if (cx < 12) cx = 12;
         if (cx + (int16_t)bw > 388) cx = 388 - (int16_t)bw;
-        display.setCursor(cx, GR_Y1 + 18);
-        display.print(ora);
+        tela.setCursor(cx, GR_Y1 + 18);
+        tela.print(ora);
       }
     }
 
@@ -1398,8 +1470,8 @@ static void screenGrafico()
         const int16_t y = GR_Y1 - (int16_t)(((int32_t)(v - vMin) * (GR_Y1 - GR_Y0)) /
                                             (vMax - vMin ? vMax - vMin : 1));
         if (hoPrec && grVisibile(k, i)) {
-          display.drawLine(xPrec, yPrec, x, y, GxEPD_BLACK);
-          if (k == 0) display.drawLine(xPrec, yPrec + 1, x, y + 1, GxEPD_BLACK);
+          tela.drawLine(xPrec, yPrec, x, y, GxEPD_BLACK);
+          if (k == 0) tela.drawLine(xPrec, yPrec + 1, x, y + 1, GxEPD_BLACK);
         }
         xPrec = x; yPrec = y; hoPrec = true;
       }
@@ -1408,15 +1480,15 @@ static void screenGrafico()
     // Legenda: nome, tratto e valore di adesso. Il campione di destra e' di
     // mezz'ora fa al massimo, il valore corrente e' quello vero.
     int16_t ly = GR_Y1 + 40;
-    display.setFont(&FreeSans9pt7b);
+    tela.setFont(&FreeSans9pt7b);
     for (int k = 0; k < nSerie; k++) {
       const int16_t x0 = 14;
       for (int16_t x = x0; x < x0 + 26; x++) {
-        if (grVisibile(k, (int)(x - x0))) display.drawPixel(x, ly - 4, GxEPD_BLACK);
-        if (k == 0 && grVisibile(k, (int)(x - x0))) display.drawPixel(x, ly - 3, GxEPD_BLACK);
+        if (grVisibile(k, (int)(x - x0))) tela.drawPixel(x, ly - 4, GxEPD_BLACK);
+        if (k == 0 && grVisibile(k, (int)(x - x0))) tela.drawPixel(x, ly - 3, GxEPD_BLACK);
       }
-      display.setCursor(x0 + 34, ly);
-      display.print(nomi[k]);
+      tela.setCursor(x0 + 34, ly);
+      tela.print(nomi[k]);
       if (ultimo[k] != REMOTE_TEMP_VUOTO) {
         drawRight(fmtNum(ultimo[k] / 10.0f, 1) + " C", 388, ly);
       }
@@ -1424,7 +1496,7 @@ static void screenGrafico()
       if (ly > 296) break;
     }
   }
-  while (display.nextPage());
+  telaSulPannello(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1466,7 +1538,7 @@ static void showPage(uint8_t i)
       break;
   }
 
-  display.hibernate();
+  pannello.hibernate();
   s_epdRefresh++;
   s_epdUltimoMs   = millis() - t0;
   s_fullUltimoMs  = millis();   // il cambio pagina e' sempre un completo
@@ -1518,18 +1590,18 @@ void setup()
   // 50 ms di reset e' quello che usa l'esempio ufficiale WeAct (il default di
   // GxEPD2 e' 10 ms). Se il pannello sembrasse morto, e' il primo numero da
   // toccare.
-  display.init(115200, true, 50, false);
-  display.setRotation(0);          // 0 = 400x300 nativo, come il formato .bin
+  pannello.init(115200, true, 50, false);
+  pannello.setRotation(0);          // 0 = 400x300 nativo, come il formato .bin
 
-  // U8g2 disegna sopra lo STESSO canvas di GxEPD2: begin() vuole il display
-  // gia' inizializzato, e da qui in poi le due strade convivono (i font
+  // U8g2 disegna sopra la STESSA tela di Adafruit_GFX, e da qui in poi le due
+  // strade convivono (i font
   // Adafruit per i numeri grandi della pagina nodi, U8g2 dove serve UTF-8).
-  u8g2Fonts.begin(display);
+  u8g2Fonts.begin(tela);
 
-  Serial.printf("[epd] dopo la rotazione: %d x %d\n", display.width(), display.height());
+  Serial.printf("[epd] dopo la rotazione: %d x %d\n", pannello.width(), pannello.height());
   Serial.printf("[epd] partial update: %s, fast partial: %s\n",
-                display.epd2.hasPartialUpdate ? "si" : "no",
-                display.epd2.hasFastPartialUpdate ? "si" : "no");
+                pannello.epd2.hasPartialUpdate ? "si" : "no",
+                pannello.epd2.hasFastPartialUpdate ? "si" : "no");
   Serial.printf("[epd] tempi nominali: completo %u ms, parziale %u ms\n",
                 (unsigned)EPD_DRIVER::full_refresh_time,
                 (unsigned)EPD_DRIVER::partial_refresh_time);
@@ -1763,7 +1835,7 @@ void loop()
     {
       const uint32_t t0 = millis();
       screenOrologio();
-      display.hibernate();
+      pannello.hibernate();
       s_oraUltimoMs  = millis();
       s_epdRefresh++;
       s_epdOrologioMs = millis() - t0;
@@ -1782,7 +1854,7 @@ void loop()
                       (millis() - s_fullUltimoMs >= FULL_OGNI_MS);
     const uint32_t t0 = millis();
     screenNodi(full);
-    display.hibernate();
+    pannello.hibernate();
 
     s_nodiParziali = full ? 0 : s_nodiParziali + 1;
     s_nodiDirty    = false;

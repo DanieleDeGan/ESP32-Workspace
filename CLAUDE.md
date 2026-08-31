@@ -1382,13 +1382,33 @@ senza di loro si somiglierebbero (schermo che non cambia).
   e con lui l'OTA e il prelievo dei DATA dal driver ESP-NOW, che tiene solo
   l'ultimo pacchetto. È la stessa regola dei callback della radio: **la
   richiesta accoda, il loop lavora.**
-- **L'anteprima 1:1 del pannello nel browser NON si può fare leggendo il
-  framebuffer**: in GxEPD2 1.6.9 `_buffer` è `private` e non esiste
-  `getBuffer()`. Per averla servirebbe disegnare su un `GFXcanvas1` nostro
-  (15.000 byte di RAM, ce ne sono) e spingerlo sul display con `drawImage()`,
-  cioè far passare tutte le funzioni di disegno per un `Adafruit_GFX&` invece
-  che per il `display` globale. È un refactor meccanico ma vero, non un
-  aggancio: valutato il 2026-08-28 e **non fatto**.
+- **L'anteprima 1:1 del pannello c'è, da `v22`** (2026-08-31), ed è il motivo
+  per cui ogni disegno passa da una **tela** `GFXcanvas1` invece che dritto sul
+  display: `pannello` riceve solo la tela finita, e da lui passano soltanto
+  finestre, paging e refresh. `GET /api/pannello/anteprima` restituisce quei
+  15.000 byte — **lo stesso formato dei `.bin`**, quindi il browser li disegna
+  con l'`unpack()` che ha già e chi verifica da fuori può confrontarli **bit a
+  bit** con l'immagine attesa (provato: l'anteprima di una pagina immagine è
+  identica al file sulla card).
+  - **Leggere il framebuffer di GxEPD2 non era la strada**, e non solo perché
+    `_buffer` è `private` (`GxEPD2_BW.h:815`): la pagina immagine scriveva
+    dritta al controller con `writeImage()`, **saltando quel framebuffer**, e
+    un'anteprima presa da lì non avrebbe mai visto proprio le pagine che
+    l'utente compone.
+  - **`drawImage()`/`writeImage()` non vanno dentro `firstPage()/nextPage()`**:
+    scrivono al controller e fanno il refresh da sé, quindi darebbero due
+    refresh, il secondo col buffer ancora vuoto — **pannello bianco**. La tela
+    si copia con `drawPixel` dentro il paging, così finestre e refresh restano
+    esattamente come erano.
+  - **Costo misurato**: refresh completo 2200 → **2630 ms**, parziale su tutta
+    la pagina 980 → **1040 ms**, orologio **810 → 810 ms** (invariato, perché il
+    ciclo gira solo sul rettangolo chiesto). I 430 ms del completo si
+    toglierebbero con `writeImage()` fuori dal paging, ma quello tocca il
+    tratto tela→vetro che l'anteprima **non** può verificare: va provato da chi
+    il pannello lo sta guardando.
+  - **Il limite da conoscere**: l'anteprima mostra ciò che l'hub **ha
+    disegnato**, non i fotoni sul vetro. Copre "il contenuto è sbagliato", non
+    "il display non risponde" — per quello restano `epd_refresh` e i tempi.
 - **La fascia del messaggio sulla pagina nodi** (da `v11`, 2026-08-28,
   interruttore in `/pannello`): 70 px in fondo con il messaggio attivo, e
   compare **solo se un messaggio c'è** — acceso l'interruttore ma senza

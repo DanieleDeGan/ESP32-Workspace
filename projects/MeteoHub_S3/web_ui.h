@@ -32,6 +32,13 @@ uint32_t    app_epd_refresh();     // refresh del pannello da questo avvio
 uint32_t    app_epd_ultimo_ms();   // quanto e' costato l'ultimo refresh
 uint32_t    app_epd_orologio_ms(); // e quanto costa il solo orologio
 
+// La tela: i 15.000 byte che sono finiti sul vetro, nel formato dei .bin
+// (1 bit per pixel, MSB per primo, 50 byte per riga, 1 = bianco). Non e' una
+// copia dello stato del pannello: e' lo stato del pannello, perche' ogni
+// disegno passa di li' e non c'e' nessun'altra strada per arrivare al vetro.
+const uint8_t* app_tela();
+size_t         app_tela_bytes();
+
 // Comandi verso il pannello: si ACCODANO e li esegue il loop(). Un refresh
 // sono ~2,2 s: dentro un handler HTTP terrebbe fermo il server, l'OTA e il
 // prelievo dei DATA dei nodi dal driver ESP-NOW, che tiene solo l'ultimo.

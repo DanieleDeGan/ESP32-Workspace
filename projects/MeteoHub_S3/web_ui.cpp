@@ -766,6 +766,29 @@ static void handleApiImmaginiElimina() {
   srv.send(ok ? 200 : 404, "text/plain", ok ? "ok" : "non trovata");
 }
 
+// GET /api/pannello/anteprima — quello che il pannello sta mostrando.
+//
+// Serve perche' il pannello, da remoto, era l'unica cosa di questa scheda che
+// non si poteva guardare: /api/pannello dice QUALE pagina e' in mostra, non
+// che cosa c'e' sopra, e le due cose divergono per qualunque motivo -- una
+// immagine mancante, un nodo senza dati, un refresh a meta'.
+//
+// Sono i byte della tela, quindi lo stesso formato dei .bin: il browser li
+// disegna con l'unpack() che ha gia', e chi verifica da fuori puo' anche
+// confrontarli bit a bit con l'immagine che si aspetta.
+//
+// Una write sola da 15 kB (piu' l'header): il taglio a budget dei file su SD
+// qui non serve, perche' non c'e' un ciclo che possa restare appeso -- al
+// massimo si paga la singola write bloccata, che e' il costo minimo che il
+// core impone comunque.
+static void handleApiPannelloAnteprima() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+  srv.setContentLength(app_tela_bytes());
+  srv.send(200, "application/octet-stream", "");
+  srv.sendContent((const char*)app_tela(), app_tela_bytes());
+}
+
 // GET /api/immagini/scarica?nome=xxx — i 15.000 byte, per l'anteprima nel
 // browser (unpack/paint sono gia' scritti in www/dither.html).
 static void handleApiImmaginiScarica() {
@@ -984,6 +1007,8 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  .arch p:active{border-left-color:var(--acc)}
  nav{margin:1.8rem 0 .5rem;display:flex;flex-wrap:wrap;gap:.4rem 1rem;font-size:.85rem}
  a{color:var(--acc);text-decoration:none}
+ .ante{background:#fff;border-radius:8px;overflow:hidden;margin:.1rem 0 .45rem}
+ .ante canvas{width:100%;height:auto;display:block;image-rendering:pixelated}
  @media (max-width:420px){
   .azioni{grid-template-columns:1fr}
   .riga{flex-wrap:wrap}
@@ -993,8 +1018,11 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
 
 <div class="card" id="ora">
  <div class="muted" style="margin:0">A schermo adesso</div>
- <div style="font-size:1.35rem;font-weight:700;margin:.25rem 0 .8rem" id="oraNome">&mdash;</div>
- <button class="sec full" id="brf">Aggiorna il pannello adesso</button>
+ <div style="font-size:1.35rem;font-weight:700;margin:.25rem 0 .45rem" id="oraNome">&mdash;</div>
+ <div class="ante"><canvas id="ante" width="400" height="300"></canvas></div>
+ <div class="muted" id="sante" style="margin:0 0 .55rem">&mdash;</div>
+ <button class="sec full" id="bant">Rileggi l'anteprima</button>
+ <button class="sec full" id="brf" style="margin-top:.4rem">Aggiorna il pannello adesso</button>
  <div class="esito" id="srf"></div>
 </div>
 
@@ -1115,22 +1143,45 @@ function postJson(u,esito){
   .catch(e=>{flash(esito||E('sord'),e.message||'hub non raggiungibile',1);});
 }
 
+// Disegna 15.000 byte su un canvas: 400x300 a 1 bit, MSB per primo, 1 =
+// bianco. Una funzione sola per le anteprime delle immagini E per quella del
+// pannello, perche' e' lo stesso formato -- due copie divergerebbero, ed e'
+// la stessa regola per cui a bordo l'ora la disegna una funzione sola.
+function dipingi15k(cv,by){
+ const ctx=cv.getContext('2d'),img=ctx.createImageData(400,300);
+ for(let y=0;y<300;y++)for(let x=0;x<400;x++){
+  const bit=(by[y*50+(x>>3)]>>(7-(x&7)))&1,o=(y*400+x)*4,v=bit?255:0;
+  img.data[o]=img.data[o+1]=img.data[o+2]=v;img.data[o+3]=255;}
+ ctx.putImageData(img,0,0);}
+
+// L'anteprima di cio' che il pannello mostra ADESSO. Non si aggiorna da sola
+// col resto della pagina (ogni 15 s): sono 15 kB su un server sincrono, e
+// chiederli in continuazione toglierebbe tempo ai nodi e all'OTA. Si rilegge
+// a mano, e da sola dopo le azioni che ridisegnano il pannello.
+function leggiAnte(){
+ const b=E('bant'); b.disabled=true; E('sante').textContent='lettura\u2026';
+ fetch('/api/pannello/anteprima',{cache:'no-store'})
+  .then(r=>r.ok?r.arrayBuffer():Promise.reject('HTTP '+r.status))
+  .then(x=>{const by=new Uint8Array(x);
+   if(by.length!=15000){E('sante').textContent=by.length+' byte invece di 15000';return;}
+   dipingi15k(E('ante'),by);
+   let neri=0; for(let i=0;i<by.length;i++){let v=by[i]; for(let k=0;k<8;k++){if(!(v&1))neri++; v>>=1;}}
+   E('sante').textContent='letta alle '+new Date().toLocaleTimeString()+
+     ' \u2014 '+(neri/1200).toFixed(1)+'% di nero';})
+  .catch(e=>{E('sante').textContent='anteprima non disponibile ('+e+')';})
+  .finally(()=>{b.disabled=false;});
+}
+
 // I 15.000 byte di ogni immagine si scaricano UNA volta sola: la stessa
 // figura puo' stare in piu' slot, e la pagina si ridisegna ogni 15 secondi.
 const BIN={};
 function anteprima(box,nome){
  const cv=document.createElement('canvas'); cv.width=400; cv.height=300;
  box.appendChild(cv);
- const dipingi=by=>{
-  const ctx=cv.getContext('2d'),img=ctx.createImageData(400,300);
-  for(let y=0;y<300;y++)for(let x=0;x<400;x++){
-   const bit=(by[y*50+(x>>3)]>>(7-(x&7)))&1,o=(y*400+x)*4,v=bit?255:0;
-   img.data[o]=img.data[o+1]=img.data[o+2]=v;img.data[o+3]=255;}
-  ctx.putImageData(img,0,0);};
- if(BIN[nome]){dipingi(BIN[nome]);return;}
+ if(BIN[nome]){dipingi15k(cv,BIN[nome]);return;}
  fetch('/api/immagini/scarica?nome='+encodeURIComponent(nome))
   .then(r=>r.ok?r.arrayBuffer():Promise.reject())
-  .then(b=>{BIN[nome]=new Uint8Array(b);dipingi(BIN[nome]);})
+  .then(b=>{BIN[nome]=new Uint8Array(b);dipingi15k(cv,BIN[nome]);})
   .catch(()=>{box.className='mini gen';box.innerHTML='&#9888;';});
 }
 
@@ -1204,7 +1255,7 @@ function render(d){
    postJson('/api/pannello/pagina?i='+c.dataset.d+'&durata='+c.value));
  box.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>{
    b.disabled=true;b.textContent='in coda...';
-   post('/api/pannello/vai?i='+b.dataset.v).then(()=>setTimeout(carica,3500));});
+   post('/api/pannello/vai?i='+b.dataset.v).then(()=>setTimeout(()=>{carica();leggiAnte();},3500));});
  box.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>
    postJson('/api/pannello/pagina?i='+b.dataset.f+'&fissa=1'));
  box.querySelectorAll('[data-su]').forEach(b=>b.onclick=()=>
@@ -1298,7 +1349,10 @@ E('fas').onchange=()=>post('/api/pannello?fascia='+(E('fas').checked?1:0))
  .then(r=>r.json()).then(d=>{render(d);flash(E('sf'),'Salvato');post('/api/pannello/refresh');});
 E('sda').onchange=()=>salvaRotazione(800);
 E('sa').onchange=()=>salvaRotazione(800);
-E('brf').onclick=()=>post('/api/pannello/refresh').then(()=>flash(E('srf'),'Refresh in coda&hellip;'));
+E('brf').onclick=()=>post('/api/pannello/refresh')
+ .then(()=>{flash(E('srf'),'Refresh in coda&hellip;');setTimeout(leggiAnte,3500);});
+E('bant').onclick=leggiAnte;
+leggiAnte();
 E('bgraf').onclick=()=>postJson('/api/pannello/aggiungi?tipo=grafico',E('sgraf'))
  .then(()=>{flash(E('sgraf'),'Aggiunta in fondo all\'elenco');window.scrollTo({top:0,behavior:'smooth'});});
 E('bm').onclick=()=>{
@@ -1690,6 +1744,7 @@ static const Rotta ROTTE[] = {
   { HTTP_POST, "/api/pannello",         handleApiPannelloSet,        "rotazione, ore di silenzio, fascia del messaggio", "rotazione=0|1, sil_da=0..23, sil_a=0..23, fascia=0|1" },
   { HTTP_POST, "/api/pannello/pagina",  handleApiPannelloPagina,     "una pagina: attiva, durata, oppure 'solo questa'", "i=slot, attiva=0|1, durata=secondi, fissa=1" },
   { HTTP_POST, "/api/pannello/vai",     handleApiPannelloVai,        "manda subito una pagina sul pannello (accoda: la disegna il loop)", "i=slot" },
+  { HTTP_GET,  "/api/pannello/anteprima", handleApiPannelloAnteprima,  "i 15.000 byte che il pannello sta mostrando (formato .bin)", "" },
   { HTTP_POST, "/api/pannello/refresh", handleApiPannelloRefresh,    "ridisegna la pagina corrente (completo, ~2,2 s)", "" },
   { HTTP_POST, "/api/pannello/aggiungi",handleApiPannelloAggiungi,   "aggiunge una pagina: immagine (param) o grafico (tipo)", "param=NOME oppure tipo=grafico" },
   { HTTP_POST, "/api/pannello/rimuovi", handleApiPannelloRimuovi,    "toglie una pagina dall'elenco (lo slot 0 non si tocca)", "i=slot" },
