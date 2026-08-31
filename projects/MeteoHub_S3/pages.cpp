@@ -64,6 +64,7 @@ const char* pages_tipo_nome(uint8_t tipo)
     case PT_BIANCA:    return "bianca";
     case PT_IMMAGINE:  return "immagine";
     case PT_GRAFICO:   return "grafico";
+    case PT_DETTAGLIO: return "dettaglio";
     default:           return "?";
   }
 }

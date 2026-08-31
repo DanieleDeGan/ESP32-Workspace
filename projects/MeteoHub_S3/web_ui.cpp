@@ -812,6 +812,26 @@ static void handleApiPannelloAggiungi() {
   // grafico. Con `param` si intende un'immagine, che e' il caso storico e
   // resta quello di default per non cambiare le chiamate gia' scritte.
   const String tipo = srv.hasArg("tipo") ? srv.arg("tipo") : String("");
+
+  // Una pagina di dettaglio per nodo. Il nodo si indica per NOME e non per
+  // indice: gli indici si spostano quando un nodo viene dimenticato, e la
+  // pagina finirebbe per mostrarne un altro senza dirlo.
+  if (tipo == "dettaglio") {
+    const String nodo = srv.hasArg("param") ? srv.arg("param") : String("");
+    if (!nodo.length()) { srv.send(400, "text/plain", "manca param"); return; }
+    if (paginaGiaPresente(PT_DETTAGLIO, nodo.c_str())) {
+      srv.send(409, "text/plain", "il dettaglio di quel nodo c'e' gia'");
+      return;
+    }
+    if (pages_add(PT_DETTAGLIO, nodo.c_str()) < 0) {
+      srv.send(507, "text/plain", "non c'e' piu' posto nell'elenco delle pagine");
+      return;
+    }
+    pages_save();
+    handleApiPannello();
+    return;
+  }
+
   if (tipo == "grafico") {
     if (paginaGiaPresente(PT_GRAFICO, nullptr)) {
       srv.send(409, "text/plain", "la pagina del grafico c'e' gia'");
@@ -1091,6 +1111,14 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  subito dopo un riavvio invece di impiegare un giorno a formarsi.</p>
  <div class="esito" id="sgraf"></div>
 </div>
+<div class="card">
+ <div id="bdett"></div>
+ <p class="muted">Una pagina per nodo con tutto quello che si sa di lui:
+ rugiada, percepiti, acqua nell'aria, minimi e massimi del giorno, variazione
+ a tre ore, pressione e trend. Sono gli stessi valori che stavano schiacciati
+ nella pagina dei nodi fino alla v24: qui hanno una riga per uno.</p>
+ <div class="esito" id="sdett"></div>
+</div>
 
 <h2>Aggiungere un'immagine</h2>
 <div class="card">
@@ -1355,6 +1383,22 @@ E('bant').onclick=leggiAnte;
 leggiAnte();
 E('bgraf').onclick=()=>postJson('/api/pannello/aggiungi?tipo=grafico',E('sgraf'))
  .then(()=>{flash(E('sgraf'),'Aggiunta in fondo all\'elenco');window.scrollTo({top:0,behavior:'smooth'});});
+// I pulsanti del dettaglio si costruiscono dai nodi VERI, non da un elenco
+// scritto a mano: un nodo dimenticato deve sparire da qui da solo, o si
+// aggiungerebbe la pagina di uno che non c'e' piu'.
+fetch('/api/nodi',{cache:'no-store'}).then(r=>r.json()).then(d=>{
+ const box=E('bdett'); if(!box) return;
+ if(!d.nodi.length){box.innerHTML='<p class="muted" style="margin:0">Nessun nodo associato.</p>';return;}
+ d.nodi.forEach(n=>{
+  const b=document.createElement('button');
+  b.className='sec full'; b.style.marginBottom='.4rem';
+  b.textContent='Aggiungi il dettaglio di '+n.nome;
+  b.onclick=()=>postJson('/api/pannello/aggiungi?tipo=dettaglio&param='+encodeURIComponent(n.nome),E('sdett'))
+   .then(()=>{flash(E('sdett'),'Aggiunta in fondo');window.scrollTo({top:0,behavior:'smooth'});});
+  box.appendChild(b);
+ });
+}).catch(()=>{});
+
 E('bm').onclick=()=>{
  if(!E('txt').value.trim()){flash(E('sm'),'Scrivi qualcosa',1);return;}
  const b=new URLSearchParams();b.set('t',E('txt').value);b.set('min',E('min').value);b.set('urg',E('urg').checked?1:0);
@@ -1746,7 +1790,7 @@ static const Rotta ROTTE[] = {
   { HTTP_POST, "/api/pannello/vai",     handleApiPannelloVai,        "manda subito una pagina sul pannello (accoda: la disegna il loop)", "i=slot" },
   { HTTP_GET,  "/api/pannello/anteprima", handleApiPannelloAnteprima,  "i 15.000 byte che il pannello sta mostrando (formato .bin)", "" },
   { HTTP_POST, "/api/pannello/refresh", handleApiPannelloRefresh,    "ridisegna la pagina corrente (completo, ~2,2 s)", "" },
-  { HTTP_POST, "/api/pannello/aggiungi",handleApiPannelloAggiungi,   "aggiunge una pagina: immagine (param) o grafico (tipo)", "param=NOME oppure tipo=grafico" },
+  { HTTP_POST, "/api/pannello/aggiungi",handleApiPannelloAggiungi,   "aggiunge una pagina: immagine, grafico o dettaglio di un nodo", "param=NOME | tipo=grafico | tipo=dettaglio&param=NODO" },
   { HTTP_POST, "/api/pannello/rimuovi", handleApiPannelloRimuovi,    "toglie una pagina dall'elenco (lo slot 0 non si tocca)", "i=slot" },
   { HTTP_POST, "/api/pannello/sposta",  handleApiPannelloSposta,     "sposta una pagina di un posto nell'elenco", "i=slot, dir=-1|1" },
 

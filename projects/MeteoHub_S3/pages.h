@@ -33,6 +33,7 @@ enum PageType : uint8_t
   PT_BIANCA,       // pannello a riposo, nessun aggiornamento
   PT_IMMAGINE,     // un .bin da /images: param = nome del file, senza estensione
   PT_GRAFICO,      // temperatura dei nodi nelle ultime 24 h
+  PT_DETTAGLIO,    // tutto su UN nodo: param = il suo nome
   PT_COUNT
 };
 

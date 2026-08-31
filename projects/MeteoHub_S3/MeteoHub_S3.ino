@@ -97,7 +97,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v24";
+static const char FW_VERSION[] = "v25";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -790,48 +790,20 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
   }
 
   // --- riga del trend barometrico: l'unica freccia della pagina ------------
-  drawFrecciaTrend(26, y + 78, n.trend);
+  drawFrecciaTrend(26, y + 82, n.trend);
   tela.setFont(&FreeSans9pt7b);
-  tela.setCursor(44, y + 84);
+  tela.setCursor(44, y + 88);
   tela.print(n.trend == TREND_IGNOTO ? "raccolgo dati" : remote_trend_label(n.trend));
-
-  const float td = meteo_dewpoint_c(n.value[0], n.value[1]);
-  if (isfinite(td)) {
-    // Il grado disegnato, come sulla temperatura: scriverlo li' e non qui
-    // faceva sembrare la rugiada un numero di un'altra specie.
-    tela.setFont(&FreeSansBold9pt7b);
-    drawRight("rugiada " + fmtNum(td, 1), W - 22, y + 84);
-    drawGrado(W - 18, y + 78, 2);
-    tela.setFont(&FreeSans9pt7b);
-    tela.setCursor(W - 13, y + 84);
-    tela.print("C");
-  }
-
-  // --- riga di riepilogo: dove e' stata e dove sta andando -----------------
-  float tMin, tMax, tD3;
-  const int nCamp = statTemp(indice, &tMin, &tMax, &tD3);
-  const float hx  = meteo_humidex_c(n.value[0], n.value[1]);
-  const float ah  = meteo_umidita_assoluta_gm3(n.value[0], n.value[1]);
-
-  int16_t x = 14;
-  tela.setFont(&FreeSans9pt7b);
-  if (nCamp > 0) {
-    tela.drawBitmap(12, y + 92, IC_MINMAX, IC_MINMAX_W, IC_MINMAX_H, GxEPD_BLACK);
-    x = 30;
-  }
-
-  String voci[4];
-  int nv = 0;
-  if (nCamp > 0)      voci[nv++] = fmtNum(tMin, 1) + " / " + fmtNum(tMax, 1);
-  if (isfinite(tD3))  voci[nv++] = "3h " + fmtDelta(tD3, 1);
-  if (isfinite(ah))   voci[nv++] = fmtNum(ah, 1) + " g/m3";
-  // L'humidex e' l'ultimo perche' e' il primo che si puo' perdere: e' anche
-  // l'unico che sotto i 20 gradi non esiste (NAN) e sopra dice qualcosa solo
-  // se supera davvero la temperatura.
-  if (isfinite(hx) && hx >= n.value[0] + 2.0f)
-    voci[nv++] = "percep. " + fmtNum(hx, 0);
-  drawFila(voci, nv, x, y + 104, W - 12, 14);
 }
+
+// Qui finiva, fino a v24, una riga con rugiada, min/max, delta a 3 ore,
+// umidita' assoluta e percepiti. Era troppa roba: otto numeri per nodo in 116
+// px si leggono uno per volta, cioe' non si leggono. Ora quei valori stanno
+// nella pagina DETTAGLIO, che ne ha 300 di px e li puo' incolonnare.
+//
+// E' la regola gia' scritta per la fascia del messaggio e per il grafico: su
+// e-ink il tempo e' la dimensione in piu', e per vedere tutto c'e' la
+// rotazione -- pagine intere e leggibili invece di una compressa.
 
 // --- blocco COMPATTO: da tre nodi in su -----------------------------------
 static void drawNodoCompatto(const RemoteNode& n, int16_t y)
@@ -1471,6 +1443,151 @@ static void screenImmagine(const char* nome)
 }
 
 // ---------------------------------------------------------------------------
+// Pagina DETTAGLIO — tutto quello che si sa di UN nodo
+// ---------------------------------------------------------------------------
+// Nasce da un difetto della pagina nodi: i valori derivati (rugiada, min/max,
+// percepiti, acqua nell'aria) erano finiti tutti li' dentro, e otto numeri in
+// 116 px non si leggono da tre metri -- si decifrano da vicino, uno per volta.
+//
+// Qui invece c'e' una pagina intera per un nodo solo, quindi ogni valore ha la
+// sua riga, l'etichetta a sinistra e il numero incolonnato a destra. Si legge
+// come una tabella, che e' esattamente quello che e'.
+//
+// Il nodo si indica per NOME (il param della pagina) e non per indice: gli
+// indici si spostano quando un nodo viene dimenticato, e la pagina finirebbe
+// per mostrare un altro nodo senza dirlo.
+// L'unita' viaggia separata dal valore perche' va disegnata in corpo piu'
+// piccolo e, quando sono gradi, con il cerchietto vero al posto della lettera
+// -- i font Adafruit_GFX sono ASCII puro e il grado non ce l'hanno. Scriverlo
+// come " C" era l'unico punto della pagina dove un'unita' non somigliava a se
+// stessa.
+static void drawRigaDett(const String& etichetta, const String& valore,
+                         const String& unita, int16_t y)
+{
+  const int16_t W = tela.width();
+  tela.setFont(&FreeSans9pt7b);
+  tela.setCursor(18, y);
+  tela.print(etichetta);
+
+  const bool gradi = (unita == "C");
+  int16_t bx, by; uint16_t bw, bh;
+  int16_t xFine = W - 18;
+
+  if (gradi) {
+    tela.setFont(&FreeSans9pt7b);
+    tela.getTextBounds("C", 0, 0, &bx, &by, &bw, &bh);
+    tela.setCursor(xFine - (int16_t)bw, y + 2);
+    tela.print("C");
+    xFine -= (int16_t)bw + 4;
+    drawGrado(xFine, y - 6, 3);
+    xFine -= 8;
+  } else if (unita.length()) {
+    tela.setFont(&FreeSans9pt7b);
+    tela.getTextBounds(unita, 0, 0, &bx, &by, &bw, &bh);
+    tela.setCursor(xFine - (int16_t)bw, y + 2);
+    tela.print(unita);
+    xFine -= (int16_t)bw + 6;
+  }
+
+  tela.setFont(&FreeSansBold12pt7b);
+  drawRight(valore, xFine, y + 2);
+}
+
+static void screenDettaglio(const char* nomeNodo)
+{
+  const int16_t W = tela.width();
+  tela.fillScreen(GxEPD_WHITE);
+  tela.setTextColor(GxEPD_BLACK);
+
+  RemoteNode n;
+  int indice = -1;
+  for (int i = 0; i < remote_count(); i++) {
+    RemoteNode t;
+    if (!remote_get(i, &t)) continue;
+    if (strncmp(t.nome, nomeNodo, sizeof(t.nome)) == 0) { n = t; indice = i; break; }
+  }
+
+  if (indice < 0) {
+    tela.setFont(&FreeSansBold18pt7b);
+    drawCenter("NODO NON IN ELENCO", W / 2, 140);
+    tela.setFont(&FreeSans9pt7b);
+    drawCenter(String(nomeNodo), W / 2, 170);
+    drawCenter("e' stato dimenticato, o non si e' mai presentato", W / 2, 192);
+    telaSulPannello(true);
+    return;
+  }
+
+  drawBarraNodo(n, 0, 26);
+
+  if (!n.hasData) {
+    tela.setFont(&FreeSans9pt7b);
+    drawCenter("in attesa del primo dato", W / 2, 150);
+    telaSulPannello(true);
+    return;
+  }
+
+  // Le due misure principali, in grande: chi guarda da lontano deve poterle
+  // leggere anche da questa pagina, non solo da quella dei nodi.
+  if (isfinite(n.value[0])) {
+    tela.drawBitmap(14, 44, IC_TERMOMETRO, IC_TERMOMETRO_W, IC_TERMOMETRO_H, GxEPD_BLACK);
+    tela.setFont(&FreeSansBold24pt7b);
+    tela.setCursor(40, 72);
+    tela.print(fmtNum(n.value[0], 1));
+    int16_t bx, by; uint16_t bw, bh;
+    tela.getTextBounds(fmtNum(n.value[0], 1), 40, 72, &bx, &by, &bw, &bh);
+    drawGrado(40 + (int16_t)bw + 10, 48, 4);
+    tela.setFont(&FreeSansBold12pt7b);
+    tela.setCursor(40 + (int16_t)bw + 17, 72);
+    tela.print("C");
+  }
+  if (isfinite(n.value[1])) {
+    tela.drawBitmap(228, 46, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
+    tela.setFont(&FreeSansBold24pt7b);
+    tela.setCursor(256, 72);
+    tela.print(fmtNum(n.value[1], 0) + "%");
+  }
+  tela.drawFastHLine(14, 88, W - 28, GxEPD_BLACK);
+
+  // La tabella. L'ordine e' quello dell'utilita': prima cosa si sente, poi
+  // dove e' stata la temperatura, poi la pressione col suo trend.
+  int16_t y = 116;
+  const float td = meteo_dewpoint_c(n.value[0], n.value[1]);
+  const float hx = meteo_humidex_c(n.value[0], n.value[1]);
+  const float ah = meteo_umidita_assoluta_gm3(n.value[0], n.value[1]);
+
+  if (isfinite(td)) { drawRigaDett("punto di rugiada", fmtNum(td, 1), "C", y); y += 26; }
+  // Sotto i 20 gradi l'humidex non esiste: la riga non compare affatto,
+  // invece di mostrare un trattino che occupa spazio per dire niente.
+  if (isfinite(hx)) { drawRigaDett("temperatura percepita", fmtNum(hx, 0), "C", y); y += 26; }
+  if (isfinite(ah)) { drawRigaDett("acqua nell'aria", fmtNum(ah, 1), "g/m3", y); y += 26; }
+
+  float tMin, tMax, tD3;
+  const int nCamp = statTemp(indice, &tMin, &tMax, &tD3);
+  if (nCamp > 0) {
+    drawRigaDett("ultime 24 ore", fmtNum(tMin, 1) + " / " + fmtNum(tMax, 1), "C", y);
+    y += 26;
+  }
+  if (isfinite(tD3)) { drawRigaDett("ultime 3 ore", fmtDelta(tD3, 1), "C", y); y += 26; }
+
+  // La pressione in fondo, con il trend accanto: sono la stessa informazione
+  // letta in due modi, e separarle vorrebbe dire farle cercare due volte.
+  tela.drawFastHLine(14, 246, W - 28, GxEPD_BLACK);
+  if (isfinite(n.value[2])) {
+    tela.setFont(&FreeSansBold12pt7b);
+    tela.setCursor(18, 272);
+    tela.print(fmtNum(n.value[2], 1));
+    tela.setFont(&FreeSans9pt7b);
+    tela.print(" hPa");
+  }
+  drawFrecciaTrend(232, 266, n.trend);
+  tela.setFont(&FreeSans9pt7b);
+  tela.setCursor(250, 272);
+  tela.print(n.trend == TREND_IGNOTO ? "raccolgo dati" : remote_trend_label(n.trend));
+
+  telaSulPannello(true);
+}
+
+// ---------------------------------------------------------------------------
 // Pagina GRAFICO — la temperatura dei nodi nelle ultime 24 ore
 // ---------------------------------------------------------------------------
 // Perche' una pagina intera e non un grafichino dentro la pagina dei nodi:
@@ -1698,6 +1815,10 @@ static void showPage(uint8_t i)
 
     case PT_GRAFICO:
       screenGrafico();
+      break;
+
+    case PT_DETTAGLIO:
+      screenDettaglio(pg->param);
       break;
 
     case PT_BIANCA:
