@@ -97,7 +97,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v36";
+static const char FW_VERSION[] = "v37";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -739,20 +739,21 @@ static void drawBarraNodo(const RemoteNode& n, int16_t y, int16_t h, int idx)
   tela.fillRect(0, y, W, h, GxEPD_BLACK);
   tela.setTextColor(GxEPD_WHITE);
 
+  // Il testo si CENTRA nella barra misurandolo, invece di appoggiarlo a un
+  // offset fisso. Con la baseline a h-6 il font da 12 punti sforava di un
+  // pixel sopra il rettangolo: invisibile in mezzo alla pagina, evidente
+  // sulla prima barra, che parte a 2 px dal bordo -- le lettere risultavano
+  // tagliate di sopra.
+  //
+  // Misurando, la barra puo' anche cambiare altezza o font senza che nessuno
+  // debba rifare i conti a mano. by e' l'offset del bordo alto rispetto alla
+  // baseline, ed e' negativo: sottrarlo e' cio' che porta il testo dentro.
   tela.setFont(&FreeSansBold12pt7b);
-  tela.setCursor(10, y + h - 6);
+  int16_t bx, by; uint16_t bw, bh;
+  tela.getTextBounds(n.nome, 0, 0, &bx, &by, &bw, &bh);
+  const int16_t base = y + (h - (int16_t)bh) / 2 - by;
+  tela.setCursor(10, base);
   tela.print(n.nome);
-
-  // "MUTO" scritto, non il badge: dentro una barra gia' nera un badge nero
-  // non si vedrebbe, e invertirlo qui costerebbe un rettangolo bianco che
-  // spezza la barra proprio dove serve continua.
-  if (!n.online && n.hasData) {
-    int16_t bx, by; uint16_t bw, bh;
-    tela.getTextBounds(n.nome, 10, y + h - 6, &bx, &by, &bw, &bh);
-    tela.setFont(&FreeSansBold9pt7b);
-    tela.setCursor(10 + (int16_t)bw + 10, y + h - 7);
-    tela.print("MUTO");
-  }
 
   // L'ora dell'ultimo pacchetto NON si scrive piu' (da v31). Non e' per fare
   // spazio: e' che finche' il pannello mostra qualcosa che cambia da solo --
@@ -764,17 +765,18 @@ static void drawBarraNodo(const RemoteNode& n, int16_t y, int16_t h, int idx)
   // Resta il RITARDO, che e' l'unica cosa che il pannello deve dire da solo:
   // se un nodo tace da piu' della sua cadenza osservata, un punto esclamativo
   // in fondo alla barra. Non dice quanto -- dice "vai a guardare".
-  if (n.hasData && !n.online) {
-    // Muto: oltre la soglia (~2,5 cadenze). Il badge scritto, che si legge
-    // anche da lontano.
+  // Un avviso solo, a destra. Fino a v36 il "MUTO" si scriveva DUE volte --
+  // accanto al nome (residuo di quando l'ora stava a destra) e in fondo alla
+  // barra -- e sul pannello si leggeva due volte la stessa parola.
+  const char* avviso = nullptr;
+  if (n.hasData && !n.online)                 avviso = "MUTO";
+  else if (n.hasData && nodoInRitardo(idx, n)) avviso = "!";
+
+  if (avviso) {
+    // Stessa centratura del nome, ricalcolata perche' il corpo e' diverso.
     tela.setFont(&FreeSansBold9pt7b);
-    drawRight("MUTO", W - 10, y + h - 7);
-  }
-  else if (n.hasData && nodoInRitardo(idx, n)) {
-    // In ritardo ma non ancora muto: due cadenze saltate. Il punto
-    // esclamativo e' l'unico segno che a 1 bit si riconosce senza leggerlo.
-    tela.setFont(&FreeSansBold12pt7b);
-    drawRight("!", W - 14, y + h - 6);
+    tela.getTextBounds(avviso, 0, 0, &bx, &by, &bw, &bh);
+    drawRight(avviso, W - 10, y + (h - (int16_t)bh) / 2 - by);
   }
 
   tela.setTextColor(GxEPD_BLACK);
@@ -809,7 +811,7 @@ static void drawFila(const String* voci, int quante, int16_t x, int16_t y,
 static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
 {
   const int16_t W = tela.width();
-  drawBarraNodo(n, y, 22, indice);
+  drawBarraNodo(n, y, 26, indice);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
@@ -827,38 +829,38 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
   if (isfinite(n.value[0])) {
     // Allineata al centro del numero, non alla sua base: un'icona appoggiata
     // sulla riga di scrittura sembra caduta.
-    tela.drawBitmap(10, y + 44, IC_TERMOMETRO, IC_TERMOMETRO_W, IC_TERMOMETRO_H,
+    tela.drawBitmap(10, y + 48, IC_TERMOMETRO, IC_TERMOMETRO_W, IC_TERMOMETRO_H,
                     GxEPD_BLACK);
     tela.setFont(&FreeSansBold24pt7b);
-    tela.setCursor(36, y + 72);
+    tela.setCursor(36, y + 76);
     tela.print(fmtNum(n.value[0], 1));
     int16_t bx, by; uint16_t bw, bh;
-    tela.getTextBounds(fmtNum(n.value[0], 1), 36, y + 72, &bx, &by, &bw, &bh);
+    tela.getTextBounds(fmtNum(n.value[0], 1), 36, y + 76, &bx, &by, &bw, &bh);
     const int16_t xu = 36 + (int16_t)bw + 7;
-    drawGrado(xu + 3, y + 48, 4);
+    drawGrado(xu + 3, y + 52, 4);
     tela.setFont(&FreeSansBold12pt7b);
-    tela.setCursor(xu + 10, y + 72);
+    tela.setCursor(xu + 10, y + 76);
     tela.print("C");
   }
 
   tela.setFont(&FreeSansBold12pt7b);
   if (isfinite(n.value[1])) {
-    tela.drawBitmap(184, y + 46, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
-    tela.setCursor(210, y + 63);
+    tela.drawBitmap(184, y + 50, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
+    tela.setCursor(210, y + 67);
     tela.print(fmtNum(n.value[1], 0) + "%");
   }
   if (isfinite(n.value[2])) {
     tela.setFont(&FreeSansBold12pt7b);
-    drawRight(fmtNum(n.value[2], 1), W - 46, y + 63);
+    drawRight(fmtNum(n.value[2], 1), W - 46, y + 67);
     tela.setFont(&FreeSans9pt7b);
-    tela.setCursor(W - 42, y + 63);
+    tela.setCursor(W - 42, y + 67);
     tela.print("hPa");
   }
 
   // --- riga del trend barometrico: l'unica freccia della pagina ------------
-  drawFrecciaTrend(26, y + 104, n.trend);
+  drawFrecciaTrend(26, y + 108, n.trend);
   tela.setFont(&FreeSans9pt7b);
-  tela.setCursor(44, y + 110);
+  tela.setCursor(44, y + 114);
   tela.print(n.trend == TREND_IGNOTO ? "raccolgo dati" : remote_trend_label(n.trend));
 }
 
@@ -875,7 +877,7 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
 static void drawNodoCompatto(const RemoteNode& n, int16_t y, int indice)
 {
   const int16_t W = tela.width();
-  drawBarraNodo(n, y, 19, indice);
+  drawBarraNodo(n, y, 23, indice);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
