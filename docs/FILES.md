@@ -1002,13 +1002,18 @@ riusarne i moduli (che sono già scritti per essere staccabili) in un nodo nuovo
 
 | Progetto | Scheda | Nato da |
 |---|---|---|
-| `EnvNode_C3` | ESP32-C3 Supermini | `starters/C3_OLED_OTA` |
+| `EnvNode_C3` | ESP32-C3 Supermini | `starters/C3_OLED_OTA` — **scheda smantellata il 2026-08-31**, resta come riferimento |
 | `MeteoNode_C3` | XIAO ESP32-C3 (e ESP32 "classico") | moduli da `EnvNode_C3` |
+| `MeteoHub_S3` | Seeed XIAO ESP32-S3 Sense | bring-up del pannello e-ink + moduli da `EnvNode_C3` |
 | `Timelapse_XIAO` | Seeed XIAO ESP32-S3 Sense | `starters/XIAO_S3_Camera` |
 
 ---
 
-### `projects/EnvNode_C3/` — nodo ambientale con dashboard
+### `projects/EnvNode_C3/` — nodo ambientale con dashboard (hardware smantellato)
+
+> **La scheda non esiste più dal 2026-08-31**, e il file va letto al passato: il
+> progetto resta come base da cui ripartire e come copia di riferimento dei
+> moduli che `MeteoHub_S3`, `MeteoNode_C3` e `Timelapse_XIAO` hanno ereditato.
 
 **Ruolo**: nodo di monitoraggio temperatura/umidità con log storico e interfaccia
 web. Cresciuto dallo starter C3 aggiungendo, nell'ordine: sensore, storage,

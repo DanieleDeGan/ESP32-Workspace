@@ -49,7 +49,7 @@ toccare) vedi `docs/FILES.md`. Per il pinout/hardware della board AMOLED vedi
 | `starters/XIAO_S3_Camera/web_ui.h/.cpp` | pagina di controllo + API HTTP (stream MJPEG, scatto, galleria) |
 | `starters/XIAO_S3_Camera/hub_link.h/.cpp` | nodo ESP-NOW sopra `EspNowLink` (pairing, notifiche, comandi) |
 | `starters/XIAO_S3_Camera/secrets.h.example` | come per il C3: si copia in `secrets.h`, **gitignorato** |
-| `projects/EnvNode_C3/` | **progetto reale** (ESP32-C3): DHT11 + microSD SPI + dashboard web con grafici + orario NTP + OTA, e da `v4` anche **hub ESP-NOW** dei nodi a batteria — vedi sezione dedicata |
+| `projects/EnvNode_C3/` | **progetto reale, ma la scheda è stata smantellata il 2026-08-31** (ESP32-C3): DHT11 + microSD SPI + dashboard web con grafici + orario NTP + OTA, e da `v4` anche **hub ESP-NOW** dei nodi a batteria. Resta come riferimento e come base da cui ripartire — vedi sezione dedicata |
 | `projects/MeteoNode_C3/` | **progetto** (XIAO ESP32-C3, e lo stesso sketch anche su ESP32 "classico"): AHT20 + BMP280, previsione dal trend barometrico, storico 24 h in RAM, nodo ESP-NOW, e da `v9` **deep sleep** fra una misura e l'altra — vedi sezione dedicata |
 | `projects/MeteoNode_C3/MeteoNode_C3.ino` | misura, previsione, ciclo di sonno e risveglio — qui va la logica applicativa |
 | `projects/MeteoNode_C3/forecast.h` | trend barometrico a 3 ore con isteresi, header-only e puro |
@@ -844,9 +844,18 @@ anche `libraries/EspNowLink` (o una junction). Tutto il resto è core ESP32:
 periferiche in `loop()` senza bloccare a lungo). `camera.*`, `storage.*`,
 `net_ota.*`, `web_ui.*`, `hub_link.*` sono boilerplate per compito.
 
-## `projects/EnvNode_C3/` — nodo ambientale con dashboard (progetto reale)
+## `projects/EnvNode_C3/` — nodo ambientale con dashboard (progetto reale, hardware smantellato)
 
-Non è un template: è un'applicazione installata e in funzione, cresciuta dallo
+**Scheda smantellata il 2026-08-31**: l'hardware non esiste più, e
+`192.168.1.140` non è più l'indirizzo di nessuno. Il progetto resta qui **di
+proposito** — è la base da cui ripartire se servirà di nuovo un nodo ambientale
+o un secondo hub, ed è la copia di riferimento dei moduli (`rtc_time`,
+`sd_logger`, `remote_nodes`, `forecast.h`, `web_ui`) da cui sono nati gli altri
+progetti. **Tutto quello che segue descrive com'era quando girava**: resta vero
+del codice, non di una scheda in funzione. Non cercarlo in rete e non
+proporne un OTA.
+
+Non è un template: era un'applicazione installata e in funzione, cresciuta dallo
 starter `C3_OLED_OTA`. Vale come esempio di dove si arriva partendo da uno
 starter, e i suoi moduli sono i primi candidati da riusare in un nodo nuovo.
 
@@ -911,10 +920,16 @@ SSD1306 + dashboard web con grafici + orario NTP + OTA. Moduli:
   `rtc_time.*`, `comfort_eval()` direttamente; i ganci `app_*()` implementati
   nel `.ino` coprono solo letture correnti e min/max dall'ultimo avvio.
 
-### Ruolo secondario: hub ESP-NOW dei nodi a batteria (da `v4`, 2026-08-23)
+### Ruolo secondario: hub ESP-NOW dei nodi a batteria (da `v4`, 2026-08-23; concluso)
 
-`EnvNode_C3` è l'unica scheda di casa sempre accesa, con orologio NTP, microSD e
-web UI: finché non esiste `MeteoHub_S3` fa **anche** da hub per i nodi a
+**Ruolo finito**: `MeteoHub_S3` esiste dal 2026-08-27 e da allora i nodi sono
+suoi; con lo smantellamento della scheda (31/08) l'hub della casa è **uno solo**.
+Quanto segue resta scritto perché il codice è ancora qui e `MeteoHub_S3` ne usa
+le copie — `remote_nodes.*`, `forecast.h`, `sd_logger.*` sono nati in questo
+progetto, e i motivi delle loro scelte sono spiegati qui.
+
+`EnvNode_C3` era l'unica scheda di casa sempre accesa, con orologio NTP, microSD e
+web UI: finché non è esistito `MeteoHub_S3` faceva **anche** da hub per i nodi a
 batteria della stazione meteo (`remote_nodes.h/.cpp`, pagina `/nodi`, API
 `/api/nodi` e `/api/pairing`). Non è una comodità: un nodo in deep sleep perde
 la RAM ad ogni risveglio, quindi il suo storico **non può** stare su di lui.

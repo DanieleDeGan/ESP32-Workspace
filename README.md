@@ -35,7 +35,7 @@ divisione per chip o duplicherebbe le librerie o le lascerebbe comunque fuori.
 
 | Progetto | Scheda | Cos'è |
 |---|---|---|
-| `projects/EnvNode_C3/` | ESP32-C3 Supermini | nodo ambientale in funzione: DHT11 + log su microSD + dashboard web con grafici + OTA, e hub ESP-NOW dei nodi a batteria |
+| `projects/EnvNode_C3/` | ESP32-C3 Supermini | nodo ambientale: DHT11 + log su microSD + dashboard web con grafici + OTA, e hub ESP-NOW dei nodi a batteria. **Scheda smantellata il 2026-08-31**: resta come riferimento e come base da cui ripartire |
 | `projects/MeteoNode_C3/` | XIAO ESP32-C3 (e ESP32 "classico") | nodo meteo a batteria: AHT20 + BMP280, previsione dal trend barometrico, pagina con grafici SVG, nodo ESP-NOW e **deep sleep** fra una misura e l'altra |
 | `projects/MeteoHub_S3/` | Seeed XIAO ESP32-S3 **Sense** | **hub della stazione meteo**: riceve i nodi via ESP-NOW, li mostra su un pannello e-ink 4,2" e ne registra i CSV su microSD, con pagine configurabili, messaggi e immagini dalla web UI |
 | `projects/Timelapse_XIAO/` | Seeed XIAO ESP32-S3 **Sense** | camera timelapse: scatto a intervallo su microSD per giorno, galleria web con riproduzione, NTP + OTA |
@@ -450,7 +450,13 @@ servono a misurare il canale, non a interoperare.
 Applicazioni vere, non template: hanno una storia di deploy e vanno lette come
 esempio di "come viene fuori un progetto finito partendo da uno starter".
 
-### `EnvNode_C3` — nodo ambientale con dashboard
+### `EnvNode_C3` — nodo ambientale con dashboard (hardware smantellato)
+
+> **La scheda non esiste più dal 2026-08-31.** Il progetto resta nel repo di
+> proposito: è la base da cui ripartire per un nodo ambientale o un secondo hub,
+> ed è la copia di riferimento dei moduli (`rtc_time`, `sd_logger`,
+> `remote_nodes`, `forecast.h`) che gli altri progetti hanno ereditato. Quello
+> che segue descrive **com'era quando girava**.
 
 Cresciuto dallo starter `C3_OLED_OTA`, aggiungendo tutto quello che serviva
 davvero:
