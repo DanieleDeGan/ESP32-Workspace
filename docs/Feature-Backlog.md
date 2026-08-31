@@ -51,9 +51,15 @@ sono classificate "costo medio" e non "alto".
 
 ## Da fare
 
-### 1. Min/max del giorno per nodo
-**Cosa**: minimo e massimo di temperatura (e umidità) dalla mezzanotte, per
-ogni nodo, sul pannello e in dashboard.
+### 1. Min/max del giorno per nodo — FATTA IN PARTE il 2026-08-31 (`v23`-`v25`)
+**Fatto**: minimo e massimo di temperatura **delle ultime 24 ore** (non dalla
+mezzanotte) sul pannello, nella pagina dettaglio, letti dall'anello di 48
+mezz'ore che già serviva al grafico — quindi a costo zero di memoria.
+**Resta da fare**: la finestra *dalla mezzanotte locale*, che è un'altra cosa e
+ha l'avvertenza qui sotto; l'umidità; e gli stessi valori in dashboard.
+
+**Cosa** (testo originale): minimo e massimo di temperatura (e umidità) dalla
+mezzanotte, per ogni nodo, sul pannello e in dashboard.
 **Perché qui**: l'hub riceve ogni lettura e la scrive, ma *"quanto ha fatto
 oggi"* non esiste da nessuna parte — per saperlo bisogna scaricare un CSV. È il
 dato che si guarda più spesso e l'unico che non c'è.
@@ -122,9 +128,41 @@ pannello al buio vero invece che a un orario fisso.
 Windows di casa (annotato da tempo), e ogni volta si finisce a cercare
 l'indirizzo. Il pannello è già in bianco e nero: un QR è esattamente ciò che sa
 disegnare meglio.
-**Costo**: medio-basso. Un generatore QR minimale, nessuna libreria grafica.
+**Costo**: medio-basso. Serve la libreria `QRCode` di ricmoo (~10 kB di flash,
+è nel Library Manager e non dipende da nessun display: produce la matrice, il
+disegno lo fa il nostro codice come per le icone).
 **Dipendenze**: nessuna.
 **Attenzione**: va rigenerato quando l'IP cambia, non solo al boot.
+
+**Misure fatte il 2026-08-31** — servono a decidere *dove* può stare, ed è la
+parte che rende la voce pronta da pescare:
+
+- `http://192.168.1.73/` sono 20 byte → QR **versione 2, 25×25 moduli**. Sotto
+  non si scende: togliendo `http://` molti telefoni non aprono più il browser.
+- il pannello è 400 px su ~85 mm, cioè **4,7 px/mm**. Quindi:
+
+  | px per modulo | lato del QR | modulo fisico | si legge |
+  |---|---|---|---|
+  | 2 | 58 px | 0,42 mm | al limite, da ~10 cm |
+  | 3 | 87 px | 0,64 mm | comodo, da 20-30 cm |
+  | 5 | 137 px | 1,06 mm | da mezzo metro |
+
+- **nella pagina nodi non ci sta comodo**: con due nodi ogni blocco è alto 114
+  px e ne usa 90, quindi restano 24 px sotto il trend e una fascia libera alta
+  44 nella metà destra. Ci entra solo la versione da 58 px, che è quella al
+  limite; per una da 87 bisogna togliere spazio ai dati.
+
+**Le tre strade, valutate il 2026-08-31 e non scelte** (l'utente ha preferito
+rimandare):
+
+1. **pagina INFO dedicata** — QR da 137 px più IP, nome e versione. Non toglie
+   un pixel ai dati, si aggiunge e ruota come le altre pagine, e il QR si legge
+   da mezzo metro. È la strada coerente con la regola già scritta altrove: su
+   e-ink il tempo è la dimensione in più.
+2. **piccolo nel piede della pagina nodi** — il piede cresce da 30 a ~64 px e i
+   nodi perdono 34 px di altezza. Sempre presente, ma da inquadrare da vicino.
+3. **in fondo alla pagina dettaglio** — lì lo spazio per un QR da 87 px c'è già,
+   ma si vede solo quando quella pagina è in mostra.
 
 ### 7. La previsione vera accanto alla tua
 **Cosa**: previsione a 3 giorni da Open-Meteo su una pagina del pannello.
@@ -226,7 +264,13 @@ conviene lasciarlo fisso.
 `getBuffer()`. Servirebbe disegnare su un `GFXcanvas1` nostro (15 kB di RAM, ci
 sono) e spingerlo con `drawImage()` — cioè far passare **tutte** le funzioni di
 disegno per un `Adafruit_GFX&` invece che per il `display` globale.
-**Stato**: valutato il 2026-08-28 e non fatto. È un refactor meccanico ma vero.
+**Stato**: **FATTA il 2026-08-31** (`v22`, commit `b3db893`). Il refactor è
+stato quello previsto — ogni disegno passa da una tela `GFXcanvas1` — più due
+cose che si sono scoperte solo facendolo: la pagina immagine scriveva **dritta
+al controller** con `writeImage()`, saltando il framebuffer di GxEPD2 (quindi
+leggerlo non sarebbe bastato comunque), e `drawImage()` dentro il paging
+avrebbe dato **due refresh**, il secondo col buffer vuoto: pannello bianco.
+Costo misurato: refresh completo 2200 → 2630 ms, orologio invariato.
 **Nota**: è tornato utile saperlo il 2026-08-30, quando il grafico è stato
 caricato e non c'era modo di verificarne l'aspetto da remoto — il motivo per cui
 esiste `temp_campioni`, che dice se i dati ci sono ma non se la curva è bella.
@@ -272,6 +316,12 @@ Solo la riga essenziale: il racconto sta in `docs/Stazione-Meteo.md`.
 | Pagina grafico 24 h + salute in dashboard | 2026-08-30 | `v14`, commit `2030697` |
 | Tre correzioni al grafico viste solo sul pannello | 2026-08-30 | `v15`-`v17` |
 | **Pagine dell'interfaccia sostituibili dalla card + `/api` autogenerata** | 2026-08-30 | `v18` |
+| Compositore immagini: più font, corpo regolabile, emoji retinate | 2026-08-31 | `v21`, commit `3d82072` |
+| **Anteprima 1:1 del pannello** (era la voce 15) + `tools/pannello_png.py` | 2026-08-31 | `v22`, commit `b3db893` |
+| Rugiada, humidex, acqua nell'aria, min/max 24 h, Δ3h | 2026-08-31 | `v23`-`v24` |
+| Icone sul pannello (con due scartate perché ambigue) | 2026-08-31 | `v24`, commit `07480ee` |
+| Pagina **dettaglio** per nodo, e pagina nodi alleggerita | 2026-08-31 | `v25`, commit `c2ba72d` |
+| Galleria immagini: pagine, ricerca, miniature, tabella | 2026-08-31 | `v26`-`v27` |
 
 ---
 
