@@ -16,6 +16,7 @@ static PageCfg s_pag[PAGES_MAX];
 static uint8_t s_cur       = 0;
 static bool    s_rotazione = false;
 static uint8_t s_silDa     = 23;
+static uint8_t s_silPag = PAG_SIL_NESSUNA;   // slot da mostrare nel silenzio
 static uint8_t s_silA      = 7;
 static bool    s_fascia    = false;  // messaggio in fondo alla pagina nodi
 static uint32_t s_ultimoMs = 0;   // quando e' stata disegnata la corrente
@@ -96,6 +97,8 @@ void pages_begin()
   defaults();
 
   s_prefs.begin("hubpag", true);   // sola lettura: non crea il namespace
+  s_silPag = s_prefs.getUChar("silpag", PAG_SIL_NESSUNA);
+  if (s_silPag != PAG_SIL_NESSUNA && s_silPag >= PAGES_MAX) s_silPag = PAG_SIL_NESSUNA;
   const size_t quanti = s_prefs.getBytesLength("cfg");
 
   bool migrato = false;
@@ -219,6 +222,17 @@ void pages_set_silenzio(uint8_t da, uint8_t a)
   if (da > 23 || a > 23) return;
   s_silDa = da;
   s_silA  = a;
+}
+
+uint8_t pages_silenzio_pagina() { return s_silPag; }
+
+void pages_set_silenzio_pagina(uint8_t slot)
+{
+  if (slot != PAG_SIL_NESSUNA && slot >= PAGES_MAX) return;
+  s_silPag = slot;
+  s_prefs.begin("hubpag", false);
+  s_prefs.putUChar("silpag", s_silPag);
+  s_prefs.end();
 }
 
 bool pages_in_silenzio(time_t oraLocale)

@@ -97,7 +97,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v27";
+static const char FW_VERSION[] = "v28";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -202,6 +202,11 @@ uint32_t    app_epd_orologio_ms() { return s_epdOrologioMs; }
 // sa anche da quanto non si disegna. Cosi' due nodi che parlano insieme
 // costano un refresh, non due.
 static bool     s_nodiDirty     = false;
+
+// Ore di silenzio: dentro la fascia il pannello non si tocca. s_pagPrimaSil
+// serve a rimettere le cose come stavano all'uscita.
+static bool     s_inSilenzio    = false;
+static uint8_t  s_pagPrimaSil   = 0;
 static uint32_t s_nodiUltimoMs  = 0;
 static uint8_t  s_nodiParziali  = 0;
 static uint32_t s_oraUltimoMs   = 0;   // ultimo refresh del solo orologio
@@ -1173,6 +1178,11 @@ static volatile int16_t s_paginaChiesta  = -1;
 const uint8_t* app_tela()        { return tela.getBuffer(); }
 size_t         app_tela_bytes()  { return IMG_BYTES; }
 
+// Il pannello e' fermo perche' SOSPESO o perche' bloccato? Da fuori le due
+// cose si somigliano - il display non cambia - e senza questo campo l'unico
+// modo di distinguerle sarebbe guardare l'ora e fidarsi.
+bool app_pannello_sospeso()        { return s_inSilenzio; }
+
 void app_chiedi_refresh()          { s_refreshChiesto = true; }
 void app_chiedi_pagina(uint8_t i)  { s_paginaChiesta  = (int16_t)i; }
 
@@ -2113,6 +2123,42 @@ void loop()
       showPage(pages_current());
       return;
     }
+  }
+
+  // --- ore di silenzio: il pannello si ferma davvero ----------------------
+  // Entrando si va una volta sola sulla pagina scelta, poi NON si aggiorna
+  // piu' niente fino alla fine della fascia. I nodi intanto continuano a
+  // essere ricevuti e scritti su card: qui si ferma il display, non l'hub.
+  //
+  // La pagina si forza SOLO all'ingresso, non ad ogni giro: se di notte si
+  // preme BOOT per guardare i nodi, il pannello deve restare dove lo si e'
+  // messo invece di tornare indietro da solo al giro dopo.
+  {
+    const uint8_t silPag = pages_silenzio_pagina();
+    const bool silenzio  = (silPag != PAG_SIL_NESSUNA) &&
+                           rtctime_isSynced() && pages_in_silenzio(time(nullptr));
+
+    if (silenzio && !s_inSilenzio) {
+      s_inSilenzio   = true;
+      s_pagPrimaSil  = pages_current();
+      // pages_goto() sposta il modello, showPage() disegna: servono
+      // entrambe, o la pagina resta "corrente" quella di prima e all'uscita
+      // il confronto qui sotto guarderebbe il numero sbagliato.
+      if (silPag != s_pagPrimaSil && pages_goto(silPag)) showPage(silPag);
+      Serial.printf("[epd] ore di silenzio: vado sulla pagina %u e mi fermo\n",
+                    (unsigned)silPag);
+      return;
+    }
+    if (!silenzio && s_inSilenzio) {
+      s_inSilenzio = false;
+      // Si torna indietro solo se nessuno ha toccato niente nel frattempo:
+      // altrimenti si porterebbe via la pagina che l'utente ha scelto a mano.
+      if (pages_current() == silPag && pages_goto(s_pagPrimaSil))
+        showPage(s_pagPrimaSil);
+      Serial.println("[epd] fine delle ore di silenzio");
+      return;
+    }
+    if (s_inSilenzio) return;      // dentro la fascia: nessun refresh, mai
   }
 
   if (tipoCur == PT_NODI)

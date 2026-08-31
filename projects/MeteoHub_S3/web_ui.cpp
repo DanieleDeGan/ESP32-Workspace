@@ -1119,9 +1119,17 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
    <select id="sda"></select><span class="muted" style="margin:0">alle</span><select id="sa"></select>
   </div>
  </div>
+ <div class="riga">
+  <label>In quelle ore mostra</label>
+  <select id="spag" style="flex:1"></select>
+ </div>
  <div class="esito" id="ss"></div>
  <p class="muted">Con una sola pagina attiva non ruota: non c'&egrave; dove andare, e un
  cambio &egrave; sempre un refresh completo (~2,2 s, e lampeggia).</p>
+ <p class="muted">Scegliendo una pagina, in quelle ore il pannello ci va e
+ <b>smette di aggiornarsi</b> del tutto: due refresh invece di ~640. Con
+ &laquo;nessuna&raquo; si ferma solo la rotazione, come prima. I nodi
+ continuano a essere ricevuti e registrati: si ferma il display, non l'hub.</p>
 </div>
 
 <h2>Messaggio</h2>
@@ -1359,6 +1367,14 @@ function render(d){
 
  if(!salvaTimer){
   E('rot').checked=d.rotazione; E('sda').value=d.silenzio_da; E('sa').value=d.silenzio_a;
+
+ // La tendina si costruisce dalle pagine VERE ad ogni giro: una pagina tolta
+ // deve sparire da qui, o si sceglierebbe uno slot che non esiste piu'.
+ const sp=E('spag'); const scelta=d.silenzio_pagina;
+ sp.innerHTML='<option value="-1">nessuna (ferma solo la rotazione)</option>'+
+  d.pagine.map(p=>'<option value="'+p.i+'"'+(p.i==scelta?' selected':'')+'>'+
+   esc(p.tipo+(p.param?(' — '+p.param):''))+'</option>').join('');
+ if(scelta==null||scelta<0||scelta>=255) sp.value='-1';
  }
  E('fas').checked=d.fascia;
 
@@ -1513,7 +1529,8 @@ var salvaTimer = null;
 function salvaRotazione(ritardo){
  clearTimeout(salvaTimer);
  salvaTimer = setTimeout(()=>{
-  const q='/api/pannello?rotazione='+(E('rot').checked?1:0)+'&sil_da='+E('sda').value+'&sil_a='+E('sa').value;
+  const q='/api/pannello?rotazione='+(E('rot').checked?1:0)+'&sil_da='+E('sda').value+
+          '&sil_a='+E('sa').value+'&sil_pagina='+E('spag').value;
   salvaTimer=null;
   post(q).then(r=>r.json()).then(d=>{render(d);flash(E('ss'),'Salvato');})
    .catch(()=>flash(E('ss'),'Non salvato: hub non raggiungibile',1));
@@ -1525,6 +1542,7 @@ E('rot').onchange=()=>salvaRotazione(0);
 // refresh di cadenza.
 E('fas').onchange=()=>post('/api/pannello?fascia='+(E('fas').checked?1:0))
  .then(r=>r.json()).then(d=>{render(d);flash(E('sf'),'Salvato');post('/api/pannello/refresh');});
+E('spag').onchange=()=>salvaRotazione(0);
 E('sda').onchange=()=>salvaRotazione(800);
 E('sa').onchange=()=>salvaRotazione(800);
 E('brf').onclick=()=>post('/api/pannello/refresh')
@@ -1619,10 +1637,13 @@ static void handleApiPannello() {
   j += pages_slots();
   j += ",\"rotazione\":";
   j += pages_rotazione() ? "true" : "false";
+  j += ",\"silenzio_pagina\":"; j += (int)pages_silenzio_pagina();
   j += ",\"silenzio_da\":"; j += pages_silenzio_da();
   j += ",\"silenzio_a\":";  j += pages_silenzio_a();
   j += ",\"fascia\":";
   j += pages_fascia() ? "true" : "false";
+  j += ",\"sospeso\":";
+  j += app_pannello_sospeso() ? "true" : "false";
   j += ",\"in_silenzio\":";
   j += pages_in_silenzio(time(nullptr)) ? "true" : "false";
   j += ",\"corrente\":"; j += corrente;
@@ -1640,12 +1661,45 @@ static void handleApiPannello() {
   net_server().send(200, "application/json", j);
 }
 
-// POST /api/pannello?rotazione=0|1&sil_da=23&sil_a=7
+// GET /api/pannello/slot — lo stato GREZZO dell'array delle pagine.
+//
+// Diagnostica, e nata da un caso preciso: le pagine immagine non si potevano
+// piu' selezionare (pages_goto falliva) mentre l'elenco normale le mostrava
+// tutte. L'elenco filtra su `usato` e quindi non poteva dire dove fosse la
+// differenza; questo stampa tutti i 16 slot come stanno in memoria.
+static void handleApiPannelloSlot() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  String j = "{\"slots\":"; j += (int)pages_slots();
+  j += ",\"corrente\":"; j += (int)pages_current();
+  j += ",\"pag\":[";
+  for (uint8_t i = 0; i < pages_slots(); i++) {
+    const PageCfg* p = pages_get(i);
+    if (i) j += ',';
+    j += "{\"i\":"; j += (int)i;
+    j += ",\"usato\":"; j += (p && p->usato) ? "true" : "false";
+    j += ",\"tipo\":"; j += (int)(p ? p->tipo : 255);
+    j += ",\"attiva\":"; j += (p && p->attiva) ? "true" : "false";
+    j += ",\"param\":"; appendJsonString(j, p ? p->param : "");
+    j += ",\"goto_ok\":"; j += (p && p->usato && i < pages_slots()) ? "true" : "false";
+    j += '}';
+  }
+  j += "]}";
+  net_server().send(200, "application/json", j);
+}
+
+// POST /api/pannello?rotazione=0|1&sil_da=23&sil_a=7&sil_pagina=<slot|-1>
 static void handleApiPannelloSet() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
   WebServer& srv = net_server();
 
   if (srv.hasArg("rotazione")) pages_set_rotazione(srv.arg("rotazione").toInt() != 0);
+  // -1 spegne la sospensione: nella fascia si ferma solo la rotazione, com'era
+  // fino a v27. Qualunque slot valido invece FERMA i refresh e mostra quello.
+  if (srv.hasArg("sil_pagina")) {
+    const int v = srv.arg("sil_pagina").toInt();
+    pages_set_silenzio_pagina((v < 0 || v >= PAGES_MAX) ? PAG_SIL_NESSUNA : (uint8_t)v);
+  }
+
   if (srv.hasArg("sil_da") && srv.hasArg("sil_a"))
     pages_set_silenzio((uint8_t)srv.arg("sil_da").toInt(), (uint8_t)srv.arg("sil_a").toInt());
   if (srv.hasArg("fascia")) pages_set_fascia(srv.arg("fascia").toInt() != 0);
@@ -1938,6 +1992,7 @@ static const Rotta ROTTE[] = {
   { HTTP_POST, "/api/pannello",         handleApiPannelloSet,        "rotazione, ore di silenzio, fascia del messaggio", "rotazione=0|1, sil_da=0..23, sil_a=0..23, fascia=0|1" },
   { HTTP_POST, "/api/pannello/pagina",  handleApiPannelloPagina,     "una pagina: attiva, durata, oppure 'solo questa'", "i=slot, attiva=0|1, durata=secondi, fissa=1" },
   { HTTP_POST, "/api/pannello/vai",     handleApiPannelloVai,        "manda subito una pagina sul pannello (accoda: la disegna il loop)", "i=slot" },
+  { HTTP_GET,  "/api/pannello/slot",    handleApiPannelloSlot,       "stato grezzo dei 16 slot: usato, tipo, attiva, param", "" },
   { HTTP_GET,  "/api/pannello/anteprima", handleApiPannelloAnteprima,  "i 15.000 byte che il pannello sta mostrando (formato .bin)", "" },
   { HTTP_POST, "/api/pannello/refresh", handleApiPannelloRefresh,    "ridisegna la pagina corrente (completo, ~2,2 s)", "" },
   { HTTP_POST, "/api/pannello/aggiungi",handleApiPannelloAggiungi,   "aggiunge una pagina: immagine, grafico o dettaglio di un nodo", "param=NOME | tipo=grafico | tipo=dettaglio&param=NODO" },

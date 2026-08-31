@@ -89,6 +89,25 @@ uint8_t pages_silenzio_a();
 void    pages_set_silenzio(uint8_t da, uint8_t a);
 bool    pages_in_silenzio(time_t oraLocale);
 
+// Quale pagina mostrare durante le ore di silenzio, e SOPRATTUTTO il segnale
+// che in quelle ore il pannello va fermato del tutto: PAG_SIL_NESSUNA (255)
+// vuol dire "come prima", cioe' si ferma solo la rotazione.
+//
+// Perche' conta: fino a v27 il silenzio fermava la rotazione ma non i
+// refresh, e l'orologio continuava a riscrivere il suo angolo ogni minuto.
+// Fra le 23 e le 7 sono ~640 refresh per una stanza al buio, il 43% di quelli
+// di una giornata -- e un parziale ripetuto sempre sullo stesso rettangolo e'
+// il modo peggiore in cui un e-ink invecchia. Con una pagina scelta ne bastano
+// DUE: uno per entrare nella fascia e uno per uscirne.
+//
+// Sta in una chiave NVS SEPARATA e non nel blob delle pagine: cambiare
+// sizeof(PagBlob) invaliderebbe la configurazione salvata e servirebbe un
+// magic nuovo con la conversione, come per PAG1 -> PAG2. Un byte non vale una
+// migrazione.
+#define PAG_SIL_NESSUNA 255
+uint8_t pages_silenzio_pagina();
+void    pages_set_silenzio_pagina(uint8_t slot);   // 255 = nessuna
+
 // Fascia del messaggio in fondo alla pagina dei nodi. Quando e' attiva E
 // c'e' un messaggio da mostrare, la pagina nodi cede 70 px al testo: i nodi
 // passano al blocco compatto, quindi la temperatura scende da 24 a 18 pt.

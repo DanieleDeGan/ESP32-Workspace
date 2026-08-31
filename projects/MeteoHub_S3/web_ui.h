@@ -39,6 +39,9 @@ uint32_t    app_epd_orologio_ms(); // e quanto costa il solo orologio
 const uint8_t* app_tela();
 size_t         app_tela_bytes();
 
+// true mentre il pannello e' fermo per le ore di silenzio.
+bool app_pannello_sospeso();
+
 // Comandi verso il pannello: si ACCODANO e li esegue il loop(). Un refresh
 // sono ~2,2 s: dentro un handler HTTP terrebbe fermo il server, l'OTA e il
 // prelievo dei DATA dei nodi dal driver ESP-NOW, che tiene solo l'ultimo.
