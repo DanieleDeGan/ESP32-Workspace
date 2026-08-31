@@ -84,7 +84,8 @@
 #include <esp_system.h>    // esp_reset_reason(): perche' la scheda e' ripartita
 #include <Preferences.h>   // boot_count: l'unico contatore che sopravvive al riavvio
 #include <EspNowLink.h>    // ESPNOW_LINK_CHANNEL_CURRENT
-#include "remote_nodes.h"  // hub ESP-NOW, trapiantato da projects/EnvNode_C3/
+#include "remote_nodes.h"
+#include "meteo_calc.h"  // hub ESP-NOW, trapiantato da projects/EnvNode_C3/
 #include "forecast.h"      // i nomi TREND_*: remote_nodes.h non lo include
 
 #include "rtc_time.h"      // serve a remote_nodes per datare i DATA
@@ -95,7 +96,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v22";
+static const char FW_VERSION[] = "v23";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -480,7 +481,10 @@ static uint8_t bootEvent()
 // nuovo, completo all'ingresso nella pagina e ogni NODI_FULL_OGNI parziali,
 // altrimenti il ghosting si accumula.
 
-static const int16_t NODI_TOP       = 34;   // sotto l'intestazione
+static const int16_t NODI_TOP       = 38;   // sotto l'intestazione
+// I 4 px in piu' rispetto a v22 sono per la barra nera del primo nodo, che
+// senza respiro si appiccicava alla doppia linea dell'intestazione e le due
+// sembravano un unico blocco.
 static const int16_t NODI_BOT       = 266;  // sopra il piede
 
 // Con la fascia del messaggio accesa il corpo si ferma piu' in alto e i nodi
@@ -617,88 +621,216 @@ static void drawValori(const RemoteNode& n, int16_t yBase)
   drawRight(riga, 388, yBase);
 }
 
-// --- blocco COMODO: fino a due nodi ---------------------------------------
-static void drawNodoComodo(const RemoteNode& n, int16_t y)
+// Minimo, massimo e variazione a 3 ore, dalle stesse 48 mezz'ore che disegna
+// la pagina grafico. Nessuna memoria in piu': l'anello c'e' gia', e finora
+// serviva a una pagina sola.
+//
+// Il minimo e il massimo sono quello che da' profondita' a un numero che da
+// solo non ne ha: 25 gradi adesso vuol dire una cosa se stanotte erano 12 e
+// un'altra se erano 24. La variazione a 3 ore e' invece l'unico modo di
+// vedere DOVE STA ANDANDO la temperatura senza guardare una curva.
+// Valori di uscita per puntatore e non una struct di ritorno: Arduino genera
+// da se' i prototipi e li mette in cima al file, PRIMA di qualunque tipo
+// dichiarato nello sketch -- una struct qui darebbe "does not name a type" in
+// una riga che non esiste nel sorgente. E' anche lo stile del resto del repo
+// (remote_get, rtctime_format). Torna quanti campioni ha trovato.
+static int statTemp(int index, float* minC, float* maxC, float* delta3h)
 {
+  *minC = *maxC = *delta3h = NAN;
+  static int16_t serie[REMOTE_TEMP_SLOTS];        // static: 96 byte, non stack
+  time_t tsUlt = 0;
+  const int n = remote_temp_history(index, serie, REMOTE_TEMP_SLOTS, &tsUlt);
+  if (n <= 0) return 0;
+
+  int campioni = 0, ultimo = -1;
+  for (int i = 0; i < n; i++)
+  {
+    if (serie[i] == REMOTE_TEMP_VUOTO) continue;
+    const float v = serie[i] / 10.0f;
+    if (campioni == 0 || v < *minC) *minC = v;
+    if (campioni == 0 || v > *maxC) *maxC = v;
+    campioni++;
+    ultimo = i;
+  }
+
+  // Tre ore sono sei slot da mezz'ora. Si guarda QUELLO slot, non "il piu'
+  // vecchio disponibile": un delta misurato su una finestra diversa da tre ore
+  // sarebbe un numero con l'etichetta sbagliata.
+  if (ultimo >= 6 && serie[ultimo] != REMOTE_TEMP_VUOTO &&
+      serie[ultimo - 6] != REMOTE_TEMP_VUOTO)
+    *delta3h = (serie[ultimo] - serie[ultimo - 6]) / 10.0f;
+
+  return campioni;
+}
+
+// Numero col segno sempre davanti: un "+1,2" e un "1,2" si confondono, e qui
+// il segno e' l'informazione.
+static String fmtDelta(float v, int dec)
+{
+  if (!isfinite(v)) return String("--");
+  String s = fmtNum(v, dec);
+  if (v >= 0 && !s.startsWith("+")) s = "+" + s;
+  return s;
+}
+
+// --- la barra col nome, in negativo ---------------------------------------
+// Separa i nodi molto meglio di una linea: su un pannello a 1 bit il nero
+// pieno e' cio' che si vede da piu' lontano, e da tre metri e' la prima cosa
+// che dice "qui comincia un altro nodo". Ci sta dentro anche l'ora
+// dell'ultimo pacchetto, che prima costava una riga sua.
+static void drawBarraNodo(const RemoteNode& n, int16_t y, int16_t h)
+{
+  const int16_t W = tela.width();
+  tela.fillRect(0, y, W, h, GxEPD_BLACK);
+  tela.setTextColor(GxEPD_WHITE);
+
   tela.setFont(&FreeSansBold12pt7b);
-  tela.setCursor(12, y + 22);
+  tela.setCursor(10, y + h - 6);
   tela.print(n.nome);
 
+  // "MUTO" scritto, non il badge: dentro una barra gia' nera un badge nero
+  // non si vedrebbe, e invertirlo qui costerebbe un rettangolo bianco che
+  // spezza la barra proprio dove serve continua.
   if (!n.online && n.hasData) {
     int16_t bx, by; uint16_t bw, bh;
-    tela.getTextBounds(n.nome, 12, y + 22, &bx, &by, &bw, &bh);
-    drawBadgeMuto(12 + (int16_t)bw + 12, y + 6);
+    tela.getTextBounds(n.nome, 10, y + h - 6, &bx, &by, &bw, &bh);
+    tela.setFont(&FreeSansBold9pt7b);
+    tela.setCursor(10 + (int16_t)bw + 10, y + h - 7);
+    tela.print("MUTO");
   }
+
+  if (n.hasData && n.ultimoTs != 0) {
+    tela.setFont(&FreeSansBold9pt7b);
+    drawRight(fmtOra(n.ultimoTs), W - 10, y + h - 7);
+  }
+
+  tela.setTextColor(GxEPD_BLACK);
+}
+
+// --- blocco COMODO: fino a due nodi ---------------------------------------
+static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
+{
+  const int16_t W = tela.width();
+  drawBarraNodo(n, y, 22);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
-    tela.setCursor(12, y + 48);
+    tela.setCursor(14, y + 48);
     tela.print("in attesa del primo dato");
     return;
   }
 
-  // Ora dell'ultimo pacchetto, sotto il nome.
-  tela.setFont(&FreeSans9pt7b);
-  tela.setCursor(12, y + 46);
-  tela.print("ultimo alle " + fmtOra(n.ultimoTs));
-
-  // Temperatura in grande: e' il numero per cui la pagina esiste.
+  // Temperatura in grande, a sinistra: e' il numero per cui la pagina esiste,
+  // e a sinistra ha lo spazio per crescere senza spingere via il resto.
   if (isfinite(n.value[0])) {
     tela.setFont(&FreeSansBold24pt7b);
-    drawRight(fmtNum(n.value[0], 1), 352, y + 52);
-    drawGrado(362, y + 26, 4);
+    tela.setCursor(14, y + 62);
+    tela.print(fmtNum(n.value[0], 1));
+    int16_t bx, by; uint16_t bw, bh;
+    tela.getTextBounds(fmtNum(n.value[0], 1), 14, y + 62, &bx, &by, &bw, &bh);
+    const int16_t xu = 14 + (int16_t)bw + 8;
+    drawGrado(xu + 3, y + 38, 4);
     tela.setFont(&FreeSansBold12pt7b);
-    tela.setCursor(370, y + 52);
+    tela.setCursor(xu + 10, y + 62);
     tela.print("C");
   }
 
-  drawValori(n, y + 76);
+  // A destra, sulla riga della temperatura: umidita' e pressione.
+  drawValori(n, y + 50);
 
-  // Trend: freccia inclinata piu' la parola, a sinistra.
-  if (n.trend != TREND_IGNOTO || n.hasData) {
-    drawFrecciaTrend(26, y + 72, n.trend);
+  // Riga del trend barometrico -- che resta l'unica FRECCIA della pagina.
+  // La variazione della temperatura sta scritta in cifre due righe sotto: due
+  // frecce che dicono cose diverse si scambiano per la stessa cosa.
+  drawFrecciaTrend(26, y + 74, n.trend);
+  tela.setFont(&FreeSans9pt7b);
+  tela.setCursor(44, y + 80);
+  tela.print(n.trend == TREND_IGNOTO ? "raccolgo dati" : remote_trend_label(n.trend));
+
+  const float td = meteo_dewpoint_c(n.value[0], n.value[1]);
+  if (isfinite(td)) {
+    tela.setFont(&FreeSansBold9pt7b);
+    drawRight("rugiada " + fmtNum(td, 1), W - 22, y + 80);
+    drawGrado(W - 18, y + 72, 2);
     tela.setFont(&FreeSans9pt7b);
-    tela.setCursor(44, y + 78);
-    tela.print(n.trend == TREND_IGNOTO ? "trend: raccolgo dati"
-                                          : remote_trend_label(n.trend));
+    tela.setCursor(W - 13, y + 80);
+    tela.print("C");
   }
+
+  // Ultima riga: dove e' stata la temperatura (24 h) e dove sta andando (3 h),
+  // piu' quanta acqua c'e' davvero nell'aria.
+  float tMin, tMax, tD3;
+  const int nCamp = statTemp(indice, &tMin, &tMax, &tD3);
+  tela.setFont(&FreeSans9pt7b);
+  String sx;
+  if (nCamp > 0) {
+    sx = "24h " + fmtNum(tMin, 1) + "/" + fmtNum(tMax, 1);
+    if (isfinite(tD3)) sx += "   3h " + fmtDelta(tD3, 1);
+  }
+
+  // L'humidex si mostra SOLO se dice qualcosa: con aria secca vale quanto la
+  // temperatura, e ripetere lo stesso numero con un'etichetta diversa occupa
+  // spazio senza aggiungere niente. Sotto i 20 gradi non esiste proprio, e
+  // meteo_humidex_c() torna NAN apposta.
+  const float hx = meteo_humidex_c(n.value[0], n.value[1]);
+  const float ah = meteo_umidita_assoluta_gm3(n.value[0], n.value[1]);
+  String dx;
+  if (isfinite(hx) && hx >= n.value[0] + 2.0f) dx = "percep. " + fmtNum(hx, 0) + "   ";
+  if (isfinite(ah)) dx += fmtNum(ah, 1) + " g/m3";
+
+  // Le due meta' della riga si misurano PRIMA di scriverle, e se non ci stanno
+  // si accorcia la destra. Sovrapporle era il difetto che si vedeva nella
+  // prima versione: "3h +1,percepiti 32", cioe' due numeri giusti resi
+  // illeggibili dal fatto di essere entrambi li'.
+  const int16_t xSx = 14, xDx = W - 12;
+  int16_t bx, by; uint16_t wSx = 0, wDx = 0, bh;
+  if (sx.length()) { tela.getTextBounds(sx, 0, 0, &bx, &by, &wSx, &bh); }
+  if (dx.length()) { tela.getTextBounds(dx, 0, 0, &bx, &by, &wDx, &bh); }
+  if (xSx + (int16_t)wSx + 10 > xDx - (int16_t)wDx && isfinite(ah)) {
+    dx = fmtNum(ah, 1) + " g/m3";       // si sacrifica il percepito, non il dato
+    tela.getTextBounds(dx, 0, 0, &bx, &by, &wDx, &bh);
+  }
+  if (sx.length()) { tela.setCursor(xSx, y + 100); tela.print(sx); }
+  if (dx.length() && xSx + (int16_t)wSx + 10 <= xDx - (int16_t)wDx)
+    drawRight(dx, xDx, y + 100);
 }
 
 // --- blocco COMPATTO: da tre nodi in su -----------------------------------
 static void drawNodoCompatto(const RemoteNode& n, int16_t y)
 {
-  tela.setFont(&FreeSansBold12pt7b);
-  tela.setCursor(12, y + 20);
-  tela.print(n.nome);
-
-  if (!n.online && n.hasData) {
-    int16_t bx, by; uint16_t bw, bh;
-    tela.getTextBounds(n.nome, 12, y + 20, &bx, &by, &bw, &bh);
-    drawBadgeMuto(12 + (int16_t)bw + 10, y + 4);
-  }
+  const int16_t W = tela.width();
+  drawBarraNodo(n, y, 19);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
-    tela.setCursor(12, y + 42);
+    tela.setCursor(14, y + 38);
     tela.print("in attesa del primo dato");
     return;
   }
 
   if (isfinite(n.value[0])) {
     tela.setFont(&FreeSansBold18pt7b);
-    drawRight(fmtNum(n.value[0], 1), 356, y + 30);
-    drawGrado(365, y + 12, 3);
+    tela.setCursor(14, y + 45);
+    tela.print(fmtNum(n.value[0], 1));
+    int16_t bx, by; uint16_t bw, bh;
+    tela.getTextBounds(fmtNum(n.value[0], 1), 14, y + 45, &bx, &by, &bw, &bh);
+    const int16_t xu = 14 + (int16_t)bw + 6;
+    drawGrado(xu + 2, y + 27, 3);
     tela.setFont(&FreeSansBold9pt7b);
-    tela.setCursor(371, y + 30);
+    tela.setCursor(xu + 8, y + 45);
     tela.print("C");
   }
 
-  tela.setFont(&FreeSans9pt7b);
-  tela.setCursor(12, y + 44);
-  tela.print(fmtOra(n.ultimoTs));
-  drawFrecciaTrend(70, y + 39, n.trend);
+  drawFrecciaTrend(150, y + 39, n.trend);
+  drawValori(n, y + 34);
 
-  drawValori(n, y + 48);
+  // Con tre o quattro nodi resta una riga sola per nodo: ci va la rugiada, che
+  // fra tutti i derivati e' quello che si legge da solo. Il resto sta nella
+  // pagina web -- il pannello sceglie, non riassume.
+  const float td = meteo_dewpoint_c(n.value[0], n.value[1]);
+  if (isfinite(td)) {
+    tela.setFont(&FreeSans9pt7b);
+    drawRight("rugiada " + fmtNum(td, 1), W - 12, y + 50);
+  }
 }
 
 // Solo l'orologio, su finestra parziale piccola: il resto della pagina non
@@ -779,17 +911,12 @@ static void screenNodi(bool full)
         if (!remote_get(i, &nodo)) continue;
         const int16_t y = NODI_TOP + (int16_t)i * h;
 
-        if (comodo) drawNodoComodo(nodo, y);
+        if (comodo) drawNodoComodo(nodo, y, i);
         else        drawNodoCompatto(nodo, y);
 
-        // Separatore tratteggiato fra un nodo e l'altro: divide senza pesare
-        // come una riga piena, che su bianco e nero grida.
-        if (i + 1 < quanti) {
-          const int16_t ys = y + h - 6;
-          for (int16_t x = 12; x < W - 12; x += 6) {
-            tela.drawFastHLine(x, ys, 3, GxEPD_BLACK);
-          }
-        }
+        // Niente separatore fra un nodo e l'altro: da v23 ogni blocco si apre
+        // con la sua barra nera, che separa molto piu' di un tratteggio. Due
+        // separatori a poche righe di distanza facevano solo sporco.
       }
     }
 
