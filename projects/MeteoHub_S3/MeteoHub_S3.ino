@@ -97,7 +97,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v31";
+static const char FW_VERSION[] = "v32";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -210,8 +210,11 @@ static bool     s_nodiDirty     = false;
 // ridisegnare perche' non era cambiato niente. Il contatore serve a saperlo
 // da remoto: senza, "il pannello non si aggiorna" e "non c'e' niente da
 // aggiornare" sarebbero indistinguibili.
-static uint32_t s_firmaNodi     = 0;
+static uint32_t s_firmaStato    = 0;
+static uint32_t s_firmaValori   = 0;
 static uint32_t s_nodiInvariati = 0;
+static uint32_t s_ultimoCheckMs = 0;
+static const uint32_t CHECK_MS  = 5000UL;   // ogni quanto si guarda se e' cambiato
 
 static bool     s_inSilenzio    = false;
 static uint8_t  s_pagPrimaSil   = 0;
@@ -1872,28 +1875,51 @@ static uint32_t cadenzaNodiMs()
 // sono lo stesso "27,2" sul pannello), lo stato online/ritardo, il trend e il
 // numero di nodi. NON ci entra l'ora: e' proprio per questo che l'ora non si
 // mostra piu'.
-static uint32_t firmaNodi()
+// DUE firme, e la distinzione e' il punto: i VALORI possono aspettare la
+// cadenza dei nodi (una temperatura vecchia di cinque minuti non ha fatto male
+// a nessuno), lo STATO no. Se un nodo smette di rispondere, il pannello deve
+// dirlo appena lo sa - se aspettasse la cadenza, l'avviso arriverebbe fino a
+// cinque minuti dopo, e un avviso in ritardo e' peggio di nessun avviso.
+//
+// Trovato provando sul serio, staccando un nodo: il pannello e' rimasto per
+// minuti a mostrare dati vecchi senza dire niente, perche' il risparmio di
+// refresh lo aveva reso lento a reagire.
+static void firmaMescola(uint32_t& f, int32_t v)
+{
+  for (int b = 0; b < 4; b++) { f ^= (uint8_t)(v >> (b * 8)); f *= 16777619u; }
+}
+
+// Quello che DEVE comparire subito: chi c'e', chi tace, chi e' in ritardo.
+static uint32_t firmaStato()
 {
   uint32_t f = 2166136261u;                       // FNV-1a
-  auto mescola = [&f](int32_t v) {
-    for (int b = 0; b < 4; b++) { f ^= (uint8_t)(v >> (b * 8)); f *= 16777619u; }
-  };
-  mescola(remote_count());
-  mescola(pages_fascia() ? 1 : 0);
+  firmaMescola(f, remote_count());
+  firmaMescola(f, pages_fascia() ? 1 : 0);
+  for (int i = 0; i < remote_count(); i++) {
+    RemoteNode n;
+    if (!remote_get(i, &n)) continue;
+    firmaMescola(f, n.online ? 1 : 0);
+    firmaMescola(f, (n.intervalloS > 0 && n.silenzioS > n.intervalloS * 2) ? 1 : 0);
+    firmaMescola(f, (int32_t)n.hasData);
+    for (const char* c = n.nome; *c; c++) firmaMescola(f, (int32_t)(uint8_t)*c);
+  }
+  return f;
+}
+
+// Quello che puo' aspettare: i numeri, arrotondati COME si mostrano (27,25 e
+// 27,24 sono lo stesso "27,2" sul pannello, quindi non sono un cambiamento).
+static uint32_t firmaValori()
+{
+  uint32_t f = 2166136261u;
   for (int i = 0; i < remote_count(); i++) {
     RemoteNode n;
     if (!remote_get(i, &n)) continue;
     for (int k = 0; k < 3; k++)
-      mescola(isfinite(n.value[k]) ? (int32_t)lroundf(n.value[k] * 10.0f) : INT32_MIN);
-    mescola(n.online ? 1 : 0);
-    mescola((n.intervalloS > 0 && n.silenzioS > n.intervalloS * 2) ? 1 : 0);
-    mescola((int32_t)n.trend);
-    mescola((int32_t)n.hasData);
-    for (const char* c = n.nome; *c; c++) mescola((int32_t)(uint8_t)*c);
+      firmaMescola(f, isfinite(n.value[k]) ? (int32_t)lroundf(n.value[k] * 10.0f) : INT32_MIN);
+    firmaMescola(f, (int32_t)n.trend);
   }
-  // Il messaggio in fascia fa parte della pagina: se cambia, la pagina cambia.
   const Message* m = pages_fascia() ? msg_active(time(nullptr)) : nullptr;
-  if (m) for (const char* c = m->testo; *c; c++) mescola((int32_t)(uint8_t)*c);
+  if (m) for (const char* c = m->testo; *c; c++) firmaMescola(f, (int32_t)(uint8_t)*c);
   return f;
 }
 
@@ -2277,31 +2303,48 @@ void loop()
     // anche se la pagina non si ridisegna da un pezzo. In intestazione ora
     // c'e' l'ora dell'ultimo aggiornamento, che e' un istante pure lei.
 
-    // La cadenza la dettano i NODI, non una costante: aggiornare piu' spesso
-    // di quanto arrivino i dati significa ridisegnare gli stessi numeri.
-    const uint32_t cadenza = cadenzaNodiMs();
-    const uint32_t da = millis() - s_nodiUltimoMs;
-    const bool perDato   = s_nodiDirty && da >= cadenza;
-    const bool perTempo  = da >= (cadenza > NODI_MAX_MS ? cadenza : NODI_MAX_MS);
-    if (!perDato && !perTempo) return;
+    // Il conto delle firme non si fa ad ogni giro di loop: scorrere i nodi
+    // costa poco ma non e' gratis, e a nessuno serve saperlo mille volte al
+    // secondo.
+    if (millis() - s_ultimoCheckMs < CHECK_MS) return;
+    s_ultimoCheckMs = millis();
 
-    // Il contenuto e' identico a quello gia' a schermo? Allora non si tocca
-    // niente. Il timer si riarma comunque, o si ricadrebbe qui ad ogni giro
-    // di loop a rifare il conto della firma.
-    //
-    // L'unica eccezione e' il completo periodico: quello serve al GHOSTING,
-    // non a mostrare dati nuovi, e va fatto anche se la pagina e' identica --
-    // anzi soprattutto allora, perche' una pagina che non cambia da ore e'
-    // quella che si imprime.
-    const uint32_t firma = firmaNodi();
+    const uint32_t da = millis() - s_nodiUltimoMs;
+
+    // Il minimo assoluto vale SEMPRE, anche per un allarme: due refresh a
+    // meno di due minuti l'uno dall'altro sono due lampeggi, e un pannello che
+    // sfarfalla non si guarda piu'.
+    if (da < NODI_MIN_MS) return;
+
+    const uint32_t fStato   = firmaStato();
+    const uint32_t fValori  = firmaValori();
+    const bool statoCambia  = (fStato  != s_firmaStato);
+    const bool valoriCambia = (fValori != s_firmaValori);
+
+    // Il completo periodico serve al GHOSTING, non a mostrare dati nuovi: va
+    // fatto anche a pagina identica -- anzi soprattutto allora, perche' una
+    // pagina ferma da ore e' quella che si imprime.
     const bool fullPerGhosting = (millis() - s_fullUltimoMs >= FULL_OGNI_MS);
-    if (firma == s_firmaNodi && !fullPerGhosting) {
-      s_nodiUltimoMs = millis();
-      s_nodiDirty    = false;
+
+    // Uno stato cambiato si mostra SUBITO. I valori aspettano la cadenza dei
+    // nodi: ridisegnare piu' spesso di quanto arrivino i dati riscrive gli
+    // stessi numeri.
+    const uint32_t cadenza = cadenzaNodiMs();
+    const bool perValori = valoriCambia &&
+                           da >= (cadenza > NODI_MIN_MS ? cadenza : NODI_MIN_MS);
+
+    if (!statoCambia && !perValori && !fullPerGhosting) {
+      // Niente da mostrare. NON si riarma il timer del refresh: se lo si
+      // facesse, un cambio di stato dieci secondi dopo dovrebbe aspettare
+      // un'altra cadenza intera -- ed e' esattamente il difetto che ha fatto
+      // arrivare un "nodo muto" con cinque minuti di ritardo.
+      s_nodiDirty = false;
       s_nodiInvariati++;
       return;
     }
-    s_firmaNodi = firma;
+
+    s_firmaStato  = fStato;
+    s_firmaValori = fValori;
 
     // Parziale spesso, completo ogni tanto: senza, il ghosting si accumula.
     // Il tempo conta quanto il conteggio — in una giornata senza novita' i
@@ -2321,7 +2364,7 @@ void loop()
     s_epdUltimoMs  = millis() - t0;
     Serial.printf("[epd] nodi %s (%s): %lu ms\n",
                   full ? "COMPLETO" : "parziale",
-                  perDato ? "dato nuovo" : "cadenza",
+                  statoCambia ? "stato" : (perValori ? "valori" : "ghosting"),
                   (unsigned long)(millis() - t0));
     return;
   }
