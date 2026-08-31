@@ -85,7 +85,8 @@
 #include <Preferences.h>   // boot_count: l'unico contatore che sopravvive al riavvio
 #include <EspNowLink.h>    // ESPNOW_LINK_CHANNEL_CURRENT
 #include "remote_nodes.h"
-#include "meteo_calc.h"  // hub ESP-NOW, trapiantato da projects/EnvNode_C3/
+#include "meteo_calc.h"
+#include "icone.h"  // hub ESP-NOW, trapiantato da projects/EnvNode_C3/
 #include "forecast.h"      // i nomi TREND_*: remote_nodes.h non lo include
 
 #include "rtc_time.h"      // serve a remote_nodes per datare i DATA
@@ -96,7 +97,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v23";
+static const char FW_VERSION[] = "v24";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -701,10 +702,41 @@ static void drawBarraNodo(const RemoteNode& n, int16_t y, int16_t h)
 
   if (n.hasData && n.ultimoTs != 0) {
     tela.setFont(&FreeSansBold9pt7b);
-    drawRight(fmtOra(n.ultimoTs), W - 10, y + h - 7);
+    const String ora = fmtOra(n.ultimoTs);
+    int16_t bx, by; uint16_t bw, bh;
+    tela.getTextBounds(ora, 0, 0, &bx, &by, &bw, &bh);
+    tela.drawBitmap(W - 12 - (int16_t)bw - IC_OROLOGIO_W - 5,
+                    y + (h - IC_OROLOGIO_H) / 2,
+                    IC_OROLOGIO, IC_OROLOGIO_W, IC_OROLOGIO_H, GxEPD_WHITE);
+    drawRight(ora, W - 10, y + h - 7);
   }
 
   tela.setTextColor(GxEPD_BLACK);
+}
+
+// Mette in fila i pezzi che ci stanno e si ferma al primo che non entra.
+//
+// Serve perche' il numero di voci cambia da solo: l'humidex sparisce sotto i
+// 20 gradi, il delta a 3 ore manca finche' lo storico non e' pieno, e un nodo
+// senza pressione non ne ha affatto. Una riga scritta a lunghezza fissa era
+// destinata a sovrapporsi in qualche combinazione -- ed e' successo davvero,
+// "3h +1,percepiti 32" nella prima versione di questa pagina.
+//
+// L'ordine dell'array E' la priorita': quello che si perde e' l'ultimo, cioe'
+// il meno importante. Mai il contrario.
+static void drawFila(const String* voci, int quante, int16_t x, int16_t y,
+                     int16_t xMax, int16_t gap)
+{
+  for (int i = 0; i < quante; i++)
+  {
+    if (!voci[i].length()) continue;
+    int16_t bx, by; uint16_t bw, bh;
+    tela.getTextBounds(voci[i], 0, 0, &bx, &by, &bw, &bh);
+    if (x + (int16_t)bw > xMax) return;
+    tela.setCursor(x, y);
+    tela.print(voci[i]);
+    x += (int16_t)bw + gap;
+  }
 }
 
 // --- blocco COMODO: fino a due nodi ---------------------------------------
@@ -720,78 +752,85 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
     return;
   }
 
-  // Temperatura in grande, a sinistra: e' il numero per cui la pagina esiste,
-  // e a sinistra ha lo spazio per crescere senza spingere via il resto.
+  // --- riga grande: le tre grandezze misurate, ognuna con la sua icona -----
+  // Icone SOLO qui. Sono tre simboli che si riconoscono a colpo d'occhio da
+  // tre metri; metterne altri per i valori derivati vorrebbe dire inventare
+  // simboli che nessuno conosce, e a 14 px in bianco e nero si somigliano
+  // tutti. Per la pressione non c'e' icona apposta: "hPa" e' gia' la sua
+  // etichetta, e un simbolo ambiguo e' peggio di nessun simbolo.
   if (isfinite(n.value[0])) {
+    // Allineata al centro del numero, non alla sua base: un'icona appoggiata
+    // sulla riga di scrittura sembra caduta.
+    tela.drawBitmap(10, y + 34, IC_TERMOMETRO, IC_TERMOMETRO_W, IC_TERMOMETRO_H,
+                    GxEPD_BLACK);
     tela.setFont(&FreeSansBold24pt7b);
-    tela.setCursor(14, y + 62);
+    tela.setCursor(36, y + 62);
     tela.print(fmtNum(n.value[0], 1));
     int16_t bx, by; uint16_t bw, bh;
-    tela.getTextBounds(fmtNum(n.value[0], 1), 14, y + 62, &bx, &by, &bw, &bh);
-    const int16_t xu = 14 + (int16_t)bw + 8;
+    tela.getTextBounds(fmtNum(n.value[0], 1), 36, y + 62, &bx, &by, &bw, &bh);
+    const int16_t xu = 36 + (int16_t)bw + 7;
     drawGrado(xu + 3, y + 38, 4);
     tela.setFont(&FreeSansBold12pt7b);
     tela.setCursor(xu + 10, y + 62);
     tela.print("C");
   }
 
-  // A destra, sulla riga della temperatura: umidita' e pressione.
-  drawValori(n, y + 50);
+  tela.setFont(&FreeSansBold12pt7b);
+  if (isfinite(n.value[1])) {
+    tela.drawBitmap(184, y + 36, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
+    tela.setCursor(210, y + 53);
+    tela.print(fmtNum(n.value[1], 0) + "%");
+  }
+  if (isfinite(n.value[2])) {
+    tela.setFont(&FreeSansBold12pt7b);
+    drawRight(fmtNum(n.value[2], 1), W - 46, y + 53);
+    tela.setFont(&FreeSans9pt7b);
+    tela.setCursor(W - 42, y + 53);
+    tela.print("hPa");
+  }
 
-  // Riga del trend barometrico -- che resta l'unica FRECCIA della pagina.
-  // La variazione della temperatura sta scritta in cifre due righe sotto: due
-  // frecce che dicono cose diverse si scambiano per la stessa cosa.
-  drawFrecciaTrend(26, y + 74, n.trend);
+  // --- riga del trend barometrico: l'unica freccia della pagina ------------
+  drawFrecciaTrend(26, y + 78, n.trend);
   tela.setFont(&FreeSans9pt7b);
-  tela.setCursor(44, y + 80);
+  tela.setCursor(44, y + 84);
   tela.print(n.trend == TREND_IGNOTO ? "raccolgo dati" : remote_trend_label(n.trend));
 
   const float td = meteo_dewpoint_c(n.value[0], n.value[1]);
   if (isfinite(td)) {
+    // Il grado disegnato, come sulla temperatura: scriverlo li' e non qui
+    // faceva sembrare la rugiada un numero di un'altra specie.
     tela.setFont(&FreeSansBold9pt7b);
-    drawRight("rugiada " + fmtNum(td, 1), W - 22, y + 80);
-    drawGrado(W - 18, y + 72, 2);
+    drawRight("rugiada " + fmtNum(td, 1), W - 22, y + 84);
+    drawGrado(W - 18, y + 78, 2);
     tela.setFont(&FreeSans9pt7b);
-    tela.setCursor(W - 13, y + 80);
+    tela.setCursor(W - 13, y + 84);
     tela.print("C");
   }
 
-  // Ultima riga: dove e' stata la temperatura (24 h) e dove sta andando (3 h),
-  // piu' quanta acqua c'e' davvero nell'aria.
+  // --- riga di riepilogo: dove e' stata e dove sta andando -----------------
   float tMin, tMax, tD3;
   const int nCamp = statTemp(indice, &tMin, &tMax, &tD3);
+  const float hx  = meteo_humidex_c(n.value[0], n.value[1]);
+  const float ah  = meteo_umidita_assoluta_gm3(n.value[0], n.value[1]);
+
+  int16_t x = 14;
   tela.setFont(&FreeSans9pt7b);
-  String sx;
   if (nCamp > 0) {
-    sx = "24h " + fmtNum(tMin, 1) + "/" + fmtNum(tMax, 1);
-    if (isfinite(tD3)) sx += "   3h " + fmtDelta(tD3, 1);
+    tela.drawBitmap(12, y + 92, IC_MINMAX, IC_MINMAX_W, IC_MINMAX_H, GxEPD_BLACK);
+    x = 30;
   }
 
-  // L'humidex si mostra SOLO se dice qualcosa: con aria secca vale quanto la
-  // temperatura, e ripetere lo stesso numero con un'etichetta diversa occupa
-  // spazio senza aggiungere niente. Sotto i 20 gradi non esiste proprio, e
-  // meteo_humidex_c() torna NAN apposta.
-  const float hx = meteo_humidex_c(n.value[0], n.value[1]);
-  const float ah = meteo_umidita_assoluta_gm3(n.value[0], n.value[1]);
-  String dx;
-  if (isfinite(hx) && hx >= n.value[0] + 2.0f) dx = "percep. " + fmtNum(hx, 0) + "   ";
-  if (isfinite(ah)) dx += fmtNum(ah, 1) + " g/m3";
-
-  // Le due meta' della riga si misurano PRIMA di scriverle, e se non ci stanno
-  // si accorcia la destra. Sovrapporle era il difetto che si vedeva nella
-  // prima versione: "3h +1,percepiti 32", cioe' due numeri giusti resi
-  // illeggibili dal fatto di essere entrambi li'.
-  const int16_t xSx = 14, xDx = W - 12;
-  int16_t bx, by; uint16_t wSx = 0, wDx = 0, bh;
-  if (sx.length()) { tela.getTextBounds(sx, 0, 0, &bx, &by, &wSx, &bh); }
-  if (dx.length()) { tela.getTextBounds(dx, 0, 0, &bx, &by, &wDx, &bh); }
-  if (xSx + (int16_t)wSx + 10 > xDx - (int16_t)wDx && isfinite(ah)) {
-    dx = fmtNum(ah, 1) + " g/m3";       // si sacrifica il percepito, non il dato
-    tela.getTextBounds(dx, 0, 0, &bx, &by, &wDx, &bh);
-  }
-  if (sx.length()) { tela.setCursor(xSx, y + 100); tela.print(sx); }
-  if (dx.length() && xSx + (int16_t)wSx + 10 <= xDx - (int16_t)wDx)
-    drawRight(dx, xDx, y + 100);
+  String voci[4];
+  int nv = 0;
+  if (nCamp > 0)      voci[nv++] = fmtNum(tMin, 1) + " / " + fmtNum(tMax, 1);
+  if (isfinite(tD3))  voci[nv++] = "3h " + fmtDelta(tD3, 1);
+  if (isfinite(ah))   voci[nv++] = fmtNum(ah, 1) + " g/m3";
+  // L'humidex e' l'ultimo perche' e' il primo che si puo' perdere: e' anche
+  // l'unico che sotto i 20 gradi non esiste (NAN) e sopra dice qualcosa solo
+  // se supera davvero la temperatura.
+  if (isfinite(hx) && hx >= n.value[0] + 2.0f)
+    voci[nv++] = "percep. " + fmtNum(hx, 0);
+  drawFila(voci, nv, x, y + 104, W - 12, 14);
 }
 
 // --- blocco COMPATTO: da tre nodi in su -----------------------------------
@@ -821,6 +860,8 @@ static void drawNodoCompatto(const RemoteNode& n, int16_t y)
   }
 
   drawFrecciaTrend(150, y + 39, n.trend);
+  if (isfinite(n.value[1]))
+    tela.drawBitmap(190, y + 22, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
   drawValori(n, y + 34);
 
   // Con tre o quattro nodi resta una riga sola per nodo: ci va la rugiada, che
