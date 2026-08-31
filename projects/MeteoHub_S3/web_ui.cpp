@@ -633,7 +633,6 @@ static void handleApiStato() {
   j += "\"epd_ultimo_ms\":"    + String(app_epd_ultimo_ms())  + ",";
   j += "\"epd_orologio_ms\":"  + String(app_epd_orologio_ms()) + ",";
   j += "\"refresh_evitati\":" + String(app_refresh_evitati()) + ",";
-  j += "\"epd_totale\":"      + String(app_epd_totale()) + ",";
   j += "\"invii_interrotti\":" + String(s_invii_interrotti)   + ",";
   j += "\"reset_reason\":\"" + String(app_reset_reason())    + "\",";
   j += "\"boot_count\":"      + String(app_boot_count())      + ",";
@@ -781,6 +780,65 @@ static void handleApiImmaginiElimina() {
   // peggio — l'utente potrebbe ricaricare lo stesso nome fra un minuto, e
   // si ritroverebbe la pagina sparita senza averlo chiesto.
   srv.send(ok ? 200 : 404, "text/plain", ok ? "ok" : "non trovata");
+}
+
+// GET /api/epd/totale — quanti refresh ha fatto il pannello, davvero
+//
+// Si contano le righe dei file in /epd/, ora, invece di tenere un totale in
+// NVS aggiornato ad ogni refresh: la flash ha cicli di erase finiti e li'
+// dentro ci vivono le pagine e il registro dei nodi, mentre la card no. Il
+// costo si sposta dal consumo continuo di una memoria che si logora al
+// conteggio occasionale di un file -- e questa rotta la chiama una persona
+// ogni tanto, non il firmware ogni cinque minuti.
+//
+// Si contano i '\n' a blocchi da 512 byte e si toglie l'intestazione: sono
+// ~4700 righe al mese, cioe' ~200 kB da leggere per un anno intero.
+static void handleApiEpdTotale() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+  if (!sd_mounted()) { srv.send(503, "text/plain", "microSD non montata"); return; }
+
+  File dir = SD.open("/epd");
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    srv.send(200, "application/json", "{\"totale\":0,\"mesi\":[]}");
+    return;
+  }
+
+  String j = "{\"mesi\":[";
+  uint32_t totale = 0;
+  bool primo = true;
+  uint8_t buf[512];
+
+  for (;;) {
+    File f = dir.openNextFile();
+    if (!f) break;
+    if (!f.isDirectory()) {
+      String nome = f.name();
+      const int barra = nome.lastIndexOf('/');
+      if (barra >= 0) nome = nome.substring(barra + 1);
+      if (nome.endsWith(".csv")) {
+        uint32_t righe = 0;
+        int letti;
+        while ((letti = f.read(buf, sizeof(buf))) > 0)
+          for (int i = 0; i < letti; i++) if (buf[i] == '\n') righe++;
+        if (righe > 0) righe--;                 // l'intestazione non e' un refresh
+        totale += righe;
+        nome.remove(nome.length() - 4);
+        if (!primo) j += ',';
+        primo = false;
+        j += "{\"mese\":"; appendJsonString(j, nome.c_str());
+        j += ",\"refresh\":"; j += righe; j += '}';
+      }
+    }
+    f.close();
+  }
+  dir.close();
+
+  j += "],\"totale\":"; j += totale;
+  j += ",\"da_questo_avvio\":"; j += app_epd_refresh();
+  j += '}';
+  srv.send(200, "application/json", j);
 }
 
 // GET /api/epd/registro?m=AAAA-MM — il registro dei refresh del pannello
@@ -2041,6 +2099,7 @@ static const Rotta ROTTE[] = {
   { HTTP_POST, "/api/messaggio/cancella",handleApiMessaggioCancella, "toglie il messaggio dal pannello", "" },
 
   { HTTP_GET,  "/api/immagini",         handleApiImmagini,           "le immagini sulla card, a pagine, col totale filtrato", "da=0&quante=12&cerca=TESTO" },
+  { HTTP_GET,  "/api/epd/totale",       handleApiEpdTotale,          "quanti refresh ha fatto il pannello: si contano dalla card", "" },
   { HTTP_GET,  "/api/epd/registro",     handleApiEpdRegistro,        "il registro dei refresh del pannello, un file al mese", "m=AAAA-MM" },
   { HTTP_GET,  "/api/immagini/mini",    handleApiImmaginiMini,       "la miniatura 80x60 di un'immagine (600 byte)", "nome=NOME" },
   { HTTP_POST, "/api/immagini",         nullptr,                     "carica un'immagine da 15.000 byte esatti (multipart, campo 'img')", "nome=NOME" },
