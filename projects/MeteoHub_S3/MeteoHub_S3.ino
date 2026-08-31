@@ -97,7 +97,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v32";
+static const char FW_VERSION[] = "v33";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -210,6 +210,33 @@ static bool     s_nodiDirty     = false;
 // ridisegnare perche' non era cambiato niente. Il contatore serve a saperlo
 // da remoto: senza, "il pannello non si aggiorna" e "non c'e' niente da
 // aggiornare" sarebbero indistinguibili.
+// Il ritardo di un nodo va CONFERMATO prima di mostrarlo. Senza, basta che la
+// cadenza appresa sia piu' corta di quella vera perche' il nodo risulti in
+// ritardo verso la fine di ogni ciclo e torni ok appena trasmette: lo stato
+// oscilla, e siccome lo stato passa avanti alla cadenza ogni oscillazione
+// costa DUE refresh.
+//
+// Succede davvero, e non solo per un errore: capita ad ogni cambio di
+// cadenza di un nodo, mentre la media mobile dell'hub converge. Misurato il
+// 2026-08-31 portando il nodo a muro da 60 a 300 s -- la cadenza appresa era
+// a meta' strada (119 s) e il pannello si ridisegnava ogni 113 s invece che
+// ogni 300.
+//
+// 60 secondi di conferma: piu' lunghi dell'oscillazione tipica e molto piu'
+// corti della soglia del muto, che resta il segnale serio e non e' toccata.
+static const uint32_t RITARDO_CONFERMA_MS = 60000UL;
+static uint32_t s_ritardoDa[REMOTE_MAX_NODES] = {0};
+
+static bool nodoInRitardo(int i, const RemoteNode& n)
+{
+  if (i < 0 || i >= REMOTE_MAX_NODES) return false;
+  const bool grezzo = n.hasData && n.online &&
+                      n.intervalloS > 0 && n.silenzioS > n.intervalloS * 2;
+  if (!grezzo) { s_ritardoDa[i] = 0; return false; }
+  if (s_ritardoDa[i] == 0) { s_ritardoDa[i] = millis(); return false; }
+  return (millis() - s_ritardoDa[i]) >= RITARDO_CONFERMA_MS;
+}
+
 static uint32_t s_firmaStato    = 0;
 static uint32_t s_firmaValori   = 0;
 static uint32_t s_nodiInvariati = 0;
@@ -693,7 +720,7 @@ static String fmtDelta(float v, int dec)
 // pieno e' cio' che si vede da piu' lontano, e da tre metri e' la prima cosa
 // che dice "qui comincia un altro nodo". Ci sta dentro anche l'ora
 // dell'ultimo pacchetto, che prima costava una riga sua.
-static void drawBarraNodo(const RemoteNode& n, int16_t y, int16_t h)
+static void drawBarraNodo(const RemoteNode& n, int16_t y, int16_t h, int idx)
 {
   const int16_t W = tela.width();
   tela.fillRect(0, y, W, h, GxEPD_BLACK);
@@ -730,7 +757,7 @@ static void drawBarraNodo(const RemoteNode& n, int16_t y, int16_t h)
     tela.setFont(&FreeSansBold9pt7b);
     drawRight("MUTO", W - 10, y + h - 7);
   }
-  else if (n.hasData && n.intervalloS > 0 && n.silenzioS > n.intervalloS * 2) {
+  else if (n.hasData && nodoInRitardo(idx, n)) {
     // In ritardo ma non ancora muto: due cadenze saltate. Il punto
     // esclamativo e' l'unico segno che a 1 bit si riconosce senza leggerlo.
     tela.setFont(&FreeSansBold12pt7b);
@@ -769,7 +796,7 @@ static void drawFila(const String* voci, int quante, int16_t x, int16_t y,
 static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
 {
   const int16_t W = tela.width();
-  drawBarraNodo(n, y, 22);
+  drawBarraNodo(n, y, 22, indice);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
@@ -832,10 +859,10 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
 // rotazione -- pagine intere e leggibili invece di una compressa.
 
 // --- blocco COMPATTO: da tre nodi in su -----------------------------------
-static void drawNodoCompatto(const RemoteNode& n, int16_t y)
+static void drawNodoCompatto(const RemoteNode& n, int16_t y, int indice)
 {
   const int16_t W = tela.width();
-  drawBarraNodo(n, y, 19);
+  drawBarraNodo(n, y, 19, indice);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
@@ -948,7 +975,7 @@ static void screenNodi(bool full)
         const int16_t y = NODI_TOP + (int16_t)i * h;
 
         if (comodo) drawNodoComodo(nodo, y, i);
-        else        drawNodoCompatto(nodo, y);
+        else        drawNodoCompatto(nodo, y, i);
 
         // Niente separatore fra un nodo e l'altro: da v23 ogni blocco si apre
         // con la sua barra nera, che separa molto piu' di un tratteggio. Due
@@ -1546,7 +1573,7 @@ static void screenDettaglio(const char* nomeNodo)
     return;
   }
 
-  drawBarraNodo(n, 0, 26);
+  drawBarraNodo(n, 0, 26, indice);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
@@ -1899,7 +1926,7 @@ static uint32_t firmaStato()
     RemoteNode n;
     if (!remote_get(i, &n)) continue;
     firmaMescola(f, n.online ? 1 : 0);
-    firmaMescola(f, (n.intervalloS > 0 && n.silenzioS > n.intervalloS * 2) ? 1 : 0);
+    firmaMescola(f, nodoInRitardo(i, n) ? 1 : 0);
     firmaMescola(f, (int32_t)n.hasData);
     for (const char* c = n.nome; *c; c++) firmaMescola(f, (int32_t)(uint8_t)*c);
   }
