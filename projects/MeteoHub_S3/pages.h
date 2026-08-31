@@ -105,8 +105,12 @@ bool    pages_in_silenzio(time_t oraLocale);
 // magic nuovo con la conversione, come per PAG1 -> PAG2. Un byte non vale una
 // migrazione.
 #define PAG_SIL_NESSUNA 255
+// Un'immagine a caso fra quelle in elenco, sorteggiata ad OGNI ingresso nella
+// fascia: la notte diventa una cornice che cambia da sola. Non e' uno slot,
+// e' un modo di sceglierlo -- per questo un valore fuori dall'intervallo.
+#define PAG_SIL_CASUALE 254
 uint8_t pages_silenzio_pagina();
-void    pages_set_silenzio_pagina(uint8_t slot);   // 255 = nessuna
+void    pages_set_silenzio_pagina(uint8_t slot);   // 255 = nessuna, 254 = a caso
 
 // Fascia del messaggio in fondo alla pagina dei nodi. Quando e' attiva E
 // c'e' un messaggio da mostrare, la pagina nodi cede 70 px al testo: i nodi

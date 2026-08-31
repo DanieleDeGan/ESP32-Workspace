@@ -1372,6 +1372,7 @@ function render(d){
  // deve sparire da qui, o si sceglierebbe uno slot che non esiste piu'.
  const sp=E('spag'); const scelta=d.silenzio_pagina;
  sp.innerHTML='<option value="-1">nessuna (ferma solo la rotazione)</option>'+
+  '<option value="254"'+(scelta==254?' selected':'')+'>un\'immagine a caso, diversa ogni notte</option>'+
   d.pagine.map(p=>'<option value="'+p.i+'"'+(p.i==scelta?' selected':'')+'>'+
    esc(p.tipo+(p.param?(' — '+p.param):''))+'</option>').join('');
  if(scelta==null||scelta<0||scelta>=255) sp.value='-1';
@@ -1697,7 +1698,10 @@ static void handleApiPannelloSet() {
   // fino a v27. Qualunque slot valido invece FERMA i refresh e mostra quello.
   if (srv.hasArg("sil_pagina")) {
     const int v = srv.arg("sil_pagina").toInt();
-    pages_set_silenzio_pagina((v < 0 || v >= PAGES_MAX) ? PAG_SIL_NESSUNA : (uint8_t)v);
+    uint8_t slot = PAG_SIL_NESSUNA;
+    if (v == PAG_SIL_CASUALE)          slot = PAG_SIL_CASUALE;
+    else if (v >= 0 && v < PAGES_MAX)  slot = (uint8_t)v;
+    pages_set_silenzio_pagina(slot);
   }
 
   if (srv.hasArg("sil_da") && srv.hasArg("sil_a"))

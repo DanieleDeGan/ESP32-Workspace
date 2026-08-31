@@ -98,7 +98,8 @@ void pages_begin()
 
   s_prefs.begin("hubpag", true);   // sola lettura: non crea il namespace
   s_silPag = s_prefs.getUChar("silpag", PAG_SIL_NESSUNA);
-  if (s_silPag != PAG_SIL_NESSUNA && s_silPag >= PAGES_MAX) s_silPag = PAG_SIL_NESSUNA;
+  if (s_silPag != PAG_SIL_NESSUNA && s_silPag != PAG_SIL_CASUALE && s_silPag >= PAGES_MAX)
+    s_silPag = PAG_SIL_NESSUNA;
   const size_t quanti = s_prefs.getBytesLength("cfg");
 
   bool migrato = false;
@@ -228,7 +229,7 @@ uint8_t pages_silenzio_pagina() { return s_silPag; }
 
 void pages_set_silenzio_pagina(uint8_t slot)
 {
-  if (slot != PAG_SIL_NESSUNA && slot >= PAGES_MAX) return;
+  if (slot != PAG_SIL_NESSUNA && slot != PAG_SIL_CASUALE && slot >= PAGES_MAX) return;
   s_silPag = slot;
   s_prefs.begin("hubpag", false);
   s_prefs.putUChar("silpag", s_silPag);

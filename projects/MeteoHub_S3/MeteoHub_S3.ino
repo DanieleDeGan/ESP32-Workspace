@@ -97,7 +97,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v28";
+static const char FW_VERSION[] = "v29";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -204,9 +204,11 @@ uint32_t    app_epd_orologio_ms() { return s_epdOrologioMs; }
 static bool     s_nodiDirty     = false;
 
 // Ore di silenzio: dentro la fascia il pannello non si tocca. s_pagPrimaSil
-// serve a rimettere le cose come stavano all'uscita.
+// serve a rimettere le cose come stavano all'uscita, s_pagSilScelta a sapere
+// SU QUALE pagina si e' finiti (con il sorteggio non e' quella configurata).
 static bool     s_inSilenzio    = false;
 static uint8_t  s_pagPrimaSil   = 0;
+static uint8_t  s_pagSilScelta  = PAG_SIL_NESSUNA;
 static uint32_t s_nodiUltimoMs  = 0;
 static uint8_t  s_nodiParziali  = 0;
 static uint32_t s_oraUltimoMs   = 0;   // ultimo refresh del solo orologio
@@ -1797,6 +1799,26 @@ static void screenGrafico()
 // ---------------------------------------------------------------------------
 // Il modello delle pagine (pages.*) decide COSA mostrare; qui si disegna.
 // ---------------------------------------------------------------------------
+// Una pagina immagine a caso fra quelle in elenco, o PAG_SIL_NESSUNA se non
+// ce n'e' nessuna. Si sorteggia ad ogni ingresso nella fascia, quindi la
+// scelta cambia ogni notte.
+//
+// esp_random() e non random(): quest'ultima senza randomSeed() darebbe la
+// STESSA sequenza ad ogni riavvio, cioe' la stessa immagine tutte le notti
+// dopo ogni power-cycle -- che e' esattamente il difetto che si vorrebbe
+// evitare, ma silenzioso.
+static uint8_t immagineACaso()
+{
+  uint8_t cand[PAGES_MAX];
+  uint8_t n = 0;
+  for (uint8_t i = 0; i < pages_slots(); i++) {
+    const PageCfg* p = pages_get(i);
+    if (p && p->usato && p->tipo == PT_IMMAGINE) cand[n++] = i;
+  }
+  if (n == 0) return PAG_SIL_NESSUNA;
+  return cand[esp_random() % n];
+}
+
 static void showPage(uint8_t i)
 {
   const PageCfg* pg = pages_get(i);
@@ -2141,20 +2163,27 @@ void loop()
     if (silenzio && !s_inSilenzio) {
       s_inSilenzio   = true;
       s_pagPrimaSil  = pages_current();
+      s_pagSilScelta = (silPag == PAG_SIL_CASUALE) ? immagineACaso() : silPag;
+
       // pages_goto() sposta il modello, showPage() disegna: servono
       // entrambe, o la pagina resta "corrente" quella di prima e all'uscita
       // il confronto qui sotto guarderebbe il numero sbagliato.
-      if (silPag != s_pagPrimaSil && pages_goto(silPag)) showPage(silPag);
-      Serial.printf("[epd] ore di silenzio: vado sulla pagina %u e mi fermo\n",
-                    (unsigned)silPag);
+      if (s_pagSilScelta != PAG_SIL_NESSUNA && s_pagSilScelta != s_pagPrimaSil &&
+          pages_goto(s_pagSilScelta))
+        showPage(s_pagSilScelta);
+      Serial.printf("[epd] ore di silenzio: pagina %u e mi fermo\n",
+                    (unsigned)s_pagSilScelta);
       return;
     }
     if (!silenzio && s_inSilenzio) {
       s_inSilenzio = false;
       // Si torna indietro solo se nessuno ha toccato niente nel frattempo:
       // altrimenti si porterebbe via la pagina che l'utente ha scelto a mano.
-      if (pages_current() == silPag && pages_goto(s_pagPrimaSil))
+      // Il confronto e' con la pagina SORTEGGIATA, non con quella configurata:
+      // con il caso le due cose non coincidono quasi mai.
+      if (pages_current() == s_pagSilScelta && pages_goto(s_pagPrimaSil))
         showPage(s_pagPrimaSil);
+      s_pagSilScelta = PAG_SIL_NESSUNA;
       Serial.println("[epd] fine delle ore di silenzio");
       return;
     }
