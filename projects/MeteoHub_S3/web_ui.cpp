@@ -1034,7 +1034,6 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  .esito.err{color:#e08b86}
 
  /* --- immagini --- */
- .gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
  .im{background:var(--card2);border:1px solid var(--bordo);border-radius:12px;
   padding:10px;overflow:hidden}
  .im canvas{width:100%;height:auto;display:block;border-radius:8px;background:#fff;
@@ -1068,6 +1067,16 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  .arch p:active{border-left-color:var(--acc)}
  nav{margin:1.8rem 0 .5rem;display:flex;flex-wrap:wrap;gap:.4rem 1rem;font-size:.85rem}
  a{color:var(--acc);text-decoration:none}
+ table.img{width:100%;border-collapse:collapse}
+ table.img td{padding:.45rem .3rem;border-top:1px solid var(--bordo);vertical-align:middle}
+ table.img tr:first-child td{border-top:0}
+ table.img .nome{font-weight:600;word-break:break-all}
+ table.img .stato{font-size:.78rem;color:var(--dim)}
+ table.img .cmd{text-align:right;white-space:nowrap}
+ table.img .cmd button{margin-left:.3rem}
+ table.img .vista{background:#fff;border-radius:6px;padding:6px;margin:.2rem 0}
+ table.img .vista canvas{width:100%;max-width:400px;height:auto;display:block;
+   margin:0 auto;image-rendering:pixelated}
  .ante{background:#fff;border-radius:8px;overflow:hidden;margin:.1rem 0 .45rem}
  .ante canvas{width:100%;height:auto;display:block;image-rendering:pixelated}
  @media (max-width:420px){
@@ -1147,7 +1156,9 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  </div>
  <p class="muted" id="cardNota" style="margin:.2rem 0 0">&mdash;</p>
 </div>
-<div class="gal" id="limg"></div>
+<div class="card" id="limgBox">
+ <table class="img"><tbody id="limg"></tbody></table>
+</div>
 <div class="card" id="cardVuota" style="display:none">
  <p class="muted" style="margin:0">Nessuna immagine con questo nome.</p>
 </div>
@@ -1251,9 +1262,12 @@ function leggiAnte(){
   .finally(()=>{b.disabled=false;});
 }
 
-// I 15.000 byte di ogni immagine si scaricano UNA volta sola: la stessa
-// figura puo' stare in piu' slot, e la pagina si ridisegna ogni 15 secondi.
-const BIN={};
+// Due cache separate, e la separazione NON e' pignoleria: una miniatura e
+// un'immagine piena hanno la stessa chiave (il nome) ma dimensioni diverse,
+// e mescolarle vorrebbe dire disegnare 600 byte come se fossero 15.000.
+// Si scaricano una volta sola: la stessa figura puo' stare in piu' slot, e la
+// pagina si ridisegna ogni 15 secondi.
+const MINI={}, PIENA={};
 // Miniatura, non immagine piena: 600 byte contro 15.000. Con una dozzina di
 // riquadri la differenza e' fra 7 kB e 180 kB chiesti a un server SINCRONO --
 // cioe' fra un'attesa impercettibile e un pezzo di minuto in cui l'hub non
@@ -1261,10 +1275,10 @@ const BIN={};
 function anteprima(box,nome){
  const cv=document.createElement('canvas'); cv.width=80; cv.height=60;
  box.appendChild(cv);
- if(BIN[nome]){dipingiBit(cv,BIN[nome],80,60);return;}
+ if(MINI[nome]){dipingiBit(cv,MINI[nome],80,60);return;}
  fetch('/api/immagini/mini?nome='+encodeURIComponent(nome),{cache:'no-store'})
   .then(r=>r.ok?r.arrayBuffer():Promise.reject())
-  .then(b=>{BIN[nome]=new Uint8Array(b);dipingiBit(cv,BIN[nome],80,60);})
+  .then(b=>{MINI[nome]=new Uint8Array(b);dipingiBit(cv,MINI[nome],80,60);})
   .catch(()=>{box.className='mini gen';box.innerHTML='&#9888;';});
 }
 
@@ -1325,7 +1339,7 @@ function render(d){
  });
 
  box.querySelectorAll('[data-mini]').forEach(m=>{
-  if(m.dataset.tipo=='immagine'&&m.dataset.mini) anteprima(m,m.dataset.mini);});
+  if(m.dataset.tipo=='immagine'&&m.dataset.mini) anteprimaPigra(m,m.dataset.mini);});
 
  // Quanti posti restano: il numero che prima non compariva da nessuna parte,
  // e la cui assenza faceva sembrare rotto il pulsante che li riempiva.
@@ -1368,11 +1382,19 @@ function render(d){
  disegnaCard();
 }
 
-// La galleria mostra TUTTE le immagini della pagina corrente, comprese quelle
-// gia' in elenco: nasconderle come si faceva prima faceva ballare i conti
-// ("12 di 87" e poi nove riquadri), e con molte immagini un conteggio che non
-// torna e' peggio di una riga in piu'. Quelle in uso si marcano e il loro
-// pulsante si spegne.
+// Una TABELLA e non piu' una griglia di miniature, ed e' una scelta di scala:
+// con molte immagini contano il numero di righe che stanno in uno schermo e
+// il costo di aprire la pagina. La tabella non chiede NIENTE alla scheda
+// finche' non si preme "vedi" -- la griglia chiedeva dodici miniature, cioe'
+// circa un secondo di hub occupato ad ogni caricamento.
+//
+// Il prezzo e' il riconoscimento a colpo d'occhio: "GigiFeligi" dice qualcosa,
+// "IMG_0473" no. Per quello c'e' l'anteprima a richiesta, che si apre a piena
+// risoluzione sotto la riga -- una alla volta, perche' sono 15 kB l'una.
+//
+// Mostra anche le immagini gia' in elenco, marcate e col pulsante spento:
+// nasconderle faceva ballare i conti ("20 di 87" e poi diciassette righe), e
+// un conteggio che non torna e' peggio di una riga in piu'.
 function disegnaCard(){
  const box=E('limg'); if(!box) return;
  const inUso={};
@@ -1386,20 +1408,45 @@ function disegnaCard(){
    ? (CARD_CERCA ? ('filtrate per "'+CARD_CERCA+'"') : 'in ordine di come stanno sulla card')
    : (CARD_CERCA ? '' : 'nessuna immagine sulla card');
  E('cardVuota').style.display = (CARD_TOT===0 && CARD_CERCA)?'block':'none';
+ E('limgBox').style.display = SULLACARD.length?'block':'none';
  E('cprev').disabled = (CARD_DA<=0);
  E('cnext').disabled = (fine>=CARD_TOT);
 
  SULLACARD.forEach(im=>{
   const usata=!!inUso[im.nome];
-  const el=document.createElement('div'); el.className='im';
-  el.innerHTML='<div class="mini" style="width:100%"></div>'+
-   '<div class="nm"><b>'+esc(im.nome)+'</b><span>'+
-   (im.ok?(usata?'gi&agrave; fra le pagine':'ok'):im.byte+' byte, non valida')+'</span></div>'+
-   '<div class="azioni"><button class="sec" data-add="'+esc(im.nome)+'"'+
-   (usata?' disabled':'')+'>Mettila fra le pagine</button>'+
-   '<button class="dan" data-del="'+esc(im.nome)+'">Elimina</button></div>';
-  box.appendChild(el);
-  if(im.ok) anteprimaPigra(el.querySelector('.mini'),im.nome);
+  const tr=document.createElement('tr');
+  tr.innerHTML='<td><div class="nome">'+esc(im.nome)+'</div>'+
+   '<div class="stato">'+(im.ok?(usata?'gi&agrave; fra le pagine':'sulla card')
+                              :im.byte+' byte, non valida')+'</div></td>'+
+   '<td class="cmd">'+
+   (im.ok?'<button class="sec" data-see="'+esc(im.nome)+'">vedi</button>':'')+
+   '<button class="sec" data-add="'+esc(im.nome)+'"'+(usata||!im.ok?' disabled':'')+
+   '>usa</button>'+
+   '<button class="dan" data-del="'+esc(im.nome)+'">elimina</button></td>';
+  box.appendChild(tr);
+ });
+
+ // "vedi" apre l'anteprima piena sotto la riga, e la richiude. Una alla
+ // volta: sono 15 kB e un server sincrono, e due aperte insieme sarebbero
+ // due richieste in coda per guardarne una.
+ box.querySelectorAll('[data-see]').forEach(b=>b.onclick=()=>{
+  const nome=b.dataset.see, tr=b.closest('tr');
+  const gia=tr.nextElementSibling;
+  if(gia && gia.dataset.vista){ gia.remove(); b.textContent='vedi'; return; }
+  box.querySelectorAll('tr[data-vista]').forEach(x=>x.remove());
+  box.querySelectorAll('[data-see]').forEach(x=>x.textContent='vedi');
+  const riga=document.createElement('tr');
+  riga.dataset.vista='1';
+  riga.innerHTML='<td colspan="2"><div class="vista"></div></td>';
+  tr.after(riga);
+  b.textContent='chiudi';
+  const cv=document.createElement('canvas'); cv.width=400; cv.height=300;
+  riga.querySelector('.vista').appendChild(cv);
+  if(PIENA[nome]){ dipingi15k(cv,PIENA[nome]); return; }
+  fetch('/api/immagini/scarica?nome='+encodeURIComponent(nome),{cache:'no-store'})
+   .then(r=>r.ok?r.arrayBuffer():Promise.reject())
+   .then(x=>{PIENA[nome]=new Uint8Array(x);dipingi15k(cv,PIENA[nome]);})
+   .catch(()=>{riga.querySelector('.vista').textContent='anteprima non disponibile';});
  });
 
  box.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>
@@ -1407,7 +1454,7 @@ function disegnaCard(){
      .then(()=>window.scrollTo({top:0,behavior:'smooth'})));
  box.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{
    if(!confirm('Eliminare '+b.dataset.del+' dalla card?'))return;
-   delete BIN[b.dataset.del];
+   delete MINI[b.dataset.del]; delete PIENA[b.dataset.del];
    post('/api/immagini/elimina?nome='+encodeURIComponent(b.dataset.del)).then(caricaImmagini);});
 }
 
@@ -1427,7 +1474,7 @@ function carica(){
 }
 
 var CARD_DA=0, CARD_TOT=0, CARD_CERCA='';
-const CARD_PER_PAGINA=12;
+const CARD_PER_PAGINA=20;
 
 function caricaImmagini(){
  const q='/api/immagini?da='+CARD_DA+'&quante='+CARD_PER_PAGINA+
