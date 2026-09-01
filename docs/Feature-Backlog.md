@@ -253,8 +253,11 @@ che lascerebbe il rinominare a metà.
 `battery_mv` smette di essere 0.
 **Perché qui**: è l'unico modo di misurare l'autonomia davvero. Oggi la curva
 di scarica si costruisce a mano col multimetro, e sul plateau della LiPo la
-tensione non dice quasi niente — da 4,06 V a 3,9 V mancano fra 8 e 39 giorni a
-seconda di quale pendenza si usa.
+tensione non dice quasi niente — da 4,06 V a 3,9 V mancano fra 32 e 39 giorni a
+seconda di quale pendenza si usa (la forbice era 8-39 fino al 2026-09-01, quando
+48,3 h di lettura ferma a 4,06 V hanno escluso la pendenza del segmento 3: un
+limite superiore vale più di un punto in più, perché non dipende dalla
+differenza fra due letture da 10 mV di risoluzione).
 **Stato**: fermo perché **i componenti non ci sono**. Costo ~1,7 µA, quindi
 conviene lasciarlo fisso.
 

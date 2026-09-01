@@ -1,5 +1,73 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-01 — la lettura ferma a 4,06 V esclude la pendenza pessimistica
+
+Lettura al multimetro alle **07:17: 4,06 V** — la stessa del 30/08 alle 07:00 e
+della rilettura delle 20:04. Sembra il terzo punto uguale di fila, e invece è
+quello che sposta la conclusione: **sono passate 48,3 ore senza che la cifra si
+muova**, quindi la pendenza attuale sta sotto **10 mV / 48,3 h = 0,21 mV/h**.
+
+| vincolo superiore sulla pendenza | ricavato da |
+|---|---|
+| −0,76 mV/h | la rilettura del 30/08, 13,1 h dopo |
+| **−0,21 mV/h** | oggi, 48,3 h dopo |
+
+Il numero che se ne va è quello che faceva paura: con i **−0,85 mV/h** del
+segmento 3 la cella oggi leggerebbe **~4,02 V**, due cifre più in basso, e non
+è successo. La forbice «8 giorni contro 39» fino a 3,9 V si chiude quindi **dal
+basso**: al ritmo massimo ancora compatibile mancano **32 giorni**, a quello del
+segmento 4 (−0,17 mV/h) ne mancano 39. Resta vero che sul plateau la tensione
+non è una misura di carica — ma un **limite superiore** vale più di un punto in
+più, perché non dipende dalla differenza fra due letture da 10 mV di
+risoluzione: dipende solo dal fatto che una cifra **non** si è mossa.
+
+Totale della curva, sempre senza ricariche dal 23/08: **4,18 → 4,06 V in 8,4
+giorni**.
+
+**Il tratto è pulito, e stavolta si dimostra senza multimetro.** Il `seq` del
+nodo a batteria è **759** e cresce di uno ogni 299 s senza un solo ritorno a
+zero dal power-cycle del 29/08 alle 15:55: **63 ore senza riavvii**, cioè zero
+interventi della rete di sicurezza (~6,7 mAh l'uno, più di un giorno di
+funzionamento regolare).
+
+**I quattro buchi nei CSV sono dell'hub, non del nodo** — e a dirlo è proprio il
+`seq`: 30/08 22:03 con `dt=900 s` e seq **+3**, poi 31/08 09:18, 15:38 e 19:09
+con `dt=601 s` e seq **+2**. Il nodo ha trasmesso tutti i campioni; l'hub non
+era lì a prenderli, ed è la giornata degli OTA da `v19` a `v27`. È la lettura
+che il campo `seq` esiste per permettere: un pacchetto perso in radio e un hub
+riavviato lasciano lo stesso identico buco nel file, e solo la numerazione li
+separa. Senza, questa scarica sembrerebbe sporca.
+
+**Come sono state prese TUTTE le letture di questa serie** (chiarito il
+2026-09-01, e nei documenti c'era scritto male): multimetro **sui pad BAT della
+scheda, con la cella collegata** e il nodo in deep sleep — non "a riposo,
+scollegata", che è ciò che dicevano le tabelle. La serie resta omogenea, perché
+il metodo non è mai cambiato: cambia solo la sua descrizione.
+
+**E il metodo è quello giusto, non un ripiego.** In deep sleep il nodo assorbe
+decine di µA, quindi la caduta sulla resistenza interna della cella sta ordini
+di grandezza sotto la cifra meno significativa del multimetro: sui pad si legge
+la tensione a vuoto entro l'errore dello strumento. Scollegare avrebbe invece un
+costo vero — è un **power-cycle**, quindi azzera la RTC memory del nodo: `seq`,
+canale e MAC dell'hub. Ogni misura sarebbe costata un buco nella numerazione e
+un rientro in pairing, cioè avrebbe **sporcato proprio i dati con cui si giudica
+se il segmento è pulito**.
+
+**Il `seq` lo conferma da solo**: 759 senza ritorni a zero dal 29/08 dimostra
+che la cella non è mai stata staccata in queste 63 ore, letture comprese. La
+descrizione sbagliata nei documenti era già smentita dai dati dell'hub —
+bastava incrociarli.
+
+**L'unico caso in cui la lettura sarebbe diversa** è beccare il burst di
+trasmissione: ~0,68 s ogni 299 s, cioè lo **0,23 % del tempo**, dove il picco
+della radio vale qualche cifra in meno. Si riconoscerebbe come una lettura
+isolata più bassa delle vicine, e nella serie non ce n'è: i valori scendono in
+modo monotono.
+
+**Quando rimisurare**: a 0,21 mV/h servono ancora ~48 h per muovere una cifra,
+quindi più spesso di così si producono righe uguali. Il punto che conterà
+davvero resta **sotto i 3,9 V**, dove la curva torna a pendere.
+
 ## Aggiornamento del 2026-08-30 (5) — `v18`: le pagine si sostituiscono dalla card
 
 Nasce da una domanda: *perché non portarle tutte su SD?* La misura ha spostato
@@ -202,7 +270,7 @@ mai stata ricaricata dal 23/08**, quindi i quattro segmenti sono una curva sola:
 | cadenza | 60 s | 300 s | 300 s | **300 s** |
 | finestra | 20,41 h | 24,93 h | 23,43 h | **~59 h** |
 | interventi della rete di sicurezza | 0 | 1 | 2 | **0** |
-| batteria (multimetro, a riposo) | 4,18 → 4,12 V | 4,12 → 4,10 V | 4,10 → 4,08 V | **4,07 → 4,06 V** |
+| batteria (multimetro sui pad BAT, cella collegata) | 4,18 → 4,12 V | 4,12 → 4,10 V | 4,10 → 4,08 V | **4,07 → 4,06 V** |
 | caduta oraria | −2,94 mV/h | −0,80 mV/h | −0,85 mV/h | **−0,17 mV/h** |
 
 In totale **4,18 → 4,06 V in 6,4 giorni**. Il segmento 4 è il primo dopo la
@@ -401,7 +469,7 @@ aprire la finestra sul nuovo, 3) power-cycle del nodo. Il power-cycle serve
 comunque: il MAC dell'hub sta in RTC memory, e senza toglierlo di li' il nodo
 non rifa' HELLO.
 
-**Nota sulla batteria** (misurata a riposo, scollegata: 4,07 V). Dopo i tre
+**Nota sulla batteria** (misurata sui pad BAT con la cella collegata e il nodo in deep sleep: 4,07 V). Dopo i tre
 segmenti di scarica (4,18 / 4,12 / 4,10 / 4,08) la cella e' ancora intorno al
 75-80%: **la pista "tensione che cede sul picco della radio" per i cinque
 risvegli muti si sgonfia**, e resta in piedi quella del canale in RTC memory
@@ -541,7 +609,7 @@ nodo muto per sempre, cioe' un allarme falso permanente.
 | hold sul VCC del sensore | no | sì | sì |
 | finestra | 20,41 h | 24,93 h | **23,43 h** |
 | pacchetti attesi / scritti | 1212 / 1212 | 294 / 294 | **282 / 272** |
-| batteria (multimetro, a riposo) | 4,18 → 4,12 V | 4,12 → 4,10 V | **4,10 → 4,08 V** |
+| batteria (multimetro sui pad BAT, cella collegata) | 4,18 → 4,12 V | 4,12 → 4,10 V | **4,10 → 4,08 V** |
 | caduta oraria | −2,94 mV/h | −0,80 mV/h | **−0,85 mV/h** |
 
 La pendenza ripete quella del segmento 2, ma vale ancora l'avvertenza del 25 —
@@ -668,7 +736,7 @@ default può cambiare, e `sleep` è quello che farebbe il danno peggiore.
 | hold sul VCC del sensore | no | sì |
 | finestra | 20,41 h | **24,93 h** |
 | pacchetti attesi / scritti | 1212 / 1212 | 294 / 294 |
-| batteria (multimetro, a riposo) | 4,18 → 4,12 V | **4,12 → 4,10 V** |
+| batteria (multimetro sui pad BAT, cella collegata) | 4,18 → 4,12 V | **4,12 → 4,10 V** |
 | caduta oraria | −2,94 mV/h | **−0,80 mV/h** |
 
 È un **indizio concorde, non una misura**: 20 mV sono due cifre sul
@@ -1393,7 +1461,7 @@ senza `gpio_hold_en()`. Letta dai CSV dell'hub (`/nodi/MeteoNode/`):
 | durata | **20,41 h** |
 | pacchetti attesi / scritti | 1212 / **1212** — zero buchi, zero salti di `seq`, zero riavvii |
 | ciclo reale | **60,68 s** su 60 s di sonno → veglia completa **~0,68 s**, duty cycle 1,1 % |
-| batteria (multimetro, a riposo) | **4,18 V → 4,12 V**, cioè −60 mV in 20,41 h |
+| batteria (multimetro sui pad BAT, cella collegata) | **4,18 V → 4,12 V**, cioè −60 mV in 20,41 h |
 
 I 60 mV sono l'unico dato di consumo che esiste, ed è **un solo segmento della
 curva**, per giunta nel tratto alto dove un litio scende in fretta: non basta a
