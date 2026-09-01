@@ -1,5 +1,83 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-01 (2) — `v38`-`v40`: la pagina nodi ridisegnata
+
+Nasce da una ricerca su come impaginano i cruscotti e-ink che funzionano
+(TRMNL, InkyPi, MagInkDash, le convenzioni raccolte in un thread di Hacker
+News). Tre regole tornavano ovunque, e due erano disattese qui: **numero grande
+più un indicatore che ne dia il senso**, e **il nero pieno è ciò che imprime il
+vetro**.
+
+**Cosa c'era.** Ogni nodo si apriva con una barra nera a piena larghezza, e la
+terza riga portava la freccia del trend seguita dalla sua parola. Sull'anteprima
+del pannello: **22,2% di nero**, quasi tutto nelle due barre.
+
+**Cosa c'è ora** (`v38`, poi `v39`-`v40` per il piede):
+
+| | prima | ora |
+|---|---|---|
+| testata del nodo | barra nera piena, 26 px | nome in grassetto + filetto |
+| terza riga | freccia + «in lieve salita» | barra min/max 24 h + freccia + `+1,2/3h` |
+| nero sulla pagina | 22,2% | **11,5%** con due nodi |
+
+**La barra del giorno è il pezzo che vale.** Minimo e massimo delle 24 ore con
+un cursore dove sta la temperatura di adesso: *26,5 gradi con minimo 12 e con
+minimo 24 sono due giornate diverse, e il pannello le mostrava identiche*. Non
+costa memoria — legge l'anello dei 48 slot che la pagina grafico usa già
+(`statTemp()`, che esisteva dalla `v24`).
+
+**Non contraddice la regola contro le sparkline**: lì si vieta di comprimere una
+*curva* in un francobollo, e resta valido. Qui non si disegna un andamento ma
+**una posizione dentro un intervallo** — due tacche e un cursore, che a tre
+metri si leggono. Quando lo storico non basta si scrive «in raccolta», per la
+stessa ragione per cui il trend ignoto sono due trattini: *non lo so ancora* non
+deve somigliare a *escursione nulla*.
+
+### Le misure dei font, prima dell'OTA
+
+`tools/larghezza_testo.py` somma gli `xAdvance` dei glifi nei `.h` veri dei font
+— lo stesso conto di `getTextBounds()` — e dice se una stringa invade quella
+accanto. **Tre coordinate su quattro erano sbagliate**, e non per i valori di
+oggi: `-10,5` è **41 px** dove `21,4` ne è 28, quindi il minimo sarebbe finito
+sopra la barra **alla prima gelata**, e lo si sarebbe scoperto a gennaio
+guardando il vetro. Vale anche al contrario: `+12,3 hPa/3h` è 108 px e invade la
+freccia, ed è il motivo per cui sul pannello si legge `+12,3/3h`. La controprova
+è dentro lo script, o fra sei mesi qualcuno rimetterebbe l'unità «che ci sta
+benissimo».
+
+### Il piede, e un difetto che era lì da prima
+
+L'anteprima dopo l'OTA ha mostrato `agg. ~11:09SD 14,6 GB`, attaccati. Il perché
+è istruttivo: la riga di sinistra si regolava su una **riserva fissa di 96 px**,
+che è la larghezza *esatta* di `SD 14,6 GB` — zero margine. E gli altri tre casi
+stavano molto peggio: **`SD NON MONTATA` è 163 px**, quindi l'avviso più
+importante che questo pannello sappia dare finiva **sotto** il piede, di 65 px.
+Il guasto più silenzioso della scheda, annunciato da una scritta illeggibile.
+
+Da `v39` la riserva non è più un numero: si misura la stringa di destra e la
+sinistra si accorcia finché ci sta, scendendo per gradini — ora, poi IP, poi il
+totale dei nodi, e per ultimo resta **solo l'allarme** («2 muto»), che è ciò che
+conta quando lo spazio finisce. Il riquadro in negativo si dimensiona sul testo
+misurato, non su un 118 fisso.
+
+**Ed è sparito un allarme falso**: il piede contava come muto anche un nodo che
+non aveva *ancora* parlato, quindi dopo ogni riavvio dell'hub si leggeva «2
+muto» mentre il corpo della pagina diceva correttamente «in attesa del primo
+dato» — la stessa pagina si contraddiceva, e l'unico allarme che questa rete ha
+suonava a vuoto per qualche minuto ad ogni OTA.
+
+**Il conteggio dei nodi ora si scrive solo quando dice qualcosa** (muti, o nodi
+non mostrati). Con due nodi in elenco e due blocchi disegnati sopra, «2 nodi» è
+la stessa ridondanza per cui in `v36` è sparita l'intestazione «STAZIONE
+METEO» — e i 44 px risparmiati sono esattamente quelli che servivano all'ora
+dell'ultimo aggiornamento.
+
+**Verificato sull'hardware**: `v38` caricata alle 10:05 e guardata con
+`tools/pannello_png.py` con un nodo, poi con due; `v40` alle 11:09. L'anteprima
+1:1 (`v22`) è ciò che ha reso possibile giudicare il layout **senza andare a
+guardare il pannello** — ed è anche ciò che ha fatto trovare il difetto del
+piede, che nessuno stava cercando.
+
 ## Aggiornamento del 2026-09-01 — la lettura ferma a 4,06 V esclude la pendenza pessimistica
 
 Lettura al multimetro alle **07:17: 4,06 V** — la stessa del 30/08 alle 07:00 e

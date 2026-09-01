@@ -325,6 +325,9 @@ Solo la riga essenziale: il racconto sta in `docs/Stazione-Meteo.md`.
 | Icone sul pannello (con due scartate perché ambigue) | 2026-08-31 | `v24`, commit `07480ee` |
 | Pagina **dettaglio** per nodo, e pagina nodi alleggerita | 2026-08-31 | `v25`, commit `c2ba72d` |
 | Galleria immagini: pagine, ricerca, miniature, tabella | 2026-08-31 | `v26`-`v27` |
+| **Pagina nodi ridisegnata**: barra min/max 24 h, testata leggera, delta al posto della parola | 2026-09-01 | `v38` |
+| Piede che si misura invece di stimare, e il falso «muto» dopo ogni riavvio | 2026-09-01 | `v39`-`v40` |
+| `tools/larghezza_testo.py`: quanto e' largo un testo prima di disegnarlo | 2026-09-01 | — |
 
 ---
 

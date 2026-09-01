@@ -1496,6 +1496,44 @@ senza di loro si somiglierebbero (schermo che non cambia).
   forte). Una parola va letta, un'inclinazione si vede da tre metri. Quando lo
   storico non basta si disegnano due trattini: "non lo so ancora" non deve
   somigliare a "stabile".
+  - Da `v38` accanto alla freccia c'e' il **numero** (`+1,2/3h`) e non piu' la
+    parola: dicevano la stessa cosa, e la parola costava una riga intera. Sta
+    ancora nella pagina dettaglio e nella web UI, dove c'e' spazio per
+    leggerla.
+
+- **La barra del giorno** (`drawRangeGiorno()`, da `v38`): minimo e massimo
+  delle 24 h con un cursore dove sta la temperatura di adesso. E' l'unica
+  informazione che alla pagina mancava davvero — **26,5 gradi con minimo 12 e
+  con minimo 24 sono due giornate diverse, e il pannello le mostrava
+  identiche**. Nessuna memoria nuova: legge l'anello dei 48 slot che la pagina
+  grafico usa gia' (`statTemp()`).
+  - **Non contraddice la regola contro le sparkline**: li' si vieta di
+    comprimere una *curva* in un francobollo, e resta valido. Qui non si
+    disegna un andamento ma **una posizione dentro un intervallo** — due tacche
+    e un cursore, che a tre metri si leggono. Una curva a quella dimensione no.
+  - Se lo storico non basta si scrive "in raccolta": una barra col cursore in
+    mezzo direbbe "escursione nulla", che e' falso. Stessa regola dei due
+    trattini del trend.
+
+- **La testata del nodo e' nome + filetto, non piu' una barra nera piena**
+  (da `v38`). Il nero pieno e' cio' che si vede da piu' lontano, ma e' anche
+  cio' che **imprime il vetro**: le due barre da sole facevano meta'
+  dell'inchiostro della pagina (22,2% di nero, misurato sull'anteprima; ora
+  8,7%). Il nero risparmiato va all'unica cosa che deve gridare — il badge
+  `MUTO` in negativo, che essendo rimasto il solo nero pieno si vede molto piu'
+  di prima.
+
+- **Un testo si MISURA prima di disegnarlo**, e da `v38` c'e' lo strumento:
+  `python tools/larghezza_testo.py --riga3` somma gli `xAdvance` dei glifi nei
+  `.h` veri dei font — lo stesso conto di `getTextBounds()` — e dice se una
+  stringa invade quella accanto. **Il caso che sfugge non e' quello di oggi ma
+  quello di gennaio**: `-10,5` sono 41 px dove `21,4` ne era 28, e con le
+  coordinate stimate a occhio il minimo finiva sopra la barra alla prima gelata.
+  Tre posizioni su quattro erano sbagliate e sono state corrette **prima**
+  dell'OTA. Vale anche al contrario: `+12,3 hPa/3h` non ci sta (108 px, invade
+  la freccia), ed e' il motivo per cui sul pannello si legge `+12,3/3h` —
+  la controprova e' dentro lo script, o fra sei mesi qualcuno rimetterebbe
+  l'unita' "che ci sta benissimo".
 - **Testo centrato**: usare `drawCenter()`, che misura con `getTextBounds()`.
   Allineare a destra con un offset stimato a occhio taglia le stringhe larghe
   sul bordo sinistro, dove il cursore va a coordinate negative e Adafruit_GFX
