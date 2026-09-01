@@ -97,7 +97,7 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v40";
+static const char FW_VERSION[] = "v42";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -723,6 +723,15 @@ static int statTemp(int index, float* minC, float* maxC, float* delta3h)
 static String fmtDelta(float v, int dec)
 {
   if (!isfinite(v)) return String("--");
+
+  // Un valore che ARROTONDA a zero non ha segno. `String(v, 1)` di -0,04 da'
+  // "-0,0", cioe' "negativo ma nullo": non significa niente, e sul pannello si
+  // legge come un guasto della formattazione. Visto sul vetro in v41, con la
+  // pressione ferma. Si guarda il numero arrotondato, non quello vero, perche'
+  // e' il primo quello che finisce sotto gli occhi.
+  const float scala = (dec <= 0) ? 1.0f : (dec == 1 ? 10.0f : 100.0f);
+  if (lroundf(v * scala) == 0) return fmtNum(0.0f, dec);
+
   String s = fmtNum(v, dec);
   if (v >= 0 && !s.startsWith("+")) s = "+" + s;
   return s;
@@ -851,6 +860,21 @@ static void drawFila(const String* voci, int quante, int16_t x, int16_t y,
     tela.print(voci[i]);
     x += (int16_t)bw + gap;
   }
+}
+
+// Quale dei due blocchi si usa. Sta in una funzione perche' la decisione
+// serve in DUE posti: screenNodi() per disegnare, firmaValori() per sapere
+// che cosa e' stato disegnato -- la rugiada c'e' solo nel compatto, min/max
+// solo nel comodo. Due condizioni copiate divergerebbero al primo ritocco, e
+// una firma che non corrisponde alla pagina si vede come refresh mancati:
+// il pannello resta indietro e nessun contatore lo dice. E' la stessa regola
+// per cui l'ora la disegna una funzione sola.
+//
+// Il blocco comodo vuole ~110 px: con la fascia del messaggio non ce ne sono,
+// e disegnarlo lo stesso vorrebbe dire numeri sopra il separatore.
+static bool nodiLayoutComodo(int quanti, const Message* fascia)
+{
+  return (quanti <= NODI_COMODI_FINO_A) && (fascia == nullptr);
 }
 
 // --- blocco COMODO: fino a due nodi ---------------------------------------
@@ -1056,10 +1080,7 @@ static void screenNodi(bool full)
     else
     {
       const int quanti  = (n < NODI_VISIBILI) ? n : NODI_VISIBILI;
-      // Il blocco comodo vuole ~110 px: con la fascia non ce ne sono, e
-      // disegnarlo lo stesso vorrebbe dire numeri che si sovrappongono al
-      // separatore. Meglio compatto e leggibile che comodo e sporco.
-      const bool comodo = (quanti <= NODI_COMODI_FINO_A) && (msgFascia == nullptr);
+      const bool comodo = nodiLayoutComodo(quanti, msgFascia);
       const int16_t h   = (yBot - NODI_TOP) / quanti;
 
       for (int i = 0; i < quanti; i++)
@@ -2120,28 +2141,67 @@ static uint32_t firmaStato()
 
 // Quello che puo' aspettare: i numeri, arrotondati COME si mostrano (27,25 e
 // 27,24 sono lo stesso "27,2" sul pannello, quindi non sono un cambiamento).
+// Un valore com'e' SCRITTO sul pannello: `dec` cifre dopo la virgola, e la
+// sentinella per il non-finito (che si disegna come un trattino, quindi due
+// NAN diversi sono lo stesso disegno).
+static int32_t firmaComeScritto(float v, int dec)
+{
+  if (!isfinite(v)) return INT32_MIN;
+  return (int32_t)lroundf(v * (dec == 0 ? 1.0f : 10.0f));
+}
+
 static uint32_t firmaValori()
 {
   uint32_t f = 2166136261u;
+
+  // Il layout cambia COSA si disegna, quindi entra anche nella firma: nel
+  // blocco compatto c'e' la rugiada, in quello comodo no. Deciso dalla stessa
+  // funzione che usa screenNodi(), o le due condizioni potrebbero divergere e
+  // la firma smetterebbe di corrispondere alla pagina.
+  const Message* m = pages_fascia() ? msg_active(time(nullptr)) : nullptr;
+  const int n      = remote_count();
+  const int quanti = (n < NODI_VISIBILI) ? n : NODI_VISIBILI;
+  const bool comodo = nodiLayoutComodo(quanti, m);
+
   for (int i = 0; i < remote_count(); i++) {
     RemoteNode n;
     if (!remote_get(i, &n)) continue;
-    for (int k = 0; k < 3; k++)
-      firmaMescola(f, isfinite(n.value[k]) ? (int32_t)lroundf(n.value[k] * 10.0f) : INT32_MIN);
+
+    // Ogni grandezza con le cifre CON CUI SI MOSTRA, non tutte a un decimale.
+    // L'umidita' sul pannello e' un intero: fino a v40 stava in firma a 0,1 e
+    // un 41,2 -> 41,3 faceva un refresh completo che non cambiava un pixel.
+    // Era la voce che cambiava di piu' -- 601 volte su 771 pacchetti nelle 24 h
+    // misurate il 2026-09-01 -- proprio perche' contava cifre invisibili.
+    firmaMescola(f, firmaComeScritto(n.value[0], 1));   // temperatura: 26,5
+    firmaMescola(f, firmaComeScritto(n.value[1], 0));   // umidita': 41%
+    firmaMescola(f, firmaComeScritto(n.value[2], 1));   // pressione: 1013,9
     firmaMescola(f, (int32_t)n.trend);
+
+    // La rugiada la disegna SOLO il blocco compatto, e ha un decimale: li'
+    // dipende dall'umidita' in modo continuo, quindi arrotondarla a intero
+    // nella firma perderebbe dei cambiamenti veri (41,2 e 41,7 danno lo stesso
+    // "41%" ma due rugiade diverse). Fuori dal compatto non si disegna, e
+    // metterla in firma sarebbe l'errore opposto: refresh per un numero che
+    // non c'e'.
+    if (!comodo)
+      firmaMescola(f, firmaComeScritto(meteo_dewpoint_c(n.value[0], n.value[1]), 1));
 
     // Anche min, max e variazione a 3 ore, da v38: sono disegnati, quindi se
     // cambiano la pagina e' cambiata. Senza, il pannello resterebbe fermo
     // proprio nel caso che conta -- il massimo di ieri che esce dalla finestra
     // mentre il nodo trasmette lo stesso identico valore -- e mostrerebbe
     // un'escursione vecchia accanto a un numero giusto.
-    float mn, mx, dl;
-    statTemp(i, &mn, &mx, &dl);
-    firmaMescola(f, isfinite(mn) ? (int32_t)lroundf(mn * 10.0f) : INT32_MIN);
-    firmaMescola(f, isfinite(mx) ? (int32_t)lroundf(mx * 10.0f) : INT32_MIN);
-    firmaMescola(f, isfinite(n.delta3h) ? (int32_t)lroundf(n.delta3h * 10.0f) : INT32_MIN);
+    // Min, max e variazione a 3 ore li disegna solo il blocco comodo, con un
+    // decimale. Nel compatto non ci sono: stessa regola della rugiada, al
+    // contrario.
+    if (comodo) {
+      float mn, mx, dl;
+      statTemp(i, &mn, &mx, &dl);
+      firmaMescola(f, firmaComeScritto(mn, 1));
+      firmaMescola(f, firmaComeScritto(mx, 1));
+      firmaMescola(f, firmaComeScritto(n.delta3h, 1));
+    }
   }
-  const Message* m = pages_fascia() ? msg_active(time(nullptr)) : nullptr;
   if (m) for (const char* c = m->testo; *c; c++) firmaMescola(f, (int32_t)(uint8_t)*c);
   return f;
 }

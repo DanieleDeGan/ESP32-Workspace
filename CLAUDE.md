@@ -1481,6 +1481,39 @@ senza di loro si somiglierebbero (schermo che non cambia).
   piccolo sia da quello della pagina intera: se fossero due disegni distinti
   divergerebbero di qualche pixel, e l'ora "salterebbe" ad ogni refresh grande.
 
+- **La firma dei valori deve descrivere CIO' CHE SI DISEGNA**, cifra per cifra
+  (`firmaValori()`, corretta in `v41`). Ogni grandezza entra con i decimali con
+  cui si mostra: temperatura e pressione a 1, **umidita' a 0** — sul pannello
+  e' un intero, e fino a `v40` stava in firma a 0,1, quindi un 41,2 -> 41,3
+  faceva un refresh che non cambiava un pixel. Era la voce che cambiava di piu':
+  **601 volte su 771 pacchetti** nelle 24 h misurate il 2026-09-01.
+  - **Vale anche al contrario**: la rugiada la disegna solo il blocco compatto e
+    dipende dall'umidita' in modo continuo (41,2 e 41,7 sono lo stesso "41%" ma
+    due rugiade diverse), quindi entra in firma **solo li'**. Min/max e delta a
+    3 ore solo nel comodo. Il layout lo decide `nodiLayoutComodo()`, una
+    funzione sola usata sia per disegnare sia per firmare: due condizioni
+    copiate divergerebbero al primo ritocco, e **una firma che non corrisponde
+    alla pagina si vede come refresh mancati, che nessun contatore segnala.**
+  - **Quanto vale**: poco, ed e' misurato — 287 -> 282 refresh al giorno. Il
+    motivo per farlo e' la coerenza, non il risparmio.
+
+- **Il vero limite ai refresh e' la CADENZA, non la firma** (misurato il
+  2026-09-01 rigiocando i CSV veri). Con due nodi a 299 s il massimo consentito
+  e' **288 refresh al giorno** e se ne fanno **287**: il confronto dei valori ne
+  evita *uno*, perche' con tre grandezze a quella risoluzione qualcosa cambia
+  sempre. Chi volesse davvero ridurli deve alzare la cadenza minima dei refresh
+  per i soli valori, non affinare la firma.
+  - **`refresh_evitati` promette piu' di quanto misuri**: conta i *check* (uno
+    ogni 5 s) che non hanno prodotto un refresh, non refresh risparmiati. Fra un
+    pacchetto e l'altro lo stesso "niente di nuovo" viene contato ~60 volte, e
+    un rapporto tipo 974:28 sembra un'efficienza enorme che non c'e'. Il numero
+    onesto e' **refresh per pacchetto**: 28 su 56, e quel 50% lo fa la cadenza
+    minima assorbendo il pacchetto del secondo nodo.
+  - **Attenzione a leggere `epd_refresh` diviso `uptime`**: le ore di silenzio
+    (21-7) stanno dentro l'uptime ma non producono refresh, quindi il tasso
+    esce diviso per dieci. Il 2026-09-01 sembrava 1,5/h contro 12,2/h; erano
+    15,7/h contro 12,2/h, cioe' nessun peggioramento.
+
 - **Layout adattivo**: fino a due nodi si usa il blocco comodo (temperatura a
   24pt, trend scritto per esteso), da tre in su quello compatto (18pt). Il
   pannello si legge da lontano, quindi il corpo del carattere non e' un vezzo

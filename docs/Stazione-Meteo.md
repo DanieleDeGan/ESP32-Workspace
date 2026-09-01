@@ -1,5 +1,87 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-01 (3) — quanto lavora davvero il pannello
+
+Domanda semplice: da quando c'è il meccanismo che evita i refresh inutili,
+quanti se ne fanno? La risposta ha ribaltato l'idea che me n'ero fatto.
+
+**Misurato sull'hardware**: `v40`, 28 refresh in 2,29 h = **12,2 all'ora**.
+
+**Il primo confronto era un artefatto, e vale come avvertenza.** Il dato `v37`
+del mattino diceva 17 refresh su 11,09 h di uptime, cioè 1,5/h: sembrava che il
+ridisegno fosse ottuplicato. Ma dentro quelle 11 ore ci sono le **ore di
+silenzio** (21→7), in cui il pannello è sospeso e non fa refresh: la veglia
+effettiva era di ~65 minuti, quindi **15,7/h**. Non un peggioramento — semmai
+il contrario. *`epd_refresh / uptime` non è il tasso di refresh, e sbaglia di
+un fattore dieci.*
+
+### Rigiocare i CSV per rispondere davvero
+
+Le voci aggiunte in `v38` alla firma (min/max 24 h, Δ3h) potevano aver
+aumentato i refresh. Ho ricalcolato `firmaValori()` sui CSV veri delle ultime
+24 h, con la stessa regola del firmware (firma cambiata **e** almeno 299 s
+dall'ultimo refresh):
+
+| firma | refresh in 24 h |
+|---|---|
+| `v37` — temperatura, umidità, pressione, trend | 286 |
+| `v38`-`v40` — + min/max 24 h + Δ3h | **287** |
+| `v41` — umidità arrotondata **come si mostra** | **282** |
+
+Il modello prevede ~12 refresh/h e l'hub ne misura 12,2: i conti reggono.
+Le voci nuove costano **un refresh al giorno** — `min24` e `max24` cambiano 11
+e 22 volte su 771 pacchetti, e il Δ3h cambia quasi sempre insieme alla
+pressione, che era già in firma.
+
+### Il risultato che non mi aspettavo
+
+**Il meccanismo delle firme, oggi, non evita quasi nulla.** La cadenza dei nodi
+(299 s) consente al massimo **288 refresh al giorno**, e con le firme se ne
+fanno **287**: ne evita *uno*. Con due nodi che mandano tre grandezze a 0,1 di
+risoluzione, qualcosa cambia sempre. **Il limite è la cadenza, non il confronto
+dei valori** — chi volesse ridurre i refresh deve alzare il minimo per i cambi
+di valore, non affinare la firma.
+
+**E `refresh_evitati` promette più di quanto misuri**: conta i *check* (uno ogni
+5 s) che non hanno prodotto un refresh, non refresh risparmiati. Fra un
+pacchetto e l'altro lo stesso «niente di nuovo» viene contato una sessantina di
+volte, e un rapporto come 974:28 suggerisce un'efficienza che non c'è. Il numero
+onesto è **refresh per pacchetto**: 28 su 56 — e quel 50% lo fa la cadenza
+minima, assorbendo il pacchetto del secondo nodo che arriva sfasato.
+
+**Costo effettivo**: ~288 refresh al giorno × 1,05 s ≈ cinque minuti di
+ridisegno, più una ventina di completi da 2,6 s. Per l'usura è irrilevante
+(~105.000 refresh l'anno contro il milione tipico di un e-ink); l'unico effetto
+percepibile è un lampeggio ogni cinque minuti.
+
+### `v41`: la firma dice cifra per cifra cosa c'è sul vetro
+
+L'umidità sul pannello è un **intero**, ma in firma stava a 0,1: un 41,2 → 41,3
+faceva un refresh completo che non cambiava un pixel, ed era la voce che
+cambiava di più — **601 volte su 771 pacchetti**. Ora ogni grandezza entra con
+i decimali con cui si mostra.
+
+**Vale anche al contrario, ed è la parte delicata**: la rugiada la disegna solo
+il blocco compatto e dipende dall'umidità in modo continuo (41,2 e 41,7 sono lo
+stesso «41%» ma due rugiade diverse), quindi entra in firma **solo lì**; min/max
+e Δ3h solo nel comodo. Il layout lo decide `nodiLayoutComodo()`, **una funzione
+sola** usata sia per disegnare sia per firmare: due condizioni copiate
+divergerebbero al primo ritocco, e una firma che non corrisponde alla pagina si
+vede come **refresh mancati**, che nessun contatore segnala.
+
+Guadagno: 287 → 282 refresh al giorno. **Il motivo per farlo è la coerenza, non
+il risparmio** — e la cadenza è rimasta invariata di proposito.
+
+Sui conteggi si vede bene dove finisce il guadagno: l'umidità passa da **601 a
+179** cambi su 771 pacchetti, ma i refresh scendono appena, perché a decidere
+sono ormai la pressione (308) e il Δ3h (313), che si muovono insieme.
+
+**E la `v41` sul vetro ha mostrato un difetto di formattazione**: `-0,0/3h`.
+`String(v, 1)` di −0,04 dà `-0,0`, cioè *«negativo ma nullo»* — che non
+significa niente e si legge come un guasto. Da `v42` un valore che **arrotonda**
+a zero si scrive senza segno: si guarda il numero arrotondato, non quello vero,
+perché è il primo quello che finisce sotto gli occhi.
+
 ## Aggiornamento del 2026-09-01 (2) — `v38`-`v40`: la pagina nodi ridisegnata
 
 Nasce da una ricerca su come impaginano i cruscotti e-ink che funzionano

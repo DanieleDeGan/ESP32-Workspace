@@ -1512,6 +1512,7 @@ pannello si vede o non si vede allo stesso modo.
 | `dither_page.h` | **GENERATO**, non si modifica a mano: la pagina in PROGMEM (~38 kB) servita su `/immagini`. Da `v12` include anche la composizione del testo sopra la foto |
 | `tools/pannello_png.py` | scarica `/api/pannello/anteprima` e ne fa un PNG: il pannello si guarda da remoto, e con `-c` si confronta **bit a bit** con un `.bin` atteso |
 | `tools/larghezza_testo.py` | quanto e' largo un testo **prima** di disegnarlo: somma gli `xAdvance` dei glifi nei `.h` veri dei font, come `getTextBounds()`. `--riga3` e `--piede` rifanno le prove del layout della pagina nodi. Serve perche' un testo troppo largo non da' errore — si sovrappone, e lo si scopre guardando il vetro |
+| `tools/refresh_simula.py` | rigioca i CSV veri dei nodi e conta **quanti refresh** farebbe il pannello con una data `firmaValori()`. Serve perche' dal vivo la risposta arriva dopo ore, con i contatori azzerati ad ogni OTA. Stampa anche il **tetto della cadenza**: se il numero ci somiglia, la firma non sta evitando niente |
 | `tools/icone.py` | genera i bitmap delle icone (termometro, goccia) usati dalla pagina nodi |
 
 **Cose da sapere prima di metterci le mani**:
