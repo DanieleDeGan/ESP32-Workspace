@@ -1,5 +1,71 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-01 (4) — il blackout, e il nodo che sembrava sano
+
+È saltata la corrente. Verifica a caldo dei tre dispositivi:
+
+| | esito |
+|---|---|
+| hub | `POWERON`, ripartito in un minuto, IP e canale invariati, NTP, SD montata, `/api/salute: ok` |
+| nodo a **batteria** | non se n'è accorto: `seq` continuo, zero persi, consegne regolari |
+| nodo a **muro** | vivo, in rete, sensori ok — e **muto su ESP-NOW da dodici minuti** |
+
+**Lo storico si è ricostruito dai CSV**: `storico_slot: 20` e `temp_campioni: 48`
+subito dopo il riavvio, quindi trend e barra del giorno erano pieni invece di
+richiedere ore. È la funzione scritta per gli OTA che ha pagato al primo
+blackout vero.
+
+### Il guasto che non somiglia a un guasto
+
+Il nodo a muro rispondeva in rete, leggeva i sensori, e la sua pagina mostrava
+**canale 13** — quello giusto. `espnow_falliti: 0`. Eppure l'hub non riceveva
+niente, e **nemmeno aprendo la finestra di associazione** rientrava: è quel
+dettaglio a spostare la diagnosi, perché se non rientra nemmeno in pairing il
+problema non è l'adozione, è che i due non si sentono proprio.
+
+La catena, letta nel codice:
+
+1. la scheda si riaccende **insieme al router**;
+2. `net_begin()` aspetta il WiFi **15 secondi** e rinuncia (poi ritenta in
+   background);
+3. `hub_begin_ex()`, vedendo il WiFi assente, ripiega sul canale fisso della
+   libreria — **6**;
+4. il WiFi arriva, la radio va sul canale dell'AP (**13**)… ma i peer restano
+   registrati sul 6, e `hub_begin_ex()` si chiama **solo** in `setup()`.
+
+Da lì in poi i pacchetti escono verso un canale su cui non c'è nessuno. E la
+diagnostica sembrava a posto **proprio dove stava il guasto**: `hub_channel()`
+legge il canale della *radio* — scelta giusta, fatta il 29/08 per un altro
+motivo — ma il canale dei *peer* non lo mostrava nessuno.
+
+### La correzione (`v14`-`v15` del nodo)
+
+- **`Link_SyncPeersToRadio()`** (libreria): riallinea i peer al canale su cui la
+  radio si trova già, **senza toccarla**. È il rovescio di `Link_SetChannel()`,
+  che la sposta e per questo è vietata su una STA connessa. I peer finiscono su
+  «canale corrente», quindi da lì in avanti seguono la radio da soli.
+- **`hub_loop()`** la chiama alla prima connessione WiFi, se ESP-NOW era partito
+  senza AP. Una volta sola, comunque vada.
+- **`espnow_peer_canale`** in `/api/stato`, e in pagina `PEER SUL CANALE x,
+  RADIO SUL y` quando divergono. Senza, il guasto resta invisibile: il campo del
+  canale radio mente per omissione — dice la verità su una cosa che non è quella
+  rotta.
+- **`prova-riallineo`**: fabbrica il guasto (`Link_TestMisalignPeers()`) per
+  provare la riparazione senza aspettare il prossimo blackout. Stessa disciplina
+  di `prova-canale`, e stessa ragione: una funzione che si attiva una volta
+  all'anno, mai sotto osservazione, è una funzione che non si sa se esiste.
+
+**Verificata sull'hardware**: comando dato, `espnow_peer_canale` tornato a **0**
+entro il giro di polling successivo, nodo rimasto associato. Il WiFi non viene
+toccato dalla prova, quindi la scheda resta raggiungibile anche se la
+riparazione fallisse — condizione senza la quale la prova non si sarebbe potuta
+fare da remoto.
+
+**Cosa resta scoperto**: il nodo a batteria non è esposto a questo (si porta il
+canale in NVS e ha la ricerca automatica), ma **ogni scheda alimentata dalla
+rete lo era**, e lo sarebbe stata ad ogni blackout finché qualcuno non se ne
+accorgeva. Il buco nei dati di oggi va dalle 13:46:22 alle 14:07:02.
+
 ## Aggiornamento del 2026-09-01 (3) — quanto lavora davvero il pannello
 
 Domanda semplice: da quando c'è il meccanismo che evita i refresh inutili,

@@ -77,6 +77,20 @@ bool    hub_ready();     // ESP-NOW inizializzato
 bool    hub_paired();    // associato all'hub (WELCOME ricevuto)
 uint8_t hub_channel();   // canale su cui parla davvero, chiesto alla radio
 
+// Il canale con cui sono REGISTRATI I PEER, che non e' detto sia lo stesso.
+// 0 = "quello corrente" (seguono la radio), un numero = fisso da quando ESP-NOW
+// e' partito. Se qui c'e' un numero mentre si e' connessi a un AP, il nodo sta
+// trasmettendo su un canale e ascoltando su un altro: e' il guasto del blackout
+// del 2026-09-01, e senza questo valore non si vede da nessuna parte.
+uint8_t hub_channel_peer();
+
+// Fabbrica il guasto del blackout: sposta i PEER su un canale sbagliato senza
+// toccare la radio, e riarma il riallineamento. Serve a provare la riparazione
+// senza aspettare la prossima interruzione di corrente — la stessa ragione per
+// cui esiste "prova-canale". Il WiFi non viene toccato: pagina e OTA restano
+// raggiungibili anche se la riparazione non funzionasse.
+bool hub_prova_riallineo(uint8_t canale_falso);
+
 // MAC dell'hub associato, "-" finche' non lo si conosce.
 const char* hub_hub_mac();
 

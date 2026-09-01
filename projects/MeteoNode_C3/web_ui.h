@@ -92,7 +92,14 @@ struct app_snapshot_t {
   // riempiono, e l'hub non riceve piu' niente.
   bool        espnow_ok;        // ESP-NOW inizializzato
   bool        espnow_paired;    // WELCOME dell'hub ricevuto
-  uint8_t     espnow_channel;   // canale reale: deve combaciare con l'hub
+  uint8_t     espnow_channel;   // canale reale della RADIO: deve combaciare con l'hub
+  // Il canale con cui sono registrati i PEER, che e' un'altra cosa e puo'
+  // divergere: 0 = "quello corrente", cioe' seguono la radio. Un numero fisso
+  // mentre si e' connessi a un access point vuol dire che ESP-NOW e' partito
+  // prima del WiFi e sta trasmettendo altrove — il nodo sembra sano e non
+  // parla con nessuno. Senza questo campo quella differenza non si vede da
+  // nessuna parte: e' costata dodici minuti di nodo muto il 2026-09-01.
+  uint8_t     espnow_peer_channel;
   uint32_t    espnow_sent;      // DATA consegnati (con conferma)
   uint32_t    espnow_failed;    // DATA falliti dopo tutti i ritentativi
   const char* espnow_hub_mac;   // "-" finche' non associato
@@ -172,6 +179,9 @@ void     app_cmd_toggle_sleep();
 // Arma la prova della ricerca del canale: UN risveglio con il canale
 // sbagliato, per verificare che il nodo sappia ritrovare l'hub da solo.
 void     app_cmd_prova_canale();
+// Prova della riparazione del canale dei peer (il guasto del blackout).
+// Torna false se ESP-NOW non e' attivo.
+bool     app_cmd_prova_riallineo();
 
 // Da quanti secondi risale l'ultima lettura. Con l'intervallo configurabile
 // fino a un'ora, un numero senza eta' sarebbe ambiguo: la pagina deve poter

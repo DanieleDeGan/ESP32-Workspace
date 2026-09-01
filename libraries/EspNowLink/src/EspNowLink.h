@@ -163,6 +163,44 @@ bool Link_InitEx(link_node_type_t self_type, const char *self_name, uint8_t chan
  */
 bool Link_SetChannel(uint8_t channel);
 
+/**
+ * Riallinea i peer al canale su cui la radio si trova GIA', senza toccarla.
+ * Ritorna false se il canale corrente non si riesce a leggere.
+ *
+ * E' il rovescio di Link_SetChannel(): li' la radio si sposta e i peer la
+ * seguono, qui la radio e' gia' al posto giusto e sono i peer a essere
+ * rimasti indietro. Per questo — al contrario di Link_SetChannel() — questa
+ * si PUO' chiamare su un dispositivo connesso a un access point: non manda
+ * nessun comando alla radio.
+ *
+ * Quando serve: ESP-NOW inizializzato PRIMA che il WiFi fosse connesso.
+ * Succede davvero dopo un'interruzione di corrente, quando la scheda si
+ * riaccende insieme al router e non lo trova entro il timeout: ripiega sul
+ * canale fisso, e quando il WiFi arriva (canale dell'AP) i peer restano dove
+ * erano nati. Il guasto e' silenzioso e la diagnostica sembra a posto — la
+ * pagina del nodo mostra il canale della RADIO, che e' giusto — ma il nodo
+ * non parla piu' con nessuno, e nemmeno la finestra di associazione lo
+ * recupera, perche' anche il broadcast esce verso il canale sbagliato.
+ *
+ * Dopo la chiamata i peer stanno su ESPNOW_LINK_CHANNEL_CURRENT, cioe'
+ * seguono la radio da soli: un router che si sposta di nuovo non li lascia
+ * indietro una seconda volta.
+ */
+bool Link_SyncPeersToRadio(void);
+
+/**
+ * SOLO PER PROVE: sposta i peer su `channel` senza toccare la radio, cioe'
+ * fabbrica il disallineamento che Link_SyncPeersToRadio() ripara. Ritorna
+ * quanti peer ha spostato, -1 se il canale non e' valido (1..13).
+ *
+ * Da qui in avanti il dispositivo e' muto per davvero, finche' qualcuno non
+ * ripara: e' il punto. Serve a provare la riparazione senza aspettare la
+ * prossima interruzione di corrente — una funzione che si attiva sola una
+ * volta all'anno, e mai sotto osservazione, e' una funzione che non si sa se
+ * esiste. Non tocca il WiFi, quindi chi la chiama resta raggiungibile in rete.
+ */
+int Link_TestMisalignPeers(uint8_t channel);
+
 /** Canale su cui si sta parlando davvero. 0 = "canale corrente", cioe' quello
  *  deciso da chi ha configurato la radio (tipicamente l'associazione all'AP). */
 uint8_t Link_GetChannel(void);

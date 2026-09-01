@@ -145,7 +145,7 @@
 //   v2  2026-08-22  storico 24 h in RAM + grafici, previsione dal trend
 //                   barometrico a 3 ore, intervallo e altitudine da pagina web
 //   v1  2026-08-22  bring-up del sensore, web UI, OTA
-static const char FW_VERSION[] = "v13";
+static const char FW_VERSION[] = "v15";
 
 // ---------------------------------------------------------------------
 //  Nome del nodo
@@ -959,6 +959,7 @@ void app_get_snapshot(app_snapshot_t &out) {
   out.espnow_ok      = hub_ready();
   out.espnow_paired  = hub_paired();
   out.espnow_channel = hub_channel();
+  out.espnow_peer_channel = hub_channel_peer();
   out.espnow_sent    = hub_sent_ok();
   out.espnow_failed  = hub_sent_fail();
   out.espnow_hub_mac = hub_hub_mac();
@@ -1099,6 +1100,13 @@ uint32_t app_wake_ok_count() { return s_wakeOk; }
 void app_cmd_prova_canale() {
   s_rtcProvaCanale = true;
   Serial.println(F("[canale] prova armata: al prossimo sonno il canale sara' sbagliato"));
+}
+
+// Non si accoda, come l'interruttore del sonno: e' immediata e costa
+// microsecondi (una manciata di esp_now_mod_peer), quindi non c'e' il rischio
+// di richieste che si accavallano descritto in web_ui.h.
+bool app_cmd_prova_riallineo() {
+  return hub_prova_riallineo(1);   // 1: un canale plausibile ma sbagliato
 }
 
 void app_cmd_toggle_sleep() {

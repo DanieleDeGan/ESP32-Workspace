@@ -231,6 +231,73 @@ bool Link_SetChannel(uint8_t channel)
     return true;
 }
 
+bool Link_SyncPeersToRadio(void)
+{
+    // Il canale su cui la radio si trova ADESSO. Non lo si imposta: lo si
+    // legge. E' la differenza con Link_SetChannel(), ed e' tutto il punto —
+    // qui la radio e' gia' dove deve stare, sono i peer a essere rimasti
+    // indietro.
+    //
+    // Serve a chi si connette a un access point DOPO aver inizializzato
+    // ESP-NOW: il caso vero e' un nodo che si accende insieme al router (un
+    // blackout), non lo trova entro il timeout, ripiega sul canale fisso, e
+    // quando il WiFi finalmente arriva si ritrova la radio sul canale dell'AP
+    // e i peer registrati su quello di ripiego. Da fuori sembra sano — la
+    // radio e' sul canale giusto e lo dice anche la sua pagina — ma non parla
+    // con nessuno, perche' i pacchetti escono verso peer che stanno altrove.
+    // Osservato il 2026-09-01 sul nodo a muro dopo un'interruzione di corrente:
+    // dodici minuti muto, e nemmeno la finestra di associazione lo recuperava.
+    uint8_t primario = 0;
+    wifi_second_chan_t secondario;
+    if (esp_wifi_get_channel(&primario, &secondario) != ESP_OK || primario == 0) {
+        return false;
+    }
+
+    // I peer passano a 0 = "canale corrente", non al numero appena letto: da
+    // qui in avanti seguono la radio da soli, quindi un router che si sposta
+    // di nuovo non li lascia indietro una seconda volta. E' lo stesso stato in
+    // cui sarebbero nati se il WiFi ci fosse stato all'avvio.
+    g_link_channel = ESPNOW_LINK_CHANNEL_CURRENT;
+
+    esp_now_peer_info_t info;
+    bool from_head = true;
+    while (esp_now_fetch_peer(from_head, &info) == ESP_OK) {
+        from_head = false;
+        info.channel = ESPNOW_LINK_CHANNEL_CURRENT;
+        esp_now_mod_peer(&info);
+    }
+    return true;
+}
+
+int Link_TestMisalignPeers(uint8_t channel)
+{
+    // Sposta i peer su un canale SENZA toccare la radio: fabbrica di proposito
+    // il disallineamento che Link_SyncPeersToRadio() ripara. Da qui in avanti
+    // il dispositivo e' muto sul serio -- i pacchetti escono verso un canale su
+    // cui non c'e' nessuno.
+    //
+    // Esiste perche' una riparazione che si attiva solo dopo un'interruzione di
+    // corrente resterebbe non verificata per mesi, e il giorno in cui serve e'
+    // esattamente quello in cui si scopre che non funziona. Stessa ragione del
+    // "prova-canale" del nodo a batteria.
+    //
+    // Non tocca il WiFi: chi la chiama resta raggiungibile in rete anche se la
+    // riparazione fallisse.
+    if (channel < 1 || channel > 13) {
+        return -1;
+    }
+    esp_now_peer_info_t info;
+    bool from_head = true;
+    int quanti = 0;
+    while (esp_now_fetch_peer(from_head, &info) == ESP_OK) {
+        from_head = false;
+        info.channel = channel;
+        if (esp_now_mod_peer(&info) == ESP_OK) quanti++;
+    }
+    g_link_channel = channel;
+    return quanti;
+}
+
 uint8_t Link_GetChannel(void)
 {
     return g_link_channel;

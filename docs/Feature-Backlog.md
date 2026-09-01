@@ -328,6 +328,7 @@ Solo la riga essenziale: il racconto sta in `docs/Stazione-Meteo.md`.
 | **Pagina nodi ridisegnata**: barra min/max 24 h, testata leggera, delta al posto della parola | 2026-09-01 | `v38` |
 | Piede che si misura invece di stimare, e il falso «muto» dopo ogni riavvio | 2026-09-01 | `v39`-`v40` |
 | `tools/larghezza_testo.py`: quanto e' largo un testo prima di disegnarlo | 2026-09-01 | — |
+| **Nodo muto dopo un blackout**: peer riallineati alla radio + `espnow_peer_canale` + `prova-riallineo` | 2026-09-01 | `MeteoNode_C3` `v15`, `EspNowLink` |
 
 ---
 

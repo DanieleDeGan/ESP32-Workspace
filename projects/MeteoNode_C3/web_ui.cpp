@@ -334,7 +334,16 @@ function aggiorna(){
     si('ch', d.canale);
     // Il canale ESP-NOW deve combaciare con quello dell'AP: se diverge, il
     // pairing non parte e da fuori sembra un problema di portata.
+    // I peer registrati su un canale FISSO mentre si e' connessi all'AP
+    // vogliono dire che ESP-NOW e' partito prima del WiFi (tipico dopo un
+    // blackout): la radio e' sul canale giusto ma i pacchetti escono verso un
+    // altro, e il nodo sembra sano mentre non parla con nessuno. Da v14 si
+    // corregge da solo, questo avviso resta per vederlo se ricapitasse.
+    var scan = d.wifi && d.espnow_peer_canale && d.espnow_peer_canale != d.espnow_canale;
     if(!d.espnow_ok)          si('en','non attivo','ko');
+    else if(scan)             si('en','PEER SUL CANALE '+d.espnow_peer_canale+
+                                      ', RADIO SUL '+d.espnow_canale+
+                                      ": non parla con nessuno",'ko');
     else if(!d.espnow_paired) si('en',"in cerca dell'hub (canale "+d.espnow_canale+")",'warn');
     else                      si('en','associato a '+d.espnow_hub+' (canale '+d.espnow_canale+')','ok');
     si('ent', d.espnow_inviati+' / '+d.espnow_falliti, d.espnow_falliti?'warn':'');
@@ -499,6 +508,7 @@ static void handleStato() {
   j += F(",\"espnow_ok\":");     j += s.espnow_ok ? F("true") : F("false");
   j += F(",\"espnow_paired\":"); j += s.espnow_paired ? F("true") : F("false");
   j += F(",\"espnow_canale\":"); j += s.espnow_channel;
+  j += F(",\"espnow_peer_canale\":"); j += s.espnow_peer_channel;
   j += F(",\"espnow_inviati\":");j += s.espnow_sent;
   j += F(",\"espnow_falliti\":");j += s.espnow_failed;
   j += F(",\"espnow_hub\":\"");  j += s.espnow_hub_mac;    j += F("\"");
@@ -643,6 +653,14 @@ static void handleComando() {
                       F("prova armata: al prossimo sonno il nodo usera' un canale sbagliato. "
                         "Se la ricerca funziona, il DATA arriva lo stesso all'hub e il "
                         "contatore \"Hub ritrovato su altro canale\" sale di uno."));
+  } else if (c == "prova-riallineo") {
+    const bool ok = app_cmd_prova_riallineo();
+    net_server().send(ok ? 200 : 500, F("text/plain; charset=utf-8"),
+                      ok ? F("guasto fabbricato: i peer sono su un canale sbagliato, "
+                             "come dopo un blackout. Se la riparazione funziona, entro "
+                             "un secondo \"canale dei peer\" torna a 0 e il nodo resta "
+                             "associato. Il WiFi non e' stato toccato.")
+                         : F("non riuscito: ESP-NOW non e' attivo."));
   } else if (c == "sleep") {
     // Eseguito subito, non accodato: vedi la nota su app_cmd_toggle_sleep().
     app_cmd_toggle_sleep();

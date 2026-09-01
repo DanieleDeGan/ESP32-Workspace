@@ -7,6 +7,11 @@
 static bool     s_ready   = false;
 static bool     s_paired  = false;
 static uint8_t  s_channel = 0;
+
+// ESP-NOW e' partito SENZA access point, quindi su un canale supposto (quello
+// fisso della libreria, o l'ultimo imparato). Finche' resta vero, la prima
+// connessione WiFi deve riallineare i peer: vedi hub_loop().
+static bool     s_natoSenzaAp = false;
 static uint32_t s_ok      = 0;
 static uint32_t s_fail    = 0;
 static char     s_hubMac[18] = "-";
@@ -45,6 +50,11 @@ bool hub_begin_ex(const char* node_name, uint8_t canale_scelto) {
     return false;
   }
 
+  // Senza AP il canale usato e' una SUPPOSIZIONE (il fisso della libreria, o
+  // quello imparato prima di dormire): va rifatto il conto quando l'access
+  // point arriva. Lo fa hub_loop(), leggendo questo flag.
+  s_natoSenzaAp = !suWifi;
+
   // Il canale VERO, non quello richiesto: con ESPNOW_LINK_CHANNEL_CURRENT
   // il numero lo conosce solo lo stack WiFi, ed e' quello che deve
   // combaciare con l'hub. Stamparlo qui e' meta' della diagnostica di un
@@ -59,6 +69,36 @@ bool hub_begin_ex(const char* node_name, uint8_t canale_scelto) {
 
 void hub_loop() {
   if (!s_ready) return;
+
+  // --- l'access point e' arrivato DOPO l'init di ESP-NOW -------------------
+  //
+  // Succede ad ogni interruzione di corrente: la scheda si riaccende insieme
+  // al router, net_begin() rinuncia dopo 15 s, ed ESP-NOW parte sul canale
+  // fisso. Quando il WiFi si connette la radio va sul canale dell'AP, ma i
+  // peer restano registrati su quello di ripiego: da li' in poi il nodo non
+  // parla piu' con nessuno.
+  //
+  // Il guasto e' cattivo perche' NON SI VEDE: la scheda risponde in rete, i
+  // sensori leggono, la sua pagina mostra il canale della radio -- che e'
+  // quello giusto -- e i contatori degli invii falliti restano a zero, perche'
+  // senza associazione i DATA non partono nemmeno. Osservato il 2026-09-01 sul
+  // nodo a muro: dodici minuti muto dopo un blackout, e nemmeno la finestra di
+  // associazione aperta sull'hub lo recuperava. Serviva staccare la corrente.
+  //
+  // Qui i peer si riallineano alla radio senza toccarla (Link_SetChannel()
+  // invece la sposterebbe, ed e' vietato su una STA connessa).
+  if (s_natoSenzaAp && WiFi.status() == WL_CONNECTED) {
+    s_natoSenzaAp = false;              // una volta sola, comunque vada
+    if (Link_SyncPeersToRadio()) {
+      s_channel = WiFi.channel();
+      Serial.printf("[ESP-NOW] l'access point e' arrivato dopo: peer "
+                    "riallineati al canale %u\n", s_channel);
+    } else {
+      Serial.println(F("[ESP-NOW] riallineamento dei peer non riuscito: "
+                       "il canale della radio non si legge."));
+    }
+  }
+
   Link_Node_Poll();   // HELLO in broadcast finche' non associato
 
   const bool ora = Link_Node_IsPaired();
@@ -89,6 +129,24 @@ uint8_t hub_channel() {
   }
   return s_channel;
 }
+uint8_t hub_channel_peer() { return Link_GetChannel(); }
+
+bool hub_prova_riallineo(uint8_t canale_falso) {
+  if (!s_ready) return false;
+
+  // Il registro dei peer lo tocca la libreria, non questo file: qui si sa che
+  // esiste un hub e un canale, non come il driver tiene i suoi peer. E' la
+  // stessa separazione per cui remote_nodes non conosce la microSD.
+  const int quanti = Link_TestMisalignPeers(canale_falso);
+  if (quanti <= 0) return false;
+
+  s_natoSenzaAp = true;     // e' il flag che fa scattare il riallineamento
+  Serial.printf("[ESP-NOW] prova: %d peer spostati sul canale %u (sbagliato). "
+                "Il prossimo hub_loop() deve rimetterli a posto.\n",
+                quanti, canale_falso);
+  return true;
+}
+
 const char* hub_hub_mac() { return s_hubMac; }
 
 bool hub_send_measure(float tempC, float humPct, float pressHpa, uint16_t battery_mv) {

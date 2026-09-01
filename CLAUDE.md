@@ -657,6 +657,44 @@ sveglio pochi secondi per volta è la parte più lunga e più incerta del ciclo,
 tutta a radio accesa. Conservando il MAC dell'hub si registra il peer e si passa
 dritti al DATA.
 
+**Dopo un blackout un nodo alimentato dalla rete resta muto, e non si vede.**
+Il piu' cattivo dei guasti di canale trovati finora, perche' non somiglia a un
+guasto: la scheda risponde in rete, i sensori leggono, la sua pagina mostra il
+canale **giusto** e i contatori degli invii falliti restano a zero.
+
+La catena: la scheda si riaccende **insieme al router**, `net_begin()` rinuncia
+dopo 15 s, e `hub_begin_ex()` — vedendo il WiFi assente — ripiega sul canale
+fisso `ESPNOW_LINK_CHANNEL` (6). Quando poi il WiFi arriva, la radio va sul
+canale dell'AP (13) ma **i peer restano registrati sul 6**, e nessuno rifa'
+l'init: `hub_begin_ex()` si chiama solo in `setup()` e al risveglio dal sonno.
+Da li' in poi i pacchetti escono verso un canale su cui non c'e' nessuno.
+
+**Nemmeno la finestra di associazione lo recupera**, ed e' il dettaglio che
+smaschera la diagnosi sbagliata: se non rientra *nemmeno in pairing*, il
+problema non e' l'adozione — e' che non si sentono proprio. Osservato il
+2026-09-01 su `MeteoEsp32` dopo un'interruzione di corrente vera: dodici minuti
+muto, risolto solo staccando la corrente al nodo.
+
+**Rimedio, da `v14` del nodo**: `Link_SyncPeersToRadio()` riallinea i peer al
+canale su cui la radio si trova **gia'**, senza toccarla — ed e' il rovescio di
+`Link_SetChannel()`, che invece la sposta e per questo e' vietata su una STA
+connessa. `hub_loop()` la chiama alla prima connessione WiFi se ESP-NOW era
+partito senza AP. I peer finiscono su `ESPNOW_LINK_CHANNEL_CURRENT`, quindi da
+li' in avanti seguono la radio da soli.
+
+**Il canale dei peer va ESPOSTO**, o il guasto resta invisibile: il nodo mostra
+`espnow_peer_canale` accanto a `espnow_canale` (radio), e la pagina scrive
+`PEER SUL CANALE x, RADIO SUL y` quando divergono. Il campo del canale radio,
+da solo, mente per omissione — dice la verita' su una cosa che non e' quella
+rotta.
+
+**E si prova senza aspettare il prossimo blackout**:
+`GET /api/comando?c=prova-riallineo` fabbrica il guasto
+(`Link_TestMisalignPeers()`, sposta i peer e basta) e il giro dopo la
+riparazione deve rimetterli a posto. Stessa disciplina di `prova-canale`: una
+funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
+funzione che non si sa se esiste. Verificata cosi' sull'hardware il 2026-09-01.
+
 **Il canale si puo' cambiare a caldo** (da `v12` del nodo meteo, 2026-08-27):
 `Link_SetChannel(ch)` sposta la radio **e riallinea i peer gia' registrati**
 (itera il registro del driver con `esp_now_fetch_peer`/`esp_now_mod_peer`, cosi'
