@@ -99,6 +99,18 @@
 
 // Da incrementare a ogni firmware caricato: la pagina lo mostra, ed e' l'unico
 // modo per sapere da remoto quale versione sta davvero girando.
+//   v17 2026-09-03  `wdt_armato`/`wdt_timeout_s` in pagina, e la maschera
+//                   degli idle task LETTA dal core invece che scritta a mano.
+//                   Due correzioni alla v16, fatte prima che finisse sul nodo
+//                   a batteria (che costa un power-cycle a mano):
+//                   - `idle_core_mask = 0` era giusto sulla XIAO C3 e SBAGLIATO
+//                     sull'ESP32 classico, dove il core iscrive l'idle di CPU0:
+//                     lo avrebbe DISISCRITTO, togliendo in silenzio una
+//                     protezione che c'era. Ora si deriva dalle macro di
+//                     sdkconfig, e segue il chip qualunque sia;
+//                   - senza `wdt_armato` un watchdog rotto e uno giusto sono
+//                     identici da fuori, e qui il log di boot si legge solo
+//                     con un adattatore sui pin.
 //   v16 2026-09-03  il watchdog e' armato. Qui vale piu' che sull'hub: un hub
 //                   bloccato perde dati, un nodo bloccato NON SI RIADDORMENTA
 //                   e svuota una cella da 1500 mAh in ~21 ore (WiFi acceso,
@@ -159,7 +171,7 @@
 //   v2  2026-08-22  storico 24 h in RAM + grafici, previsione dal trend
 //                   barometrico a 3 ore, intervallo e altitudine da pagina web
 //   v1  2026-08-22  bring-up del sensore, web UI, OTA
-static const char FW_VERSION[] = "v16";
+static const char FW_VERSION[] = "v17";
 
 // ---------------------------------------------------------------------
 //  Nome del nodo
@@ -1117,11 +1129,45 @@ uint32_t app_boot_count() { return s_bootCount; }
 static const uint32_t WDT_RISVEGLIO_MS = 20000;
 static const uint32_t WDT_VEGLIA_MS    = 60000;
 
+// Il watchdog e' davvero armato? Un watchdog configurato male e uno giusto
+// sono INDISTINGUIBILI da fuori finche' non serve, e allora e' tardi. Su
+// questo nodo il log di boot si legge solo con un adattatore attaccato ai
+// pin, cioe' quasi mai: senza questo campo il "[wdt] armato" sulla seriale
+// non lo vedrebbe nessuno.
+static bool     s_wdtArmato    = false;
+static uint32_t s_wdtTimeoutMs = 0;
+
+bool     app_wdt_armato()    { return s_wdtArmato; }
+uint32_t app_wdt_timeout_s() { return s_wdtTimeoutMs / 1000; }
+
+// La maschera degli idle task NON si indovina: si legge da come il core e'
+// configurato. Il timeout del TWDT e' uno solo per tutti gli iscritti, quindi
+// allungarlo per il loop allunga anche la sorveglianza degli idle -- ma
+// passare una maschera sbagliata li DISISCRIVEREBBE, togliendo una protezione
+// che c'era, in silenzio.
+//
+// E le due schede su cui gira questo sketch sono configurate DIVERSAMENTE:
+// sulla XIAO C3 nessun idle task e' iscritto, sull'ESP32 classico (dual core)
+// c'e' quello di CPU0. Scritto a mano sarebbe stato giusto su una e sbagliato
+// sull'altra -- e chi se ne accorge? Con le macro di sdkconfig la maschera
+// segue il core qualunque chip ci sia sotto.
+static uint32_t wdtIdleMask()
+{
+  uint32_t m = 0;
+#ifdef CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0
+  m |= (1 << 0);
+#endif
+#ifdef CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1
+  m |= (1 << 1);
+#endif
+  return m;
+}
+
 static void wdtArma(uint32_t timeout_ms)
 {
   esp_task_wdt_config_t cfg = {};
   cfg.timeout_ms     = timeout_ms;
-  cfg.idle_core_mask = 0;    // sul C3 il core non iscrive nessun idle task
+  cfg.idle_core_mask = wdtIdleMask();
   cfg.trigger_panic  = true; // riavvia, cosi' reset_reason lo dice
 
   esp_err_t e = esp_task_wdt_init(&cfg);
@@ -1134,6 +1180,8 @@ static void wdtArma(uint32_t timeout_ms)
     Serial.println(F("[wdt] il task loop non si e' iscritto"));
     return;
   }
+  s_wdtArmato    = true;
+  s_wdtTimeoutMs = timeout_ms;
   Serial.printf("[wdt] armato, timeout %lu s\n", (unsigned long)(timeout_ms / 1000));
 }
 

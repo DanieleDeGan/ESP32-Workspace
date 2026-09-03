@@ -143,7 +143,18 @@
 // serve, e quando serve e' tardi. Non prova che il riavvio funzioni -- per
 // quello serve un blocco vero -- ma prova che il task loop e' iscritto, che e'
 // la meta' che si puo' sbagliare in silenzio.
-static const char FW_VERSION[] = "v46";
+// v47 (2026-09-03) — la maschera degli idle task del watchdog si LEGGE dalle
+// macro di sdkconfig invece di essere scritta a mano. Sull'S3 il risultato e'
+// identico (l'idle di CPU0 e' iscritto, CPU1 no), quindi qui non cambia
+// niente: la correzione serviva sul NODO, dove lo stesso codice gira su due
+// chip configurati diversamente e un numero fisso sarebbe stato giusto sulla
+// XIAO C3 e sbagliato sull'ESP32 classico -- disiscrivendogli l'idle di CPU0,
+// cioe' togliendo in silenzio una protezione che c'era.
+//
+// La versione avanza lo stesso: il sorgente e' cambiato, e due sorgenti
+// diversi non possono chiamarsi entrambi v46. FW_VERSION e' l'unico modo di
+// sapere da remoto cosa sta girando davvero.
+static const char FW_VERSION[] = "v47";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -334,11 +345,29 @@ static bool s_wdtArmato = false;
 bool     app_wdt_armato()    { return s_wdtArmato; }
 uint32_t app_wdt_timeout_s() { return WDT_TIMEOUT_MS / 1000; }
 
+// La maschera degli idle task si LEGGE da come il core e' configurato, non si
+// scrive a mano: passarne una sbagliata li disiscriverebbe, togliendo in
+// silenzio una protezione che c'era. Qui l'S3 ha l'idle di CPU0 iscritto, ma
+// la stessa funzione sta anche su MeteoNode_C3 -- che gira su due chip
+// configurati DIVERSAMENTE fra loro -- e un numero fisso sarebbe giusto su uno
+// e sbagliato sull'altro.
+static uint32_t wdtIdleMask()
+{
+  uint32_t m = 0;
+#ifdef CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0
+  m |= (1 << 0);
+#endif
+#ifdef CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1
+  m |= (1 << 1);
+#endif
+  return m;
+}
+
 static void wdtBegin()
 {
   esp_task_wdt_config_t cfg = {};
   cfg.timeout_ms    = WDT_TIMEOUT_MS;
-  cfg.idle_core_mask = (1 << 0);   // com'e' gia' configurato dal core sull'S3
+  cfg.idle_core_mask = wdtIdleMask();
   cfg.trigger_panic = true;        // riavvia, cosi' reset_reason lo dice
 
   // Il TWDT e' gia' inizializzato dal core (CONFIG_ESP_TASK_WDT_INIT), quindi

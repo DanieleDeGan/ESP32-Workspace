@@ -158,6 +158,13 @@ const char* app_fw_version();
 const char* app_reset_reason();
 uint32_t    app_boot_count();
 
+// Il watchdog e' davvero iscritto? Da fuori uno configurato male e uno giusto
+// sono identici finche' non serve, e allora e' tardi. Su un nodo a batteria
+// serve piu' che altrove: bloccato non si riaddormenta e la cella si svuota in
+// ~21 ore invece che in mesi.
+bool        app_wdt_armato();
+uint32_t    app_wdt_timeout_s();
+
 // Deep sleep. Quando e' acceso il nodo, passata la finestra di veglia, vive a
 // risvegli: misura, manda un DATA all'hub e torna a dormire per l'intervallo
 // configurato. Mentre dorme NON risponde - niente pagina, niente OTA - quindi

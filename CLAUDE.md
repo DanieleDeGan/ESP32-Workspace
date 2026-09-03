@@ -1563,6 +1563,14 @@ senza di loro si somiglierebbero (schermo che non cambia).
   - **60 s e non meno**: il caso legittimo più lungo è il budget di invio di un
     file (20 s) più una `write()` bloccata dentro il core (~10 s). Un timeout
     stretto trasformerebbe un download lento in un riavvio.
+  - **La `idle_core_mask` si LEGGE dalle macro di `sdkconfig`, non si scrive a
+    mano** (`CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0`/`_CPU1`). Passarne una
+    sbagliata **disiscrive** gli idle task, togliendo in silenzio una
+    protezione che c'era — e le due schede su cui gira lo stesso sketch di
+    `MeteoNode_C3` sono configurate diversamente fra loro: sulla XIAO C3
+    nessun idle è iscritto, sull'ESP32 classico c'è quello di CPU0. Un numero
+    fisso sarebbe stato giusto su una e sbagliato sull'altra, senza nessun
+    sintomo fino al giorno in cui serviva.
   - **Durante l'OTA si ALIMENTA, non si sospende** (dalla callback di
     progresso): così resta armato anche lì, e un aggiornamento che si pianta
     davvero viene comunque ripreso.

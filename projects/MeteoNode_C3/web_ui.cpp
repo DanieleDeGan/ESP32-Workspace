@@ -494,6 +494,8 @@ static void handleStato() {
   j += F(",\"risvegli\":");      j += app_wake_count();
   j += F(",\"risvegli_ok\":");   j += app_wake_ok_count();
   j += F(",\"reset_reason\":\""); j += app_reset_reason();  j += F("\"");
+  j += F(",\"wdt_armato\":");    j += (app_wdt_armato() ? F("true") : F("false"));
+  j += F(",\"wdt_timeout_s\":"); j += app_wdt_timeout_s();
   j += F(",\"intervallo_s\":");  j += s.intervallo_s;
   j += F(",\"altitudine_m\":");  j += String(s.altitudine_m, 1);
   j += F(",\"eta_lettura\":");   j += app_eta_ultima_lettura_s();
