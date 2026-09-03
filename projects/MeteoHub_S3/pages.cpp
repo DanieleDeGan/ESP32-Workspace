@@ -15,9 +15,10 @@ static Preferences s_prefs;
 static PageCfg s_pag[PAGES_MAX];
 static uint8_t s_cur       = 0;
 static bool    s_rotazione = false;
-static uint8_t s_silDa     = 23;
+// Quarti d'ora dalla mezzanotte (0..95), non ore: 92 = 23:00, 28 = 07:00.
+static uint8_t s_silDaQ    = 23 * 4;
 static uint8_t s_silPag = PAG_SIL_NESSUNA;   // slot da mostrare nel silenzio
-static uint8_t s_silA      = 7;
+static uint8_t s_silAQ     = 7 * 4;
 static bool    s_fascia    = false;  // messaggio in fondo alla pagina nodi
 static uint32_t s_ultimoMs = 0;   // quando e' stata disegnata la corrente
 
@@ -87,8 +88,8 @@ static void defaults()
   s_pag[2].attiva = false;      s_pag[2].durata_s = 300;
 
   s_rotazione = false;
-  s_silDa = 23;
-  s_silA  = 7;
+  s_silDaQ = 23 * 4;
+  s_silAQ  = 7 * 4;
   s_fascia = false;
 }
 
@@ -98,7 +99,8 @@ void pages_begin()
 
   s_prefs.begin("hubpag", true);   // sola lettura: non crea il namespace
   s_silPag = s_prefs.getUChar("silpag", PAG_SIL_NESSUNA);
-  if (s_silPag != PAG_SIL_NESSUNA && s_silPag != PAG_SIL_CASUALE && s_silPag >= PAGES_MAX)
+  if (s_silPag != PAG_SIL_NESSUNA && s_silPag != PAG_SIL_CASUALE &&
+      s_silPag != PAG_SIL_CARD && s_silPag >= PAGES_MAX)
     s_silPag = PAG_SIL_NESSUNA;
   const size_t quanti = s_prefs.getBytesLength("cfg");
 
@@ -110,8 +112,8 @@ void pages_begin()
     {
       memcpy(s_pag, b.pag, sizeof(b.pag));
       s_rotazione = b.rotazione != 0;
-      s_silDa     = b.silDa;
-      s_silA      = b.silA;
+      if (b.silDa <= 23) s_silDaQ = (uint8_t)(b.silDa * 4);
+      if (b.silA  <= 23) s_silAQ  = (uint8_t)(b.silA  * 4);
       s_fascia    = b.fascia != 0;
     }
   }
@@ -125,12 +127,28 @@ void pages_begin()
       // qui sposterebbe le pagine sotto i suoi occhi.
       memcpy(s_pag, v1.pag, sizeof(v1.pag));
       s_rotazione = v1.rotazione != 0;
-      s_silDa     = v1.silDa;
-      s_silA      = v1.silA;
+      if (v1.silDa <= 23) s_silDaQ = (uint8_t)(v1.silDa * 4);
+      if (v1.silA  <= 23) s_silAQ  = (uint8_t)(v1.silA  * 4);
       s_fascia    = v1.fascia != 0;
       migrato     = true;
     }
   }
+
+  // I QUARTI stanno in due chiavi separate, non dentro il blob, ed e' la
+  // stessa scelta gia' fatta per "silpag": cambiare la struttura di PagBlob ne
+  // cambia il sizeof, che e' parte del riconoscimento -- servirebbe un PAG3
+  // con la conversione, e soprattutto un ritorno al firmware precedente
+  // troverebbe un blob irriconoscibile e farebbe sparire TUTTE le pagine.
+  //
+  // Cosi' invece nel blob resta l'ORA piena, che un firmware vecchio legge
+  // senza accorgersi di niente (al piu' perde il quarto: 21:45 gli diventa
+  // 21:00, cioe' la fascia di prima), e il quarto e' un di piu' che chi non lo
+  // conosce ignora. Le due chiavi si leggono solo insieme: una fascia meta'
+  // vecchia e meta' nuova sarebbe peggio di entrambe.
+  const uint8_t qDa = s_prefs.getUChar("silq_da", 255);
+  const uint8_t qA  = s_prefs.getUChar("silq_a",  255);
+  if (qDa < 96 && qA < 96) { s_silDaQ = qDa; s_silAQ = qA; }
+
   s_prefs.end();
 
   // Lo slot 0 deve esistere sempre: e' la pagina per cui l'hub esiste, e
@@ -158,13 +176,16 @@ void pages_save()
   memset(&b, 0, sizeof(b));
   b.magic     = PAG_MAGIC;
   b.rotazione = s_rotazione ? 1 : 0;
-  b.silDa     = s_silDa;
-  b.silA      = s_silA;
+  // Nel blob l'ora piena, per il firmware vecchio; il quarto nelle sue chiavi.
+  b.silDa     = (uint8_t)(s_silDaQ / 4);
+  b.silA      = (uint8_t)(s_silAQ  / 4);
   b.fascia    = s_fascia ? 1 : 0;
   memcpy(b.pag, s_pag, sizeof(s_pag));
 
   s_prefs.begin("hubpag", false);
   s_prefs.putBytes("cfg", &b, sizeof(b));
+  s_prefs.putUChar("silq_da", s_silDaQ);
+  s_prefs.putUChar("silq_a",  s_silAQ);
   s_prefs.end();
 }
 
@@ -215,21 +236,22 @@ void pages_set_fascia(bool on)     { s_fascia = on; }
 bool pages_rotazione()             { return s_rotazione; }
 void pages_set_rotazione(bool on)  { s_rotazione = on; }
 
-uint8_t pages_silenzio_da() { return s_silDa; }
-uint8_t pages_silenzio_a()  { return s_silA; }
+uint8_t pages_silenzio_da_q() { return s_silDaQ; }
+uint8_t pages_silenzio_a_q()  { return s_silAQ; }
 
-void pages_set_silenzio(uint8_t da, uint8_t a)
+void pages_set_silenzio_q(uint8_t daQ, uint8_t aQ)
 {
-  if (da > 23 || a > 23) return;
-  s_silDa = da;
-  s_silA  = a;
+  if (daQ > 95 || aQ > 95) return;
+  s_silDaQ = daQ;
+  s_silAQ  = aQ;
 }
 
 uint8_t pages_silenzio_pagina() { return s_silPag; }
 
 void pages_set_silenzio_pagina(uint8_t slot)
 {
-  if (slot != PAG_SIL_NESSUNA && slot != PAG_SIL_CASUALE && slot >= PAGES_MAX) return;
+  if (slot != PAG_SIL_NESSUNA && slot != PAG_SIL_CASUALE &&
+      slot != PAG_SIL_CARD && slot >= PAGES_MAX) return;
   s_silPag = slot;
   s_prefs.begin("hubpag", false);
   s_prefs.putUChar("silpag", s_silPag);
@@ -238,16 +260,16 @@ void pages_set_silenzio_pagina(uint8_t slot)
 
 bool pages_in_silenzio(time_t oraLocale)
 {
-  if (s_silDa == s_silA) return false;      // silenzio disabilitato
+  if (s_silDaQ == s_silAQ) return false;    // silenzio disabilitato
 
   struct tm tmv;
   localtime_r(&oraLocale, &tmv);
-  const int h = tmv.tm_hour;
+  const int q = tmv.tm_hour * 4 + tmv.tm_min / 15;
 
-  // La finestra puo' scavalcare la mezzanotte (23 -> 7): sono due casi
+  // La finestra puo' scavalcare la mezzanotte (23:00 -> 07:00): sono due casi
   // diversi e vanno scritti tutti e due, o le notti non contano.
-  if (s_silDa < s_silA) return (h >= s_silDa && h < s_silA);
-  return (h >= s_silDa || h < s_silA);
+  if (s_silDaQ < s_silAQ) return (q >= s_silDaQ && q < s_silAQ);
+  return (q >= s_silDaQ || q < s_silAQ);
 }
 
 void pages_disegnata(uint32_t nowMs) { s_ultimoMs = nowMs; }

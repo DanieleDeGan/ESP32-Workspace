@@ -82,6 +82,7 @@ toccare) vedi `docs/FILES.md`. Per il pinout/hardware della board AMOLED vedi
 | `examples/Diag_Hub/` + `examples/Diag_Node/` | diagnostica ESP-NOW usa e getta su `esp_now.h` grezzo (nessuna libreria di questo repo): il nodo spara un contatore in broadcast, l'hub misura la perdita reale contando i buchi nel `seq`. In modalità Long Range, quindi **non** interoperabili con `EspNowLink` |
 | `docs/FILES.md` | reference file-per-file di tutto il repo |
 | `docs/Feature-Backlog.md` | **il taccuino delle cose da fare**: idee pronte, idee vecchie raccolte dagli altri documenti, e quelle valutate e scartate col perché. Da qui si pesca quando c'è voglia di aggiungere qualcosa |
+| `docs/Proposte-2026-09-02.md` | analisi sistematica del codice di hub e nodi (`MeteoHub_S3` `v43`, `MeteoNode_C3` `v15`, `EspNowLink`) fatta partendo dai sorgenti invece che dalle idee: cinque difetti trovati, le proposte con conti e prove, l'ordine consigliato. Le voci sono **riassunte una riga l'una in `Feature-Backlog.md` (17-40)**, che resta il taccuino da cui si pesca; qui c'è il perché lungo |
 | `docs/ESP32-S3-AMOLED-1.91-Guide.md` | guida hardware/pinout della board AMOLED |
 | `docs/*.pdf` | datasheet/reference (ESP32-S3, SH8601/RM67162, QMI8658, guida LVGL+SquareLine) — consultarli per dettagli di registro/timing, non riscriverne il contenuto nel codice |
 
@@ -735,6 +736,24 @@ dall'altro un nodo convinto di essere associato: **nessuno dei due dice che
 sta parlando con qualcun altro**, e la lettura giusta viene solo dal campo
 `espnow_hub` del nodo confrontato col MAC dell'hub che ci si aspetta.
 
+**Un WELCOME per giro, e a turno** (da `v44` dell'hub, 2026-09-03).
+`Link_Hub_Poll()` mandava un WELCOME a **ogni** peer in attesa nello stesso
+giro, e `sendReliable()` blocca fino a ~1 s l'uno: con otto nodi che si
+riavviano insieme — cioè quello che succede a un blackout — il `loop()` restava
+fermo **fino a otto secondi**, proprio mentre tutti i nodi ritrasmettono. Otto
+secondi in cui il WebServer non risponde, un OTA si pianta e **i DATA non
+vengono prelevati dal driver**, che ne tiene uno solo per nodo.
+
+**Il turno non è un dettaglio, è la metà che rende la correzione corretta.** Il
+flag `welcomePending` si pulisce solo se l'invio riesce (di proposito: un
+fallimento transitorio si ritenta invece di perdere la finestra di pairing di
+quel nodo). Fermarsi al primo pendente ripartendo sempre dall'indice 0
+significherebbe che **un nodo spento a metà associazione si prende l'unico
+invio di ogni giro e affama tutti gli altri** — da un blocco di otto secondi si
+passerebbe a un'associazione che non funziona più, in silenzio. Si riparte
+quindi da dove ci si era fermati. Spalmarli non ritarda niente: i nodi ripetono
+l'HELLO ogni 2 s e il `loop()` gira migliaia di volte in quel tempo.
+
 **Due punti di robustezza sistemati il 2026-08-30**, entrambi invisibili
 nell'uso normale:
 
@@ -1048,6 +1067,33 @@ la RAM ad ogni risveglio, quindi il suo storico **non può** stare su di lui.
   rovescio: se il nodo dimenticato è ancora acceso e si crede associato non
   manda più HELLO, quindi per riprenderlo serve una finestra di pairing aperta
   (o un suo riavvio).
+- **La cadenza si impara SOLO dai DATA consecutivi** (`seq == precedente + 1`),
+  corretto in `v44` il 2026-09-03. Non basta che il `seq` cresca: con un
+  pacchetto perso il delta è due periodi, e la media mobile a peso 1/4 se lo
+  porta dentro — da 300 s si passa a **375**, e servono otto pacchetti per
+  rientrare. Nel frattempo si sposta tutto quello che dipende dalla cadenza:
+  `sogliaMuto` (2,5 × intervallo, quindi **tre minuti di ritardo** nel
+  dichiarare morto un nodo che lo è davvero), `nodoInRitardo()` e
+  `cadenzaNodiMs()`, che decide ogni quanto si ridisegna il pannello. Un delta
+  misurato a cavallo di un buco non è un periodo rumoroso da mediare: **è il
+  periodo di un'altra grandezza.** Il commento sopra quel codice diceva già la
+  cosa giusta — la guardia che c'era (`seq` crescente) esclude i **riavvii**,
+  non i **buchi**. `/api/nodi` espone `intervallo_campioni`: se sta fermo
+  mentre `persi` sale, la cadenza mostrata è l'ultima buona, non una stima
+  presa dai buchi.
+- **Il salto di `seq` ha un tetto** (`PERSI_SALTO_MAX`, 1000). Il `seq`
+  attraversa il deep sleep passando dalla RTC memory: un valore sporco letto da
+  lì diventerebbe qualche milione di "pacchetti persi" **permanenti**, cioè un
+  contatore avvelenato da un pacchetto solo. Il pacchetto **non** si scarta (il
+  dato è buono, è la numerazione a essere strana) e il salto si conta a parte
+  in `seq_assurdi`, che compare anche in `/api/salute` — o si sostituirebbe un
+  numero sbagliato con un silenzio.
+- **I timer del ritardo si tengono per MAC, non per posizione.**
+  `remote_forget()` **compatta** il registro e i suoi array paralleli; quelli
+  che stanno **fuori** dal modulo, nello sketch, nessuno li compatta. Vale come
+  regola generale: uno stato che sopravvive fra una chiamata e l'altra va
+  indicizzato per MAC; una lettura immediata consumata nello stesso giro (come
+  `statTemp()`) può restare per indice.
 - **"Nodo muto" con soglia osservata, non configurata**: il nodo decide la
   propria cadenza dalla sua pagina, e duplicare quel valore qui sarebbe solo un
   modo per andare fuori sincrono. Si misura l'intervallo fra un DATA e il
@@ -1194,6 +1240,48 @@ senza di loro si somiglierebbero (schermo che non cambia).
     sulla card. Il magic è passato da `PAG1` a `PAG2` e `pages_begin()` legge
     entrambi, convertendo una volta sola. **Guardare qui prima di toccare
     quella costante.**
+  - **La fascia di silenzio si muove a quarti d'ora da `v43`** (2026-09-02),
+    e i quarti stanno in **due chiavi NVS separate** (`silq_da`/`silq_a`), non
+    nel blob: nel blob resta l'**ora piena**. È la regola generale da riusare
+    quando si aggiunge risoluzione a un campo già persistito — cambiare la
+    struttura ne cambia `sizeof`, e un ritorno al firmware precedente
+    troverebbe un blob irriconoscibile, cioè **tutte le pagine sparite**.
+    Così invece il firmware vecchio rilegge la stessa fascia arrotondata
+    all'ora e non si accorge di niente. Stessa scelta già fatta per `silpag`.
+    - **Le funzioni hanno un nome nuovo** (`pages_silenzio_da_q()`,
+      `pages_set_silenzio_q()`): l'unità è cambiata sotto lo stesso tipo
+      (`uint8_t`), quindi un chiamante rimasto indietro deve **smettere di
+      compilare** invece di scambiare un `21` (le nove di sera) per un `21`
+      (le cinque e un quarto del mattino).
+    - Verso la rete si parla in `"HH:MM"` (`/api/pannello` lo emette così, e
+      il POST lo accetta): un intero mentirebbe su tre valori su quattro. Un
+      intero senza `:` resta l'**ora piena**, così i comandi già scritti a mano
+      valgono ancora.
+  - **L'immagine della notte può venire da TUTTA la card** (`v43`,
+    `sil_pagina=253`), non solo dalle pagine in elenco, e **non consuma uno
+    slot**: di notte non serve una pagina ma un file, e `screenImmagine()`
+    disegna già per nome. Una pagina dedicata starebbe in elenco, dove la si
+    può attivare nella rotazione, spostare o togliere da una schermata che
+    della notte non parla — e i sedici slot si sono già esauriti una volta.
+    - **Il nome sorteggiato va ESPOSTO** (`silenzio_immagine` in
+      `/api/pannello`, e l'intestazione di `/pannello`): mentre quel file è a
+      schermo, `corrente` descrive il modello delle pagine, che il file non lo
+      conosce — sarebbe una risposta vera e fuorviante insieme. Per lo stesso
+      motivo la badge «A SCHERMO» sparisce dall'elenco finché dura la notte.
+    - **Al mattino si ridisegna solo se sul vetro c'è ancora l'immagine**:
+      `showPage()` incrementa un contatore e il risveglio lo confronta. Se
+      durante la notte si è premuto BOOT o chiesta una pagina dal web, quella
+      è la pagina voluta, e riprendersela sarebbe un refresh in più per
+      togliere all'utente quello che ha scelto.
+    - **Card vuota o assente: non si disegna niente** e ci si ferma com'era.
+      Un «immagine non disponibile» spegnerebbe la pagina dei nodi per tutta
+      la notte in cambio di un messaggio che nessuno sta guardando.
+    - **Due passate su `/images` invece di un elenco di nomi in RAM**
+      (`sd_img_page()` conta, poi consegna l'n-esima): quante immagini ci
+      siano lo decide la card, e un tetto in memoria sarebbe arbitrario e
+      muto. Costa due scansioni al giorno. Il sorteggio evita l'immagine
+      della notte prima — su un pannello «non è cambiato» e «è fermo» si
+      somigliano troppo.
   - **BOOT breve scorre anche le pagine escluse dalla rotazione.** Il tasto è
     la via di governo quando la rete è giù: non deve dipendere da come è
     configurata la rotazione.

@@ -191,14 +191,15 @@ static void handleApiSalute() {
   const uint32_t scartati = app_scartati_ora();
   const uint32_t fallite  = app_scritture_ko();
 
-  uint32_t pacchetti = 0, persi = 0;
+  uint32_t pacchetti = 0, persi = 0, seqAssurdi = 0;
   int muti = 0;
   const int n = remote_count();
   for (int i = 0; i < n; i++) {
     RemoteNode nodo;
     if (!remote_get(i, &nodo)) continue;
-    pacchetti += nodo.pacchetti;
-    persi     += nodo.persi;
+    pacchetti  += nodo.pacchetti;
+    persi      += nodo.persi;
+    seqAssurdi += nodo.seqAssurdi;
     if (!nodo.online && nodo.hasData) muti++;
   }
 
@@ -225,6 +226,11 @@ static void handleApiSalute() {
   if (!net_isConnected())         guaio("WiFi non connesso", false);
   if (s_invii_interrotti > 0) guaio("qualche invio di file e' stato troncato: un client se n'e' andato a meta'", false);
   if (ESP.getFreeHeap() < 60000)  guaio("memoria libera sotto i 60 kB", false);
+  // Non e' una perdita radio: e' un nodo che ha mandato un seq fuori scala,
+  // cioe' quasi sempre un contatore sporco letto dalla RTC memory dopo un
+  // risveglio. Vale la pena dirlo, o il contatore resta in /api/nodi e non lo
+  // guarda nessuno.
+  if (seqAssurdi > 0) guaio("un nodo ha mandato un seq fuori scala: numerazione sporca, non perdita radio", false);
   guai += ']';
 
   String j = "{\"stato\":\"";
@@ -236,6 +242,7 @@ static void handleApiSalute() {
   j += ",\"scritture_fallite\":" + String(fallite);
   j += ",\"torna\":"             + String(torna ? "true" : "false") + "}";
   j += ",\"persi_radio\":"       + String(persi);
+  j += ",\"seq_assurdi\":"       + String(seqAssurdi);
   j += ",\"nodi\":"              + String(n);
   j += ",\"nodi_muti\":"         + String(muti);
   j += ",\"sd\":"                + String(sd_mounted() ? "true" : "false");
@@ -254,7 +261,7 @@ static void handleApiNodi() {
 
   const int n = remote_count();
   String json;
-  json.reserve(160 + 340 * n);
+  json.reserve(160 + 400 * n);   // cresciuta con intervallo_campioni e seq_assurdi
   json += '{';
   json += "\"attivo\":";  json += (remote_ready() ? "true" : "false"); json += ',';
   // Il canale non e' una proprieta' di ESP-NOW ma dell'AP a cui siamo
@@ -299,11 +306,21 @@ static void handleApiNodi() {
     json += "\"silenzio_s\":"    + String(r.silenzioS)   + ",";
     json += "\"soglia_muto_s\":" + String(r.sogliaMutoS) + ",";
     json += "\"intervallo_s\":"  + String(r.intervalloS) + ",";
+    // Quanti delta CONSECUTIVI hanno formato quell'intervallo. Serve a
+    // distinguere "cadenza vecchia" da "cadenza sbagliata": se questo sta
+    // fermo mentre `persi` sale, il numero mostrato e' l'ultimo buono -- la
+    // cadenza si impara solo dai pacchetti in sequenza, perche' un delta
+    // misurato a cavallo di un buco non e' un periodo.
+    json += "\"intervallo_campioni\":" + String(r.intervalloCampioni) + ",";
     json += "\"batteria_mv\":"   + String(r.batteria_mv) + ",";
     json += "\"seq\":"           + String(r.seq)         + ",";
     json += "\"pacchetti\":"     + String(r.pacchetti)   + ",";
     json += "\"persi\":"         + String(r.persi)       + ",";
     json += "\"riavvii\":"       + String(r.riavvii)     + ",";
+    // Salti di seq troppo grandi per essere pacchetti persi: un contatore
+    // sporco (il seq attraversa il deep sleep dalla RTC memory). Contati qui
+    // e non in `persi`, che altrimenti resterebbe avvelenato per sempre.
+    json += "\"seq_assurdi\":"   + String(r.seqAssurdi)  + ",";
 
     // Previsione: calcolata qui sull'hub, perche' un nodo che dorme non puo'
     // tenere tre ore di storico (remote_nodes.h). I campi restano null finche'
@@ -633,6 +650,25 @@ static void handleApiStato() {
   j += "\"epd_ultimo_ms\":"    + String(app_epd_ultimo_ms())  + ",";
   j += "\"epd_orologio_ms\":"  + String(app_epd_orologio_ms()) + ",";
   j += "\"refresh_evitati\":" + String(app_refresh_evitati()) + ",";
+
+  // Lo stato della politica antighosting, che da fuori non si vedeva.
+  // L'anteprima del pannello mostra cio' che l'hub ha DISEGNATO, non i fotoni
+  // sul vetro: l'alone e' l'unica cosa che non puo' verificare. Questi due non
+  // lo misurano -- non si puo' da remoto -- ma dicono se il completo periodico
+  // sta scattando o se una configurazione lo sta rimandando.
+  j += "\"epd_parziali_da_full\":" + String(app_epd_parziali_da_full()) + ",";
+  {
+    // L'ORA, non "da quanto tempo": un istante resta vero anche quando nessuno
+    // rilegge la pagina da un pezzo. Stessa regola dell'ora dell'ultimo
+    // pacchetto di un nodo. null finche' un completo non c'e' stato.
+    const time_t tf = app_epd_ultimo_full_ts();
+    char buf[24];
+    if (tf > 0 && rtctime_format(tf, "%Y-%m-%d %H:%M:%S", buf, sizeof(buf))) {
+      j += "\"epd_ultimo_full\":"; appendJsonString(j, buf); j += ',';
+    } else {
+      j += "\"epd_ultimo_full\":null,";
+    }
+  }
   j += "\"invii_interrotti\":" + String(s_invii_interrotti)   + ",";
   j += "\"reset_reason\":\"" + String(app_reset_reason())    + "\",";
   j += "\"boot_count\":"      + String(app_boot_count())      + ",";
@@ -1082,7 +1118,7 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  button.sec{background:var(--card2);border:1px solid var(--bordo);color:var(--txt);font-weight:500}
  button.dan{background:transparent;border:1px solid #5a2a28;color:#e08b86;font-weight:500}
  button.full{width:100%}
- select,input[type=text],input[type=number],textarea{
+ select,input[type=text],input[type=number],input[type=time],textarea{
   background:#141417;color:var(--txt);border:1px solid var(--bordo);border-radius:10px;
   padding:11px 12px;min-height:44px;width:100%}
  textarea{min-height:92px;resize:vertical;line-height:1.45}
@@ -1119,6 +1155,9 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
 
  .duo{display:flex;gap:8px;align-items:center}
  .duo select{width:auto;min-width:90px}
+ /* Il campo dell'ora si dimensiona da se' sul contenuto: su iOS un width:100%
+    lo stira per tutta la riga e le due meta' di "dalle ... alle" si accavallano. */
+ .duo input[type=time]{width:auto;min-width:104px}
  .fine{display:flex;gap:8px;margin-top:12px}
  .fine button{flex:1}
  .esito{font-size:.82rem;color:var(--ok);min-height:1.1em;margin-top:.5rem}
@@ -1205,9 +1244,9 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  <label class="sw"><span>Ruota fra le pagine attive</span>
   <input type="checkbox" id="rot"><span class="track"></span></label>
  <div class="riga">
-  <label>Non ruotare dalle</label>
+  <label>Non ruotare dalle<br><span style="font-size:.78rem">a quarti d'ora</span></label>
   <div class="duo">
-   <select id="sda"></select><span class="muted" style="margin:0">alle</span><select id="sa"></select>
+   <input type="time" id="sda" step="900"><span class="muted" style="margin:0">alle</span><input type="time" id="sa" step="900">
   </div>
  </div>
  <div class="riga">
@@ -1217,6 +1256,10 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  <div class="esito" id="ss"></div>
  <p class="muted">Con una sola pagina attiva non ruota: non c'&egrave; dove andare, e un
  cambio &egrave; sempre un refresh completo (~2,2 s, e lampeggia).</p>
+ <p class="muted">&laquo;Fra tutte quelle sulla card&raquo; pesca nell'archivio
+ completo delle immagini, non solo fra le pagine in elenco: non consuma uno
+ slot, e la stessa non esce due notti di fila. Quale sia toccata a stanotte lo
+ dice l'intestazione qui sopra.</p>
  <p class="muted">Scegliendo una pagina, in quelle ore il pannello ci va e
  <b>smette di aggiornarsi</b> del tutto: due refresh invece di ~640. Con
  &laquo;nessuna&raquo; si ferma solo la rotazione, come prima. I nodi
@@ -1313,9 +1356,11 @@ function optDur(v){
  if(!visto)o='<option value="'+v+'" selected>'+Math.round(v/60)+' min</option>'+o;
  return o;
 }
-for(let h=0;h<24;h++){const t=('0'+h).slice(-2)+':00';
- E('sda').insertAdjacentHTML('beforeend','<option value="'+h+'">'+t+'</option>');
- E('sa').insertAdjacentHTML('beforeend','<option value="'+h+'">'+t+'</option>');}
+// Le due tendine da 24 voci non ci sono piu': sono campi orario, che il
+// server manda e riceve gia' come "HH:MM". step=900 li fa muovere di un
+// quarto d'ora per volta, che e' la granularita' vera della fascia -- un
+// campo libero al minuto accetterebbe le 21:07 e il firmware lo
+// arrotonderebbe alle 21:00, cioe' mostrerebbe un valore mai chiesto.
 
 // Ogni POST puo' fallire con un testo che dice perche'. Prima si faceva
 // .then(r=>r.json()) senza guardare r.ok: su una risposta d'errore in
@@ -1402,6 +1447,10 @@ var ULTIMO=null, SULLACARD=[];
 
 function render(d){
  ULTIMO=d;
+ // Il file della notte non e' una pagina dell'elenco: finche' c'e', la badge
+ // "A SCHERMO" sulla pagina corrente direbbe il falso, perche' quella pagina
+ // sul vetro non c'e'.
+ const NOTT=d.silenzio_immagine||'';
  const box=E('lista'); box.innerHTML='';
  const usate=d.pagine.map(p=>p.i);
  const primoMobile=usate.length>1?usate[1]:-1, ultimo=usate[usate.length-1];
@@ -1417,7 +1466,7 @@ function render(d){
     '<div class="testa">'+
      '<div class="top"><span class="nome">'+esc(p.tipo)+
        (p.param?' <span class="par">'+esc(p.param)+'</span>':'')+'</span>'+
-       (p.corrente?'<span class="badge">A SCHERMO</span>':'')+'</div>'+
+       (p.corrente&&!NOTT?'<span class="badge">A SCHERMO</span>':'')+'</div>'+
      '<label class="sw"><span>Nel cambio automatico</span>'+
        '<input type="checkbox" data-a="'+p.i+'"'+(p.attiva?' checked':'')+'><span class="track"></span></label>'+
      '<div class="riga"><label>Resta a schermo</label>'+
@@ -1434,8 +1483,9 @@ function render(d){
      (p.i===usate[0]?'':'<button class="dan sol" data-x="'+p.i+'">Togli dall\'elenco</button>')+
    '</div>';
   box.appendChild(el);
-  if(p.corrente) E('oraNome').textContent = p.tipo + (p.param? ' \u2014 '+p.param : '');
+  if(p.corrente&&!NOTT) E('oraNome').textContent = p.tipo + (p.param? ' \u2014 '+p.param : '');
  });
+ if(NOTT) E('oraNome').textContent = 'immagine della notte \u2014 ' + NOTT;
 
  box.querySelectorAll('[data-mini]').forEach(m=>{
   if(m.dataset.tipo=='immagine'&&m.dataset.mini) anteprimaPigra(m,m.dataset.mini);});
@@ -1463,7 +1513,8 @@ function render(d){
  // deve sparire da qui, o si sceglierebbe uno slot che non esiste piu'.
  const sp=E('spag'); const scelta=d.silenzio_pagina;
  sp.innerHTML='<option value="-1">nessuna (ferma solo la rotazione)</option>'+
-  '<option value="254"'+(scelta==254?' selected':'')+'>un\'immagine a caso, diversa ogni notte</option>'+
+  '<option value="254"'+(scelta==254?' selected':'')+'>un\'immagine a caso fra le pagine qui sotto</option>'+
+  '<option value="253"'+(scelta==253?' selected':'')+'>un\'immagine a caso fra TUTTE quelle sulla card</option>'+
   d.pagine.map(p=>'<option value="'+p.i+'"'+(p.i==scelta?' selected':'')+'>'+
    esc(p.tipo+(p.param?(' — '+p.param):''))+'</option>').join('');
  if(scelta==null||scelta<0||scelta>=255) sp.value='-1';
@@ -1621,8 +1672,9 @@ var salvaTimer = null;
 function salvaRotazione(ritardo){
  clearTimeout(salvaTimer);
  salvaTimer = setTimeout(()=>{
-  const q='/api/pannello?rotazione='+(E('rot').checked?1:0)+'&sil_da='+E('sda').value+
-          '&sil_a='+E('sa').value+'&sil_pagina='+E('spag').value;
+  const q='/api/pannello?rotazione='+(E('rot').checked?1:0)+
+          '&sil_da='+encodeURIComponent(E('sda').value)+
+          '&sil_a='+encodeURIComponent(E('sa').value)+'&sil_pagina='+E('spag').value;
   salvaTimer=null;
   post(q).then(r=>r.json()).then(d=>{render(d);flash(E('ss'),'Salvato');})
    .catch(()=>flash(E('ss'),'Non salvato: hub non raggiungibile',1));
@@ -1721,6 +1773,39 @@ static void appendPagina(String& j, uint8_t i, const PageCfg* p, uint8_t corrent
   j += '}';
 }
 
+// La fascia di silenzio si misura in quarti d'ora dalla mezzanotte (0..95).
+// Verso la rete si scrive e si legge "HH:MM": e' cio' che l'utente vede sul
+// campo orario, ed e' l'unica forma che non perde meta' dei valori possibili.
+static String quartoHM(uint8_t q) {
+  char b[6];
+  snprintf(b, sizeof(b), "%02u:%02u", (unsigned)(q / 4), (unsigned)((q % 4) * 15));
+  return String(b);
+}
+
+// "21:15" -> 85. Un intero senza ':' resta l'ORA PIENA di prima (0..23), cosi'
+// i comandi gia' scritti a mano continuano a valere invece di diventare
+// quarti d'ora e spostare la fascia di colpo alle cinque del mattino.
+//
+// Fuori range non si arrotonda e non si tronca: si torna false e il chiamante
+// non tocca niente. Una fascia messa a caso e' peggio di una non cambiata,
+// perche' nessuno sta guardando il pannello nel momento in cui si sposta.
+static bool parseQuarto(const String& s, uint8_t& q) {
+  const int c = s.indexOf(':');
+  if (c < 0) {
+    const long h = s.toInt();
+    if (h < 0 || h > 23) return false;
+    q = (uint8_t)(h * 4);
+    return true;
+  }
+  const long h = s.substring(0, c).toInt();
+  const long m = s.substring(c + 1).toInt();
+  if (h < 0 || h > 23 || m < 0 || m > 59) return false;
+  // Al quarto piu' vicino; il % 96 serve solo a 23:53 e oltre, che risalgono
+  // a mezzanotte invece di sfondare l'intervallo.
+  q = (uint8_t)(((((h * 60 + m) + 7) / 15) % 96));
+  return true;
+}
+
 static void handleApiPannello() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
 
@@ -1730,8 +1815,18 @@ static void handleApiPannello() {
   j += ",\"rotazione\":";
   j += pages_rotazione() ? "true" : "false";
   j += ",\"silenzio_pagina\":"; j += (int)pages_silenzio_pagina();
-  j += ",\"silenzio_da\":"; j += pages_silenzio_da();
-  j += ",\"silenzio_a\":";  j += pages_silenzio_a();
+  // Che cosa c'e' DAVVERO sul vetro quando la notte mostra un file
+  // dell'archivio: "corrente" li' descrive il modello delle pagine, che quel
+  // file non lo conosce. Senza questo campo la risposta resterebbe vera e
+  // fuorviante insieme.
+  j += ",\"silenzio_immagine\":"; appendJsonString(j, app_silenzio_immagine());
+  // "21:15", non piu' il numero dell'ora: da v43 la fascia si muove a quarti,
+  // e un intero non potrebbe che mentire su tre valori su quattro. Il quarto
+  // grezzo resta accanto, per chi preferisce contare invece di leggere.
+  j += ",\"silenzio_da\":"; appendJsonString(j, quartoHM(pages_silenzio_da_q()).c_str());
+  j += ",\"silenzio_a\":";  appendJsonString(j, quartoHM(pages_silenzio_a_q()).c_str());
+  j += ",\"silenzio_da_q\":"; j += (int)pages_silenzio_da_q();
+  j += ",\"silenzio_a_q\":";  j += (int)pages_silenzio_a_q();
   j += ",\"fascia\":";
   j += pages_fascia() ? "true" : "false";
   j += ",\"sospeso\":";
@@ -1779,7 +1874,7 @@ static void handleApiPannelloSlot() {
   net_server().send(200, "application/json", j);
 }
 
-// POST /api/pannello?rotazione=0|1&sil_da=23&sil_a=7&sil_pagina=<slot|-1>
+// POST /api/pannello?rotazione=0|1&sil_da=23:00&sil_a=07:30&sil_pagina=<slot|-1>
 static void handleApiPannelloSet() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
   WebServer& srv = net_server();
@@ -1791,12 +1886,24 @@ static void handleApiPannelloSet() {
     const int v = srv.arg("sil_pagina").toInt();
     uint8_t slot = PAG_SIL_NESSUNA;
     if (v == PAG_SIL_CASUALE)          slot = PAG_SIL_CASUALE;
+    else if (v == PAG_SIL_CARD)        slot = PAG_SIL_CARD;
     else if (v >= 0 && v < PAGES_MAX)  slot = (uint8_t)v;
     pages_set_silenzio_pagina(slot);
   }
 
-  if (srv.hasArg("sil_da") && srv.hasArg("sil_a"))
-    pages_set_silenzio((uint8_t)srv.arg("sil_da").toInt(), (uint8_t)srv.arg("sil_a").toInt());
+  // Le due estremita' si muovono INSIEME o non si muovono: applicarne una
+  // sola perche' l'altra e' scritta male darebbe una fascia che nessuno ha
+  // chiesto, e per meta' della giornata.
+  if (srv.hasArg("sil_da") && srv.hasArg("sil_a")) {
+    uint8_t qDa, qA;
+    if (parseQuarto(srv.arg("sil_da"), qDa) && parseQuarto(srv.arg("sil_a"), qA))
+      pages_set_silenzio_q(qDa, qA);
+  }
+  // La forma in quarti grezzi, per chi legge /api/pannello e rimanda indietro
+  // quello che ha letto senza riformattarlo.
+  if (srv.hasArg("sil_da_q") && srv.hasArg("sil_a_q"))
+    pages_set_silenzio_q((uint8_t)srv.arg("sil_da_q").toInt(),
+                         (uint8_t)srv.arg("sil_a_q").toInt());
   if (srv.hasArg("fascia")) pages_set_fascia(srv.arg("fascia").toInt() != 0);
 
   // In NVS solo qui, alla conferma dell'utente: mai a ogni cambio pagina.
@@ -2084,7 +2191,7 @@ static const Rotta ROTTE[] = {
   { HTTP_GET,  "/api/nodi/scarica",     handleApiNodiScarica,        "il CSV di un giorno (ts_iso,ts_unix,fonte_ora,mac,seq,temp_c,hum_pct,press_hpa,batt_mv)", "nodo=NOME, d=AAAA-MM-GG" },
 
   { HTTP_GET,  "/api/pannello",         handleApiPannello,           "elenco delle pagine, rotazione, ore di silenzio", "" },
-  { HTTP_POST, "/api/pannello",         handleApiPannelloSet,        "rotazione, ore di silenzio, fascia del messaggio", "rotazione=0|1, sil_da=0..23, sil_a=0..23, fascia=0|1" },
+  { HTTP_POST, "/api/pannello",         handleApiPannelloSet,        "rotazione, ore di silenzio (a quarti d'ora), fascia del messaggio", "rotazione=0|1, sil_da=HH:MM (o 0..23 = ora piena), sil_a=HH:MM, sil_da_q/sil_a_q=0..95, sil_pagina=<slot|-1|254>, fascia=0|1" },
   { HTTP_POST, "/api/pannello/pagina",  handleApiPannelloPagina,     "una pagina: attiva, durata, oppure 'solo questa'", "i=slot, attiva=0|1, durata=secondi, fissa=1" },
   { HTTP_POST, "/api/pannello/vai",     handleApiPannelloVai,        "manda subito una pagina sul pannello (accoda: la disegna il loop)", "i=slot" },
   { HTTP_GET,  "/api/pannello/slot",    handleApiPannelloSlot,       "stato grezzo dei 16 slot: usato, tipo, attiva, param", "" },

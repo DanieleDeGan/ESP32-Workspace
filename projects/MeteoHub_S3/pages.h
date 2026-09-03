@@ -82,11 +82,20 @@ bool    pages_goto(uint8_t i);               // false se lo slot e' libero
 bool pages_rotazione();
 void pages_set_rotazione(bool on);
 
-// Ore di silenzio: niente rotazione fra queste due ore locali (23 -> 7
-// significa "dalle 23 alle 7"). Uguali fra loro = silenzio mai.
-uint8_t pages_silenzio_da();
-uint8_t pages_silenzio_a();
-void    pages_set_silenzio(uint8_t da, uint8_t a);
+// Ore di silenzio: niente rotazione fra questi due istanti locali (23:00 ->
+// 07:00 significa "dalle 23 alle 7"). Uguali fra loro = silenzio mai.
+//
+// L'unita' e' il QUARTO D'ORA dalla mezzanotte (0..95): 84 = 21:00, 85 =
+// 21:15. Fino a v42 erano ore piene, e una fascia non poteva finire alle 7:30.
+// Novantasei valori entrano ancora in un uint8_t, quindi la struttura del blob
+// NVS non cambia -- dove finiscono davvero i quarti e' spiegato in pages.cpp.
+//
+// Le funzioni hanno un nome nuovo apposta: un chiamante rimasto indietro deve
+// smettere di compilare, non scambiare un 21 (le nove di sera) per un 21
+// (le cinque e un quarto del mattino).
+uint8_t pages_silenzio_da_q();
+uint8_t pages_silenzio_a_q();
+void    pages_set_silenzio_q(uint8_t daQ, uint8_t aQ);
 bool    pages_in_silenzio(time_t oraLocale);
 
 // Quale pagina mostrare durante le ore di silenzio, e SOPRATTUTTO il segnale
@@ -109,8 +118,17 @@ bool    pages_in_silenzio(time_t oraLocale);
 // fascia: la notte diventa una cornice che cambia da sola. Non e' uno slot,
 // e' un modo di sceglierlo -- per questo un valore fuori dall'intervallo.
 #define PAG_SIL_CASUALE 254
+// Come sopra, ma pescando fra TUTTE le immagini sulla card e non solo fra le
+// pagine in elenco. Non consuma uno slot -- di notte non serve una pagina, ma
+// un file: il pannello sa gia' disegnare un .bin per nome, e le pagine sono
+// sedici mentre l'archivio sulla card non ha un tetto. Conseguenza da tenere a
+// mente: mentre e' a schermo, la pagina "corrente" del modello NON e' quello
+// che si vede, e per questo il nome sorteggiato va esposto (vedi
+// app_silenzio_immagine() e "silenzio_immagine" in /api/pannello).
+#define PAG_SIL_CARD 253
 uint8_t pages_silenzio_pagina();
-void    pages_set_silenzio_pagina(uint8_t slot);   // 255 = nessuna, 254 = a caso
+// 255 = nessuna, 254 = a caso fra le pagine, 253 = a caso fra tutta la card
+void    pages_set_silenzio_pagina(uint8_t slot);
 
 // Fascia del messaggio in fondo alla pagina dei nodi. Quando e' attiva E
 // c'e' un messaggio da mostrare, la pagina nodi cede 70 px al testo: i nodi

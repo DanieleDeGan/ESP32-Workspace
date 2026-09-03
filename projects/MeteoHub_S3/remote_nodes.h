@@ -66,6 +66,18 @@ struct RemoteNode {
   uint32_t persi;           // buchi nel seq: perdita reale sulla tratta radio
   uint32_t riavvii;         // volte che il seq e' tornato indietro
 
+  // Salti di seq talmente grandi da non essere pacchetti persi ma un
+  // contatore sporco (il seq attraversa il deep sleep dalla RTC memory).
+  // Contati a parte invece di finire in `persi`, che altrimenti resterebbe
+  // avvelenato per sempre da un pacchetto solo, senza modo di azzerarlo.
+  uint32_t seqAssurdi;
+
+  // Quanti delta CONSECUTIVI hanno contribuito a intervalloS. Serve a
+  // distinguere "cadenza vecchia" da "cadenza sbagliata": se questo numero
+  // sta fermo mentre `persi` sale, l'intervallo mostrato e' l'ultimo buono,
+  // non una stima presa dai buchi.
+  uint16_t intervalloCampioni;
+
   time_t   ultimoTs;        // ora a muro dell'ultimo DATA (0 = mai)
   uint32_t ultimoMs;        // millis() dell'ultimo DATA
   uint32_t intervalloS;     // cadenza osservata (0 = non ancora nota)

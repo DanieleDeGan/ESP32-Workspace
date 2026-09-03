@@ -97,7 +97,28 @@
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
-static const char FW_VERSION[] = "v42";
+// v44 (2026-09-03) — le cinque correzioni del "Blocco A" di
+// docs/Proposte-2026-09-02.md. Nessuna feature nuova: tolgono difetti che
+// falsavano numeri o rendevano invisibile uno stato.
+//
+//   - la cadenza di un nodo si impara SOLO dai DATA consecutivi. Prima
+//     bastava un seq crescente, quindi un pacchetto perso portava la cadenza
+//     da 300 a 375 s e con lei la soglia del muto (+3 minuti sul rilevamento
+//     di un nodo davvero morto). Nuovo campo intervallo_campioni: dice se
+//     quel numero e' vecchio o calcolato sui buchi.
+//   - tetto al salto di seq (PERSI_SALTO_MAX): un contatore sporco letto
+//     dalla RTC memory non puo' piu' inventare milioni di "persi"
+//     permanenti. I salti fuori scala si contano a parte (seq_assurdi) e
+//     compaiono in /api/salute.
+//   - i timer del ritardo si tengono per MAC e non per posizione, cosi'
+//     remote_forget() -- che compatta il registro -- non li disallinea.
+//   - un WELCOME per giro e a turno (in EspNowLink): mandarli tutti insieme
+//     costava fino a 8 s di loop() fermo dopo un blackout, proprio mentre
+//     tutti i nodi ritrasmettono.
+//   - /api/stato dice quanti parziali sono passati dall'ultimo completo e
+//     quando il completo e' stato: il ghosting e' l'unica cosa che
+//     l'anteprima del pannello non puo' mostrare.
+static const char FW_VERSION[] = "v44";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -225,16 +246,77 @@ static bool     s_nodiDirty     = false;
 // 60 secondi di conferma: piu' lunghi dell'oscillazione tipica e molto piu'
 // corti della soglia del muto, che resta il segnale serio e non e' toccata.
 static const uint32_t RITARDO_CONFERMA_MS = 60000UL;
-static uint32_t s_ritardoDa[REMOTE_MAX_NODES] = {0};
 
-static bool nodoInRitardo(int i, const RemoteNode& n)
+// I timer si tengono per MAC, NON per posizione nel registro dei nodi.
+//
+// remote_forget() COMPATTA quel registro -- sposta i nodi successivi di un
+// posto indietro -- e compatta insieme i suoi array paralleli, con un commento
+// che dice perche': "o dopo un dimentica ogni nodo si ritrova lo storico di
+// pressione del vicino". Questo array pero' sta FUORI dal modulo, quindi
+// nessuno lo compattava: dopo un "dimentica" i timer restavano appiccicati
+// alla posizione invece che al nodo.
+//
+// Il danno era piccolo e si riassorbiva da solo (un "!" mostrato o nascosto
+// per meno di un minuto), ma la classe di errore no. Indicizzare per MAC la
+// toglie invece di tapparne un caso, ed e' la stessa scelta, con la stessa
+// motivazione, gia' presa da aggiornaDaLibreria(): "i peer si abbinano per
+// MAC, non per indice". Con otto nodi al massimo la ricerca non si sente.
+//
+// `da == 0` significa "timer spento": uno slot con quel valore non porta
+// informazione e si puo' riusare per un altro nodo.
+struct RitardoTimer { uint8_t mac[6]; uint32_t da; };
+static RitardoTimer s_ritardo[REMOTE_MAX_NODES] = {};
+
+static bool nodoInRitardo(const RemoteNode& n)
 {
-  if (i < 0 || i >= REMOTE_MAX_NODES) return false;
   const bool grezzo = n.hasData && n.online &&
                       n.intervalloS > 0 && n.silenzioS > n.intervalloS * 2;
-  if (!grezzo) { s_ritardoDa[i] = 0; return false; }
-  if (s_ritardoDa[i] == 0) { s_ritardoDa[i] = millis(); return false; }
-  return (millis() - s_ritardoDa[i]) >= RITARDO_CONFERMA_MS;
+
+  int slot = -1, libero = -1;
+  for (int i = 0; i < REMOTE_MAX_NODES; i++) {
+    if (s_ritardo[i].da == 0) { if (libero < 0) libero = i; continue; }
+    if (memcmp(s_ritardo[i].mac, n.mac, 6) == 0) { slot = i; break; }
+  }
+
+  if (!grezzo) {
+    if (slot >= 0) s_ritardo[slot].da = 0;   // tornato in orario: timer spento
+    return false;
+  }
+  if (slot < 0) {
+    // Primo giro in ritardo: parte il timer.
+    //
+    // Un posto libero di norma c'e' -- al massimo un timer per nodo, e i nodi
+    // sono al massimo REMOTE_MAX_NODES. L'unico modo di esaurirli e'
+    // dimenticare un nodo MENTRE il suo timer corre: quella voce resta con un
+    // MAC che non e' piu' in elenco e nessuno la spegne, perche' questo array
+    // sta fuori dal modulo e non sa niente di remote_forget(). Ripetuto,
+    // riempirebbe la tabella e da li' in poi nessun nodo mostrerebbe piu' il
+    // "!" -- che e' un guasto silenzioso, cioe' proprio quello che indicizzare
+    // per MAC serviva a togliere.
+    //
+    // Si ripulisce qui e solo qui: costa 8x8 confronti nel caso in cui la
+    // tabella e' piena, cioe' quasi mai, e in cambio non c'e' nessuno stato
+    // che possa marcire.
+    if (libero < 0) {
+      for (int i = 0; i < REMOTE_MAX_NODES && libero < 0; i++) {
+        if (s_ritardo[i].da == 0) continue;
+        bool ancoraInElenco = false;
+        for (int k = 0; k < remote_count() && !ancoraInElenco; k++) {
+          RemoteNode t;
+          if (remote_get(k, &t) && memcmp(t.mac, s_ritardo[i].mac, 6) == 0)
+            ancoraInElenco = true;
+        }
+        if (!ancoraInElenco) { s_ritardo[i].da = 0; libero = i; }
+      }
+    }
+    if (libero < 0) return false;
+    uint32_t ora = millis();
+    if (ora == 0) ora = 1;                   // 0 e' la sentinella di "spento"
+    memcpy(s_ritardo[libero].mac, n.mac, 6);
+    s_ritardo[libero].da = ora;
+    return false;
+  }
+  return (millis() - s_ritardo[slot].da) >= RITARDO_CONFERMA_MS;
 }
 
 static uint32_t s_firmaStato    = 0;
@@ -246,9 +328,53 @@ static const uint32_t CHECK_MS  = 5000UL;   // ogni quanto si guarda se e' cambi
 static bool     s_inSilenzio    = false;
 static uint8_t  s_pagPrimaSil   = 0;
 static uint8_t  s_pagSilScelta  = PAG_SIL_NESSUNA;
+// Modalita' "a caso fra tutte quelle sulla card": qui non c'e' uno slot, c'e'
+// un file. Il nome resta finche' dura la fascia; l'ultimo sorteggiato si
+// ricorda per non ripescarlo due notti di fila (in RAM: un riavvio che lo
+// dimentica non e' un guasto, e' solo una notte che puo' ripetersi).
+static char     s_silImgNome[IMG_NOME_MAX + 1]   = "";
+static char     s_silImgUltima[IMG_NOME_MAX + 1] = "";
+// Quante pagine ha disegnato showPage(): serve solo a sapere se, al mattino,
+// sul vetro c'e' ancora l'immagine della notte o qualcosa che l'utente ha
+// chiesto nel frattempo dal tasto BOOT o dal web. Un confronto fra due numeri
+// invece di uno stato da tenere aggiornato in tre posti.
+static uint32_t s_disegniPagina = 0;
+static uint32_t s_silDisegnoAl  = 0;
 static uint32_t s_nodiUltimoMs  = 0;
 static uint8_t  s_nodiParziali  = 0;
 static uint32_t s_fullUltimoMs  = 0;   // ultimo refresh COMPLETO, per l'alone
+
+// ...e la stessa cosa in ora a muro, per poterla dire in rete. Un istante e
+// non "da quanto tempo": vale la regola gia' scritta per l'ora dell'ultimo
+// pacchetto, un istante resta vero anche quando nessuno lo rilegge da un
+// pezzo. Vale 0 finche' un completo non c'e' stato.
+static time_t   s_fullUltimoTs  = 0;
+
+// I due si aggiornano SEMPRE insieme, da un punto solo: sono la stessa cosa
+// contata con due orologi, e se si potessero muovere separatamente prima o poi
+// divergerebbero. Stessa regola di drawOra(), che disegna l'ora da una
+// funzione sola perche' due disegni dello stesso dato finirebbero per differire.
+static void segnaFull()
+{
+  s_fullUltimoMs = millis();
+  s_fullUltimoTs = time(nullptr);
+}
+
+// Quanti parziali si sono accumulati dall'ultimo completo, e quando il
+// completo e' stato.
+//
+// PERCHE' SI ESPONGONO. Il ghosting e' l'unica proprieta' del pannello che
+// l'anteprima NON puo' mostrare: lei restituisce la tela, cioe' cio' che l'hub
+// ha disegnato, non i fotoni sul vetro. Questi due numeri non misurano
+// l'alone -- non si puo' -- ma rendono leggibile da fuori la POLITICA che lo
+// determina: si vede subito se il completo periodico sta scattando o se una
+// configurazione (una pagina sola attiva, una fascia di silenzio lunga) lo sta
+// rimandando.
+//
+// Da sapere leggendoli: il conteggio e' quello della PAGINA NODI, che e'
+// l'unica a fare parziali. Ogni cambio pagina e' un completo e lo azzera.
+uint32_t app_epd_parziali_da_full() { return s_nodiParziali; }
+time_t   app_epd_ultimo_full_ts()   { return s_fullUltimoTs; }
 
 // Un dato nuovo si aspetta almeno questo prima di finire sul pannello. Con i
 // nodi a 60 e 300 s la cadenza reale diventa un refresh ogni due minuti: il
@@ -749,7 +875,7 @@ static String fmtDelta(float v, int dec)
 // blocco e l'altro ci sono comunque 130 px di bianco -- e libera il nero per
 // l'unica cosa che deve gridare: il badge del nodo muto, che ora e' il solo
 // negativo della pagina e per questo si vede molto piu' di prima.
-static void drawTestataNodo(const RemoteNode& n, int16_t y, int16_t h, int idx)
+static void drawTestataNodo(const RemoteNode& n, int16_t y, int16_t h)
 {
   const int16_t W = tela.width();
 
@@ -791,7 +917,7 @@ static void drawTestataNodo(const RemoteNode& n, int16_t y, int16_t h, int idx)
   if (n.hasData && !n.online) {
     drawBadgeMuto(W - 64, y + (h - 18) / 2);
   }
-  else if (n.hasData && nodoInRitardo(idx, n)) {
+  else if (n.hasData && nodoInRitardo(n)) {
     tela.setFont(&FreeSansBold12pt7b);
     tela.getTextBounds("!", 0, 0, &bx, &by, &bw, &bh);
     drawRight("!", W - 12, y + (h - (int16_t)bh) / 2 - by);
@@ -881,7 +1007,7 @@ static bool nodiLayoutComodo(int quanti, const Message* fascia)
 static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
 {
   const int16_t W = tela.width();
-  drawTestataNodo(n, y, 26, indice);
+  drawTestataNodo(n, y, 26);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
@@ -992,10 +1118,10 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
 // rotazione -- pagine intere e leggibili invece di una compressa.
 
 // --- blocco COMPATTO: da tre nodi in su -----------------------------------
-static void drawNodoCompatto(const RemoteNode& n, int16_t y, int indice)
+static void drawNodoCompatto(const RemoteNode& n, int16_t y)
 {
   const int16_t W = tela.width();
-  drawTestataNodo(n, y, 23, indice);
+  drawTestataNodo(n, y, 23);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
@@ -1089,8 +1215,12 @@ static void screenNodi(bool full)
         if (!remote_get(i, &nodo)) continue;
         const int16_t y = NODI_TOP + (int16_t)i * h;
 
+        // L'indice serve solo al blocco comodo, che con statTemp() legge
+        // l'anello delle 24 h. E' una lettura immediata, consumata dentro
+        // questo giro: non e' lo stesso caso di s_ritardo, che era stato che
+        // SOPRAVVIVE fra una chiamata e l'altra e per questo va tenuto per MAC.
         if (comodo) drawNodoComodo(nodo, y, i);
-        else        drawNodoCompatto(nodo, y, i);
+        else        drawNodoCompatto(nodo, y);
 
         // Niente separatore fra un nodo e l'altro: ogni blocco si apre con la
         // sua testata, che porta gia' il filetto sotto il nome. Due separatori
@@ -1433,6 +1563,7 @@ size_t         app_tela_bytes()  { return IMG_BYTES; }
 // cose si somigliano - il display non cambia - e senza questo campo l'unico
 // modo di distinguerle sarebbe guardare l'ora e fidarsi.
 bool app_pannello_sospeso()        { return s_inSilenzio; }
+const char* app_silenzio_immagine() { return s_silImgNome; }
 uint32_t app_refresh_evitati()     { return s_nodiInvariati; }
 
 void app_chiedi_refresh()          { s_refreshChiesto = true; }
@@ -1779,7 +1910,7 @@ static void screenDettaglio(const char* nomeNodo)
     return;
   }
 
-  drawTestataNodo(n, 0, 26, indice);
+  drawTestataNodo(n, 0, 26);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
@@ -2057,6 +2188,55 @@ static void screenGrafico()
 // STESSA sequenza ad ogni riavvio, cioe' la stessa immagine tutte le notti
 // dopo ogni power-cycle -- che e' esattamente il difetto che si vorrebbe
 // evitare, ma silenzioso.
+// Un'immagine a caso fra TUTTE quelle sulla card, non solo fra le pagine in
+// elenco: l'archivio non ha il tetto dei sedici slot, e per disegnarla non
+// serve che sia una pagina -- screenImmagine() lavora su un nome di file.
+//
+// Due passate sulla directory invece di un elenco di nomi in RAM: quante
+// immagini ci siano lo decide la card (15.000 byte l'una su 14,9 GB), e
+// tenerne in memoria un numero fisso sarebbe un tetto arbitrario e MUTO --
+// esattamente il difetto che sd_img_page() ha gia' tolto alla pagina web. La
+// scansione costa due volte al giorno.
+struct SceltaImg { char* out; size_t cap; };
+static void sceltaImgCb(const char* nome, size_t, void* arg)
+{
+  SceltaImg* s = (SceltaImg*)arg;
+  // Un nome piu' lungo del buffer NON si tronca: troncato comporrebbe il path
+  // di un file che non esiste, e la notte si passerebbe con "immagine non
+  // disponibile" sul pannello. Meglio lasciarlo vuoto e sorteggiarne un altro.
+  // Non capita alle immagini caricate dalla pagina (sd_img_name_safe le tiene
+  // entro IMG_NOME_MAX), capita a un file copiato a mano sulla card.
+  if (strlen(nome) >= s->cap) { s->out[0] = '\0'; return; }
+  strncpy(s->out, nome, s->cap - 1);
+  s->out[s->cap - 1] = '\0';
+}
+
+static bool immagineACasoDallaCard(char* out, size_t cap, const char* evita)
+{
+  if (!out || cap == 0) return false;
+  out[0] = '\0';
+
+  // quante=0: non consegna niente, conta e basta -- la callback non viene mai
+  // chiamata, quindi l'arg nullo qui e' sicuro.
+  int totale = 0;
+  sd_img_page(sceltaImgCb, nullptr, 0, 0, "", &totale);
+  if (totale <= 0) return false;
+
+  SceltaImg s = { out, cap };
+  // Due tentativi: con poche immagini la stessa uscirebbe due notti di fila
+  // abbastanza spesso, e un pannello che non e' cambiato somiglia a un
+  // pannello fermo. Con una sola immagine sulla card non c'e' scelta, e
+  // rifarla e' giusto: non e' una ripetizione, e' l'unica che c'e'.
+  for (int giro = 0; giro < 2; giro++)
+  {
+    out[0] = '\0';
+    sd_img_page(sceltaImgCb, &s, (int)(esp_random() % (uint32_t)totale), 1, "", nullptr);
+    if (out[0] == '\0') continue;      // nome troppo lungo, o file sparito nel frattempo
+    if (totale < 2 || evita == nullptr || strcmp(out, evita) != 0) return true;
+  }
+  return out[0] != '\0';
+}
+
 static uint8_t immagineACaso()
 {
   uint8_t cand[PAGES_MAX];
@@ -2132,7 +2312,7 @@ static uint32_t firmaStato()
     RemoteNode n;
     if (!remote_get(i, &n)) continue;
     firmaMescola(f, n.online ? 1 : 0);
-    firmaMescola(f, nodoInRitardo(i, n) ? 1 : 0);
+    firmaMescola(f, nodoInRitardo(n) ? 1 : 0);
     firmaMescola(f, (int32_t)n.hasData);
     for (const char* c = n.nome; *c; c++) firmaMescola(f, (int32_t)(uint8_t)*c);
   }
@@ -2249,7 +2429,8 @@ static void showPage(uint8_t i)
   pannello.hibernate();
   contaRefresh("pagina", true, millis() - t0);
   s_epdUltimoMs   = millis() - t0;
-  s_fullUltimoMs  = millis();   // il cambio pagina e' sempre un completo
+  segnaFull();                  // il cambio pagina e' sempre un completo
+  s_disegniPagina++;            // vedi s_silDisegnoAl: chi ha disegnato per ultimo
   pages_disegnata(millis());
   Serial.printf("[epd] pagina %u (%s): %lu ms\n", (unsigned)i,
                 pages_tipo_nome(pg->tipo), (unsigned long)s_epdUltimoMs);
@@ -2547,8 +2728,41 @@ void loop()
                            rtctime_isSynced() && pages_in_silenzio(time(nullptr));
 
     if (silenzio && !s_inSilenzio) {
-      s_inSilenzio   = true;
-      s_pagPrimaSil  = pages_current();
+      s_inSilenzio    = true;
+      s_pagPrimaSil   = pages_current();
+      s_silImgNome[0] = '\0';
+
+      // Immagine dall'archivio: NON passa dal modello delle pagine. Non e' una
+      // scorciatoia -- di notte non serve una pagina ma un file, e mettere in
+      // elenco una pagina che esiste solo per il silenzio costerebbe uno dei
+      // sedici slot e la si potrebbe attivare, spostare o togliere da una
+      // schermata che della notte non parla.
+      if (silPag == PAG_SIL_CARD) {
+        s_pagSilScelta = PAG_SIL_NESSUNA;
+        if (immagineACasoDallaCard(s_silImgNome, sizeof(s_silImgNome), s_silImgUltima)) {
+          strncpy(s_silImgUltima, s_silImgNome, sizeof(s_silImgUltima) - 1);
+          s_silImgUltima[sizeof(s_silImgUltima) - 1] = '\0';
+
+          const uint32_t t0 = millis();
+          screenImmagine(s_silImgNome);
+          pannello.hibernate();
+          contaRefresh("silenzio", true, millis() - t0);
+          s_epdUltimoMs  = millis() - t0;
+          segnaFull();
+          pages_disegnata(millis());
+          s_silDisegnoAl = s_disegniPagina;   // sul vetro c'e' un file, non una pagina
+          Serial.printf("[epd] ore di silenzio: /images/%s.bin e mi fermo\n", s_silImgNome);
+        } else {
+          // Nessuna immagine sulla card (o card assente): ci si ferma com'era.
+          // Disegnare l'avviso "immagine non disponibile" spegnerebbe la pagina
+          // dei nodi per tutta la notte in cambio di un messaggio che nessuno
+          // sta guardando, e la mattina si troverebbe un errore al posto dei
+          // dati.
+          Serial.println("[epd] ore di silenzio: nessuna immagine sulla card, resto com'ero");
+        }
+        return;
+      }
+
       s_pagSilScelta = (silPag == PAG_SIL_CASUALE) ? immagineACaso() : silPag;
 
       // pages_goto() sposta il modello, showPage() disegna: servono
@@ -2563,11 +2777,21 @@ void loop()
     }
     if (!silenzio && s_inSilenzio) {
       s_inSilenzio = false;
+      if (s_silImgNome[0]) {
+        // Sul vetro c'e' un file, che il modello non conosce: si ridisegna la
+        // pagina corrente, ma solo se nessuno ha disegnato niente nel
+        // frattempo. Se di notte si e' premuto BOOT o si e' chiesta una pagina
+        // dal web, quella e' la pagina voluta, e riprendersela al mattino
+        // sarebbe un refresh in piu' per togliere all'utente quel che ha
+        // scelto.
+        if (s_disegniPagina == s_silDisegnoAl) showPage(pages_current());
+        s_silImgNome[0] = '\0';
+      }
       // Si torna indietro solo se nessuno ha toccato niente nel frattempo:
       // altrimenti si porterebbe via la pagina che l'utente ha scelto a mano.
       // Il confronto e' con la pagina SORTEGGIATA, non con quella configurata:
       // con il caso le due cose non coincidono quasi mai.
-      if (pages_current() == s_pagSilScelta && pages_goto(s_pagPrimaSil))
+      else if (pages_current() == s_pagSilScelta && pages_goto(s_pagPrimaSil))
         showPage(s_pagPrimaSil);
       s_pagSilScelta = PAG_SIL_NESSUNA;
       Serial.println("[epd] fine delle ore di silenzio");
@@ -2642,7 +2866,7 @@ void loop()
     s_nodiParziali = full ? 0 : s_nodiParziali + 1;
     s_nodiDirty    = false;
     s_nodiUltimoMs = millis();
-      if (full) s_fullUltimoMs = millis();
+      if (full) segnaFull();
     contaRefresh(statoCambia ? "stato" : (perValori ? "valori" : "ghosting"),
                  full, millis() - t0);
     s_epdUltimoMs  = millis() - t0;

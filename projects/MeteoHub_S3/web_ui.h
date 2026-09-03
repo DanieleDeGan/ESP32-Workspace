@@ -13,6 +13,7 @@
 // ---------------------------------------------------------------------
 
 #include <Arduino.h>
+#include <time.h>   // time_t: app_epd_ultimo_full_ts()
 
 void web_ui_begin();
 
@@ -31,6 +32,8 @@ uint32_t    app_scritture_ko();    // DATA che la card ha rifiutato
 uint32_t    app_epd_refresh();     // refresh del pannello da questo avvio
 uint32_t    app_epd_ultimo_ms();   // quanto e' costato l'ultimo refresh
 uint32_t    app_epd_orologio_ms(); // e quanto costa il solo orologio
+uint32_t    app_epd_parziali_da_full();  // parziali accumulati (pagina nodi)
+time_t      app_epd_ultimo_full_ts();    // ora dell'ultimo completo (0 = mai)
 
 // La tela: i 15.000 byte che sono finiti sul vetro, nel formato dei .bin
 // (1 bit per pixel, MSB per primo, 50 byte per riga, 1 = bianco). Non e' una
@@ -41,6 +44,13 @@ size_t         app_tela_bytes();
 
 // true mentre il pannello e' fermo per le ore di silenzio.
 bool app_pannello_sospeso();
+
+// Il nome dell'immagine sorteggiata per la notte (modalita' PAG_SIL_CARD),
+// stringa vuota se non ce n'e' una a schermo. Va esposto: quell'immagine non
+// e' una pagina dell'elenco, quindi "corrente" descrive il modello e non il
+// vetro -- senza questo campo /api/pannello direbbe una cosa vera su una
+// cosa che non e' quella mostrata.
+const char* app_silenzio_immagine();
 
 // Quante volte il pannello NON e' stato ridisegnato perche' il contenuto era
 // identico a quello gia' a schermo.

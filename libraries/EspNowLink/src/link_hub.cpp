@@ -259,10 +259,35 @@ void Link_Hub_Poll(void)
         delete daButtare[i];
     }
 
+    // UN SOLO WELCOME PER GIRO, e a turno.
+    //
+    // sendReliable() blocca fino a ~1 s (3 tentativi x 300 ms piu' backoff).
+    // Mandarli tutti nello stesso giro costava, con otto nodi, fino a otto
+    // secondi di loop() fermo -- e proprio nel momento peggiore: un nodo si
+    // mette in welcomePending quando manda un HELLO, cioe' quando NON si crede
+    // associato, e un blackout riavvia tutti i nodi alimentati dalla rete
+    // nello stesso istante. Otto secondi in cui il WebServer non risponde, un
+    // OTA si pianta, e soprattutto i DATA non vengono prelevati dal driver,
+    // che ne tiene uno solo per nodo.
+    //
+    // Spalmarli non ritarda niente: i nodi ripetono l'HELLO ogni
+    // LINK_HELLO_INTERVAL_MS (2 s) e il loop gira migliaia di volte in quel
+    // tempo, quindi otto nodi si servono comunque nello stesso secondo.
+    //
+    // A TURNO, e non sempre dal primo: il flag si pulisce solo se l'invio
+    // riesce (di proposito, cosi' un fallimento transitorio si ritenta invece
+    // di perdere la finestra di pairing di quel nodo). Ripartendo sempre da
+    // zero, un nodo spento a meta' associazione resterebbe pendente per
+    // sempre e si prenderebbe l'unico invio di ogni giro: gli altri non
+    // riceverebbero mai il loro WELCOME. Il turno lo rende impossibile.
+    static int s_welcome_prossimo = 0;
+
     portENTER_CRITICAL(&s_registry_mux);
-    for (int i = 0; i < s_peer_count; i++) {
+    for (int k = 0; k < s_peer_count; k++) {
+        const int i = (s_welcome_prossimo + k) % s_peer_count;
         LinkPeer *peer = s_peers[i];
         if (peer != nullptr && peer->welcomePending) {
+            s_welcome_prossimo = i + 1;   // il prossimo giro riparte da dopo
             portEXIT_CRITICAL(&s_registry_mux);
 
             link_message_t welcome = {};
@@ -280,6 +305,7 @@ void Link_Hub_Poll(void)
             if (sent) {
                 peer->welcomePending = false;
             }
+            break;
         }
     }
     portEXIT_CRITICAL(&s_registry_mux);

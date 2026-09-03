@@ -354,7 +354,17 @@ let CODA = Promise.resolve();
 function api(path, opts, come){
   const run = async () => {
     const r = await fetch(path, Object.assign({cache:'no-store'}, opts||{}));
-    if (!r.ok) throw new Error(r.status+' '+r.statusText);
+    // Il CORPO della risposta, non solo il codice. La scheda scrive messaggi
+    // d'errore precisi — «file inesistente», «fuori range (-400..4000 m)»,
+    // «non c'è più posto nell'elenco» — e buttarli via per mostrare
+    // «404 Not Found» significa non far arrivare a nessuno il messaggio
+    // scritto con cura. È la stessa lezione di postJson() su /pannello,
+    // applicata solo a metà: qui r.ok veniva guardato (quindi il pulsante che
+    // non fa niente non c'era), ma il testo si perdeva lo stesso.
+    if (!r.ok) {
+      const t = (await r.text().catch(()=>'')).trim().slice(0,200);
+      throw new Error(t || (r.status+' '+r.statusText));
+    }
     if (come === 'bin') return r.arrayBuffer();
     const ct = r.headers.get('content-type')||'';
     return ct.includes('json') ? r.json() : r.text();

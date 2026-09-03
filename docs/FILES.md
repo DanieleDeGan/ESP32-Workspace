@@ -1498,7 +1498,7 @@ pannello si vede o non si vede allo stesso modo.
 | File | Ruolo |
 |---|---|
 | `MeteoHub_S3.ino` | pagine del pannello, tasto BOOT, hub ESP-NOW, logging dei nodi — qui va la logica applicativa |
-| `pages.h/.cpp` | il **modello delle pagine**: elenco, attiva/durata, rotazione, ore di silenzio, tutto in NVS. Non conosce il display: dice quale pagina tocca, il `.ino` la disegna |
+| `pages.h/.cpp` | il **modello delle pagine**: elenco, attiva/durata, rotazione, fascia di silenzio (a **quarti d'ora**, `0..95` dalla mezzanotte), tutto in NVS. Non conosce il display: dice quale pagina tocca, il `.ino` la disegna. Cosa mostrare di notte è un byte a parte (`silpag`): uno slot, `254` a caso fra le pagine, `253` a caso fra tutte le immagini sulla card — quest'ultima non è una pagina e non occupa uno slot |
 | `messages.h/.cpp` | il messaggio del pannello: quello **attivo** in NVS (sopravvive senza card), l'**archivio** su SD in `/messaggi/archivio.csv` |
 | `sd_logger.h/.cpp` | copia da `EnvNode_C3` adattata alla microSD SPI della Sense: CS 21, nessuna `SPI.begin()` propria |
 | `net_ota.h/.cpp` | WiFi + ArduinoOTA + `/update` + watchdog di riconnessione, con `net_server()` condiviso |
@@ -1514,6 +1514,7 @@ pannello si vede o non si vede allo stesso modo.
 | `tools/larghezza_testo.py` | quanto e' largo un testo **prima** di disegnarlo: somma gli `xAdvance` dei glifi nei `.h` veri dei font, come `getTextBounds()`. `--riga3` e `--piede` rifanno le prove del layout della pagina nodi. Serve perche' un testo troppo largo non da' errore — si sovrappone, e lo si scopre guardando il vetro |
 | `tools/refresh_simula.py` | rigioca i CSV veri dei nodi e conta **quanti refresh** farebbe il pannello con una data `firmaValori()`. Serve perche' dal vivo la risposta arriva dopo ore, con i contatori azzerati ad ogni OTA. Stampa anche il **tetto della cadenza**: se il numero ci somiglia, la firma non sta evitando niente |
 | `tools/icone.py` | genera i bitmap delle icone (termometro, goccia) usati dalla pagina nodi |
+| `tools/analisi.py` | risponde con i CSV veri alle domande di taratura di `docs/Proposte-2026-09-02.md`: completezza delle giornate, cadenza appresa con e senza la correzione dei buchi, **la tendenza a 3 h contro la persistenza**, sensore fermo, soglia del verdetto finestre (con isteresi, e il confronto con la banda secca), riepilogo giornaliero e gradi giorno, profilo orario (il sole sul sensore), arieggiamenti, costante di tempo termica. `--autoprova` genera dati con verita' **note** e verifica che gli stimatori le ritrovino — esiste perche' uno stimatore sbagliato produce numeri plausibili: il primo metodo per la costante di tempo dava 37 h dove il vero era 20 |
 
 **Cose da sapere prima di metterci le mani**:
 

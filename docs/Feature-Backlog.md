@@ -213,6 +213,213 @@ del percorso principale.
 
 ---
 
+## Da fare — dall'analisi del codice del 2026-09-02
+
+Una lettura sistematica di `MeteoHub_S3` `v43`, `MeteoNode_C3` `v15` e
+`EspNowLink`, partendo dal codice invece che dalle idee. Il ragionamento esteso,
+con i conti, le prove e le avvertenze, sta in **`docs/Proposte-2026-09-02.md`**:
+qui, come da regola di questo taccuino, resta una riga per voce.
+
+**Sei difetti trovati nel codice** (Parte 1 del documento). Non sono feature,
+e tre di loro falsano numeri su cui poggerebbero le voci statistiche:
+
+### 17. La cadenza appresa si inquina con i pacchetti persi — FATTA (`v44`)
+`aggiornaDaLibreria()` impara l'intervallo da qualunque DATA con `seq`
+crescente, buchi compresi: un pacchetto perso porta la cadenza da 300 a 375 s e
+ci vogliono ~8 pacchetti per rientrare. Trascina con sé `sogliaMuto` (+3 min sul
+rilevamento di un nodo morto), `nodoInRitardo()` e la cadenza dei refresh.
+**Costo**: bassissimo. **Da fare prima di qualunque statistica.**
+
+### 18. L'hub non misura il proprio tempo di giro
+`loop_max_ms`/`loop_max_dove`/`loop_lenti` esistono su `EnvNode_C3` (spenta) e
+non sull'hub, che è la scheda che blocca davvero (2630 ms per refresh, 20 s di
+budget d'invio, decine di secondi di OTA). Oggi sa dire *che è ripartito*, non
+*che è rimasto fermo*. **Costo**: basso, il codice si copia.
+
+### 19. Il watchdog non è armato: `WDT_TASK` non può comparire
+`app_reset_reason()` traduce tre cause di watchdog, ma né hub né nodo chiamano
+`esp_task_wdt_add()`. Un `loop()` piantato lascia un pannello e-ink perfetto e
+bistabile con dei numeri non più veri, e toglie insieme a sé tutta la
+diagnostica. **Costo**: bassissimo. Timeout proposto 60 s (sopra i 2,6 s del
+refresh e i ~30 s del caso peggiore di invio), watchdog sospeso durante l'OTA.
+
+### 20. Il driver tiene UN dato per nodo: un `loop()` fermo perde letture
+E le **addebita alla radio**, perché il buco nel `seq` finisce in `persi`. È lo
+stesso guasto del 2026-08-24 su `EnvNode_C3` (456 s fermo, sette pacchetti
+persi). Serve una coda FIFO in `EspNowLink` (12 slot = 564 byte) più un
+contatore di traboccamento — *una coda che trabocca in silenzio è peggio del
+difetto che risolve*. **Costo**: medio, tocca la libreria condivisa.
+
+### 21. Due indicizzazioni fragili — FATTA (`v44`)
+`s_ritardoDa[]` nello sketch è indicizzato per posizione e non viene compattato
+da `remote_forget()` (il modulo compatta i suoi array paralleli, questo no); e
+`r->persi += (seq - prec - 1)` non ha tetto, quindi un `seq` sporco dalla RTC
+memory può inventare milioni di pacchetti persi in modo permanente.
+**Costo**: bassissimo per entrambi.
+
+### 40. Dopo un blackout l'hub puo' sparire per secondi mandando i WELCOME — FATTA (`v44`)
+*(e' il sesto difetto del gruppo 17-21: il numero e' in coda perche' e' stato
+trovato dopo, rileggendo `link_hub.cpp` per intero.)*
+`Link_Hub_Poll()` manda un WELCOME **per ogni** peer in attesa nello stesso giro,
+e `sendReliable()` blocca fino a ~1 s l'uno: con otto nodi che si riavviano
+insieme — cioe' esattamente cosa succede a un blackout — il `loop()` puo'
+restare fermo **otto secondi**, proprio mentre tutti i nodi trasmettono. E un
+nodo irraggiungibile fa pagare quel secondo **ad ogni giro**, finche' non torna.
+**Correzione**: un WELCOME per giro **e a turno**. Il solo `break` non basta e
+peggiora le cose — il flag si pulisce solo se l'invio riesce, quindi ripartendo
+sempre da zero un nodo spento a meta' associazione si prenderebbe l'unico invio
+di ogni giro e **affamerebbe tutti gli altri**. Con il turno non ritarda niente:
+i nodi ripetono l'HELLO ogni 2 s e il loop gira migliaia di volte in quel tempo.
+**Costo**: una riga. Oggi il blocco **non e' osservabile**: non lascia traccia
+in nessun contatore (serve la voce 18).
+
+---
+
+**Le proposte vere**, in ordine di valore (22-36 riguardano l'hub, **37-39 il
+nodo**). Dettaglio, conti e prove nel documento; qui il titolo e il perché in
+una riga.
+
+### 22. La striscia del verdetto — progettata il 2026-08-21 e mai fatta
+«Conviene aprire le finestre?» sul pannello, dal confronto fra **umidità
+assoluta** dentro e fuori — la funzione è già in `meteo_calc.h`, scritta per
+questo. Manca solo un attributo per nodo (dentro/fuori) da mettere in **due
+chiavi NVS separate**, mai allargando il blob del registro (trappola di
+`PAGES_MAX`). **Costo**: basso. È la funzione che il piano chiamava *«l'unica
+informazione per cui il progetto esiste»* e che non è mai stata costruita.
+**La soglia va applicata con ISTERESI, non come banda secca**: misurato con
+`tools/analisi.py`, con la banda allargarla da 0 a 0,3 g/m³ porta i cambi da
+10,9 a **26,4 al giorno** (attraversare la zona neutra ne costa due), con
+l'isteresi a **2,9**. Stessa scelta già fatta in `forecast.h`.
+
+### 23. Il diario degli eventi su card
+`/eventi/AAAA-MM.csv`: boot, sync NTP, nodo muto, nodo che torna, errori card,
+OTA, pairing. Una riga **per transizione**, mai per campione. Tre indagini
+raccontate in `docs/Stazione-Meteo.md` sono state, in sostanza, la ricostruzione
+a mano di questo diario. **Costo**: basso, `sd_log_refresh()` si copia.
+
+### 24. `LINK_MSG_STATUS`: il nodo si racconta senza essere toccato
+Oggi un nodo che dorme è ispezionabile solo con un power-cycle, che **azzera in
+RTC memory proprio lo stato che si voleva guardare**. Un messaggio di stato ogni
+12 risvegli (fw, `boot_count`, risvegli, `scan_ok`, canale, intervallo, errori)
+costa **+0,5 %** di carica. Compatibile per costruzione: `link_parse_message()`
+rifiuta le lunghezze diverse, quindi i firmware vecchi lo ignorano.
+
+### 25. L'ascolto durante l'associazione
+Oggi, se un nodo non si associa, l'hub non mostra **nulla**. `hub_on_new_peer()`
+riceve già `esp_now_recv_info_t` — **con l'RSSI** — e scarta in silenzio due
+volte. Un anello di sei voci (MAC, RSSI, motivo dello scarto) permette di dire
+*«un nodo sconosciuto sta cercando un hub, RSSI −62, 8 s fa: apri
+l'associazione»*. **Costo**: basso.
+
+### 26. `/api/rev`: il polling smette di rifare lavoro che non è cambiato
+La dashboard chiede ~1,6 kB ogni 5 s (~1,15 MB/h) mentre il contenuto vero
+cambia 24 volte l'ora. Un endpoint da ~90 byte con dei contatori di revisione
+taglia circa un decimo dei byte e della CPU. È `firmaValori()` applicata al lato
+web. **Costo**: basso. Con fallback per la dashboard vecchia sulla card.
+
+### 27. Il pannello sa più cose della dashboard
+Min/max 24 h, rugiada, umidità assoluta e humidex sono disegnati sul vetro e non
+escono da `/api/nodi`; `remote_temp_history()` (48 mezz'ore, 96 byte in RAM) non
+ha nessun endpoint, e per lo stesso grafico la dashboard scarica il CSV intero.
+**Costo**: basso. Chiude la parte «resta da fare» della voce 1.
+
+### 28. La completezza del dato, accanto a ogni aggregato
+`campioni / attesi`. Un minimo calcolato sul 40 % dei campioni ha lo stesso
+aspetto di un minimo vero. Dipende dalla voce 17, o la completezza esce sopra il
+100 %. **Costo**: basso. **Prerequisito di tutte le statistiche.**
+
+### 29. Gradi giorno (HDD/CDD)
+Due colonne nel riepilogo giornaliero (voce 3) e una card in dashboard.
+Rispondono all'unica domanda energetica che ci si pone in casa e che oggi non ha
+risposta. Base 18 °C (internazionale) o 20 °C (DPR 412/93): **una sola, e
+dichiarata**. **Costo**: bassissimo dopo la voce 3.
+
+### 30. Dare un voto alla propria previsione, senza internet
+Confrontare la tendenza a 3 h con la **persistenza** («fra tre ore sarà come
+adesso»), che è il riferimento con cui si giudica ogni previsione. Risponde alla
+stessa domanda della voce 7 — *«la mia regola empirica vale qualcosa?»* — senza
+la dipendenza esterna, e può dare la risposta scomoda, che sarebbe un ottimo
+risultato. **Si può provare sui CSV già raccolti prima di scrivere una riga.**
+
+### 31. «Il giorno prima, in una pagina» + i record della stazione
+Una pagina del pannello che si disegna **una volta al giorno** all'uscita dalle
+ore di silenzio (un refresh su 287, cioè lo 0,3 %) — l'uso più adatto che
+esista per un display bistabile — e il confronto con lo storico: *«il 2
+settembre più caldo da quando misuro»*. Entrambe gratis dopo la voce 3. I record
+si **ricalcolano** dal riepilogo, mai accumulati in NVS.
+
+### 32. Il sensore fermo si riconosce meglio guardando le tre grandezze insieme
+Variante della voce 2: che T, RH **e** P restino identiche contemporaneamente
+non è meteorologia — sono due sensori diversi sullo stesso bus I2C. Quasi nessun
+falso positivo, e il caso «lettura fallita» è già distinto perché il nodo
+trasmette NAN.
+
+### 33. `tools/analisi.py` — FATTA il 2026-09-02
+Zero rischio, zero firmware, e **risponde alle tarature** delle voci 22, 30 e
+32 prima di costruirle (è ciò che ha già fatto `refresh_simula.py`). Con i dati
+già sulla card si ricavano: la **costante di tempo termica della casa**, se il
+**sole batte sul sensore esterno** (tutte le massime estive sarebbero sbagliate,
+e nessuna diagnostica attuale lo vedrebbe), il **conteggio degli arieggiamenti**
+(che è anche la controprova della voce 22) e **gli orari del riscaldamento**.
+**Resta da fare**: girarlo sui CSV veri dell'hub — finora ha girato solo su dati
+sintetici. Ha già prodotto due risultati: l'isteresi della voce 22, e la scoperta
+che il metodo ovvio per la costante di tempo sbaglia dell'**87 %** in modo
+silenzioso (37 h dove il vero era 20). Per quello ha un'**autoprova**
+(`--autoprova`) che genera dati con verità note e verifica che gli stimatori le
+ritrovino: *una verifica che non gira mai non si sa se funziona.*
+
+### 34. Il piede di navigazione va generato dalla tabella delle rotte
+Sette copie da tenere allineate a mano, dichiarate come debito in `CLAUDE.md`.
+Un `/nav.js` generato da `ROTTE[]` fa comparire una pagina nel menu **perché è
+stata registrata** — la stessa disciplina di `/api/elenco`. Il piede statico
+resta come rete, o si sposterebbe il punto di rottura invece di toglierlo.
+
+### 35. Le pagine dettaglio si legano al nome del nodo, che può cambiare
+Rinominare un nodo fa scrivere al pannello «NODO NON IN ELENCO» con una
+spiegazione falsa. `param` è `char[24]`: un MAC testuale (17+1) **ci sta**, il
+blob NVS non va toccato. In alternativa una `remote_on_rename()`, che serve
+comunque alla voce 13.
+
+### 36. Prima dei COMMAND, la numerazione anti-doppione
+Nota da fissare *prima* di scrivere la voce 11: un comando accettato senza
+autenticazione può mettere a dormire un nodo per un'ora, e la via di recupero è
+andarci di persona. Un contatore monotono in NVS sul nodo copre il caso facile
+(rigiocare un comando) a un centesimo del costo della cifratura — che comunque
+non protegge l'HELLO, perché il broadcast ESP-NOW non si può cifrare. E
+«dimentica nodo» dovrebbe accodare una **dissociazione**, o il nodo resta
+convinto di essere associato (oggi serve un power-cycle).
+
+### 37. La pagina del nodo promette uno storico che a sonno acceso non arriva
+Con il deep sleep la RAM si azzera 288 volte al giorno, quindi i tre grafici a
+24 h del nodo restano vuoti per costruzione e il trend resta `TREND_IGNOTO` per
+sempre — ma la pagina scrive *«raccolgo dati: servono tre ore di storico»*, che
+è una promessa falsa, e la nota sotto i grafici elenca «riavvio o stacco della
+batteria» dimenticando il risveglio, che è il caso **normale**. Stessa cosa per
+i min/max, che a sonno acceso valgono quanto la lettura corrente e hanno
+l'aspetto di una giornata senza escursione. La previsione vera **c'è già e sta
+sull'hub**: la pagina deve dirlo. **Costo**: bassissimo. Il ragionamento era già
+scritto per intero in `remote_nodes.h` — è stato applicato all'hub e non alla
+pagina del nodo.
+
+### 38. Il watchdog sul nodo vale più che sull'hub: un blocco costa la batteria
+Un hub bloccato perde dati; un nodo bloccato **non si riaddormenta** e svuota
+una cella da 1500 mAh in **~21 ore** (WiFi acceso, ~70 mA) contro i mesi che
+dovrebbe durare. E la rete di sicurezza non aiuta, perché sta *dentro* il
+percorso del sonno: si esegue solo se il codice sta girando, che è proprio ciò
+che non succede. Due timeout diversi: ~60 s nella finestra di veglia (sospeso
+durante l'OTA), ~10 s nel ciclo di risveglio, che dura 0,68 s misurati. **Da
+disarmare prima di `esp_deep_sleep_start()`.** È la voce col miglior rapporto
+valore/costo dell'analisi.
+
+### 39. Il verdetto delle finestre non si fa sul nodo — FATTA (solo commento)
+`MeteoNode_C3.ino` prevede un `ventilation.h` **sul nodo** che ragioni di
+umidità assoluta. La grandezza è quella giusta, il posto no: il verdetto è un
+confronto **fra due nodi**, e un nodo vede solo sé stesso. Stessa ragione per
+cui il trend barometrico è finito sull'hub. Correggere il commento, o qualcuno
+ripartirà dalla parte sbagliata. **Costo**: zero.
+
+---
+
 ## Da fare — idee più vecchie, raccolte da altri documenti
 
 ### 11. Configurare i nodi dall'hub (era "Fase 7" del piano, 2026-08-24)
@@ -302,6 +509,12 @@ premessa era.
 | **Orologio manuale al posto di NTP** (era "Fase 8") | 2026-08-25 | Senza RTC tamponato l'ora impostata a mano non sopravvive a un distacco di corrente: non toglie una dipendenza, la sposta da internet **a una persona**, che deve essere lì dopo ogni blackout e accorgersene. |
 | **Immagine + testo composti a bordo** | 2026-08-28 | Il `.bin` è già retinato: rimpicciolirlo a bordo ricampiona un pattern e produce moiré. La strada giusta è comporre nel browser alla dimensione finale — **fatto** poi in `v12`. |
 | **OTA automatico da GitHub** | 2026-08-30 | Una scheda che si aggiorna da sola, senza che tu possa raggiungerla fisicamente se va storta, è un rischio che non vale la comodità. |
+| **Ritenzione, decimazione o compressione dei CSV su card** | 2026-09-02 | Conto fatto sul formato vero: 82 byte a riga, 23 kB al giorno per nodo, **66 MB all'anno con otto nodi** su 14,9 GB liberi, cioè **232 anni**. Non c'è nessun problema da risolvere, e una politica di cancellazione aggiungerebbe solo un modo nuovo di perdere dati. Se un giorno servisse decimare sarebbe per **velocità di lettura**, che è un problema diverso con una soluzione diversa (il riepilogo giornaliero). |
+| **Server-Sent Events / long polling / WebSocket** per la dashboard | 2026-09-02 | Il `WebServer` del core è **sincrono**: una connessione tenuta aperta dentro un handler blocca `handleClient()`, e con lui OTA, prelievo dei DATA dalla radio e disegno del pannello. Sarebbe il difetto di `streamFile()` reso permanente e per progetto. `/api/rev` (voce 26) ottiene quasi lo stesso risparmio restando su richieste corte. |
+| **Un task FreeRTOS per il disegno del pannello**, per non fermare il `loop()` 2,6 s | 2026-09-02 | Pannello e microSD **condividono il bus SPI**, e `CLAUDE.md` avverte già: *«regge perché tutto gira in `loop()`»*. Si comprerebbe un blocco più corto al prezzo di una classe di guasti (corruzione sul bus condiviso) oggi impossibile per costruzione. Il watchdog (voce 19) e la coda dei DATA (voce 20) tolgono le conseguenze **senza** creare il rischio. |
+| **Calcolare le grandezze derivate sul nodo** | 2026-09-02 | Contraddice la scelta già motivata in `meteo_calc.h`: il nodo trasmette **misure**, e un errore di formula finirebbe nello storico su card per sempre. Sull'hub si ricalcola ad ogni disegno, e i CSV di ieri bastano a rifare i conti. |
+| **Alzare `NODI_VISIBILI` oltre 4** sul pannello | 2026-09-02 | Il limite non è il numero ma il corpo del carattere: da tre nodi in su si passa già al blocco compatto, e a cinque il pannello smetterebbe di leggersi da tre metri — che è la distanza a cui la pagina funziona. Per più nodi ci sono già la pagina dettaglio e la rotazione. |
+| **Cifrare ESP-NOW adesso** (PMK + LMK) | 2026-09-02 | Fattibile — una LMK condivisa sta dentro il limite di sei del chip — ma il **broadcast non si può cifrare**, quindi l'HELLO resta in chiaro e la fase scoperta resta scoperta. Ha senso solo insieme ai COMMAND, e anche allora **dopo** la numerazione anti-doppione (voce 36), che copre il caso facile a un centesimo del costo. In più una chiave finita per sbaglio in un commit va cambiata su tutti i nodi: un OTA ciascuno più un power-cycle per quelli a batteria. |
 
 ---
 
@@ -329,6 +542,8 @@ Solo la riga essenziale: il racconto sta in `docs/Stazione-Meteo.md`.
 | Piede che si misura invece di stimare, e il falso «muto» dopo ogni riavvio | 2026-09-01 | `v39`-`v40` |
 | `tools/larghezza_testo.py`: quanto e' largo un testo prima di disegnarlo | 2026-09-01 | — |
 | **Nodo muto dopo un blackout**: peer riallineati alla radio + `espnow_peer_canale` + `prova-riallineo` | 2026-09-01 | `MeteoNode_C3` `v15`, `EspNowLink` |
+| `tools/analisi.py` + le sue tarature (isteresi del verdetto, bias del tau) | 2026-09-02 | — |
+| **Blocco A**: cadenza dai soli DATA consecutivi, tetto al salto di `seq`, timer per MAC, un WELCOME per giro a turno, stato dell'antighosting in `/api/stato`, testo dell'errore in dashboard | 2026-09-03 | `MeteoHub_S3` `v44`, `EspNowLink` |
 
 ---
 

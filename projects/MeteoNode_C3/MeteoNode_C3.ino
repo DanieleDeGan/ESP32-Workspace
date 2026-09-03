@@ -807,9 +807,20 @@ static void sensorsRestart(const __FlashStringHelper *perche) {
 // Lettura
 // ---------------------------------------------------------------------------
 // Punto di rugiada con la formula di Magnus. Qui serve solo a dire "il numero
-// e' plausibile": la logica vera del "quando aprire le finestre" andra' in un
-// ventilation.h header-only, come comfort.h di EnvNode_C3, e ragionera' di
-// umidita' assoluta, non di sola temperatura.
+// e' plausibile".
+//
+// IL "QUANDO APRIRE LE FINESTRE" NON SI FA QUI, e questo commento diceva il
+// contrario: prevedeva un ventilation.h header-only su questo nodo, come
+// comfort.h di EnvNode_C3. Sulla grandezza aveva ragione -- si ragiona di
+// umidita' ASSOLUTA, non di sola temperatura, ed e' la stessa conclusione a
+// cui e' arrivato poi meteo_calc.h sull'hub. Sul posto no: il verdetto e' un
+// CONFRONTO FRA DUE NODI (dentro contro fuori), e un nodo vede solo se'
+// stesso -- quello esterno non sa che esiste un salotto.
+//
+// Va quindi sull'hub, che e' l'unico posto dove i due numeri si incontrano.
+// E' esattamente la ragione per cui ci e' finito anche il trend barometrico
+// (vedi remote_nodes.h): non e' una scelta di comodo, e' l'unico posto dove il
+// calcolo ha gli ingredienti.
 static float dewPointC(float tempC, float rhPct) {
   const float a = 17.62f, b = 243.12f;
   const float g = (a * tempC) / (b + tempC) + logf(rhPct / 100.0f);

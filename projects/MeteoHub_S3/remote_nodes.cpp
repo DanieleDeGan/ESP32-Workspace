@@ -49,6 +49,12 @@ static const uint32_t SOGLIA_MAX_S     = 7200;   // 2 h
 // scatterebbe mai piu'.
 static const uint32_t INTERVALLO_MAX_S = 21600;  // 6 h
 
+// Oltre questo, un salto di seq non e' una perdita radio ma un contatore
+// sporco: mille pacchetti persi di fila sono gia' oltre tre giorni di
+// silenzio a 300 s, cioe' molto piu' di quanto un nodo possa tacere restando
+// in elenco (la soglia del muto e' al massimo 2 h). Vedi seqAssurdi.
+static const uint32_t PERSI_SALTO_MAX = 1000;
+
 // ---------------------------------------------------------------------
 //  Stato
 // ---------------------------------------------------------------------
@@ -427,13 +433,39 @@ static void aggiornaDaLibreria() {
       const uint32_t deltaS = (millis() - r->ultimoMs) / 1000;
 
       if (dato.seq > r->seq) {
-        r->persi += (dato.seq - r->seq - 1);
-        // La cadenza si impara solo dai messaggi in sequenza: un delta
-        // misurato a cavallo di un riavvio del nodo non e' la sua cadenza.
-        if (deltaS >= 1 && deltaS <= INTERVALLO_MAX_S) {
+        const uint32_t salto = dato.seq - r->seq - 1;
+
+        // Il salto ha un TETTO. Il seq attraversa il deep sleep passando dalla
+        // RTC memory, e un valore sporco letto da li' (un byte, una migrazione
+        // di formato a meta') diventerebbe qualche milione di "pacchetti
+        // persi" permanenti: un contatore avvelenato da un pacchetto solo, che
+        // poi nessuno puo' piu' azzerare se non riavviando l'hub.
+        //
+        // Il pacchetto NON si scarta: il dato e' buono, e' la numerazione a
+        // essere strana. E il salto si conta a parte invece di sparire, o si
+        // sostituirebbe un numero sbagliato con un silenzio.
+        if (salto <= PERSI_SALTO_MAX) r->persi += salto;
+        else                          r->seqAssurdi++;
+
+        // La cadenza si impara SOLO dai messaggi CONSECUTIVI, e non basta che
+        // il seq cresca. Con un pacchetto perso il delta e' due periodi, con
+        // due buchi tre, e la media mobile a peso 1/4 se li porta dentro: da
+        // 300 s si passa a 375 con un buco solo, e servono otto pacchetti per
+        // rientrare. Nel frattempo si sposta tutto quello che dipende dalla
+        // cadenza — sogliaMuto (2,5 x intervallo, cioe' tre minuti di ritardo
+        // nel dichiarare morto un nodo che lo e' davvero), nodoInRitardo() e
+        // cadenzaNodiMs(), che decide ogni quanto si ridisegna il pannello.
+        //
+        // Un delta misurato a cavallo di un buco non e' un periodo rumoroso da
+        // mediare: e' il periodo di un'altra grandezza. Prima qui c'era la sola
+        // guardia `dato.seq > r->seq`, che esclude i riavvii del nodo (il seq
+        // che torna indietro) — cioe' il caso di cui parlava il commento — e
+        // non i buchi.
+        if (salto == 0 && deltaS >= 1 && deltaS <= INTERVALLO_MAX_S) {
           r->intervalloS = (r->intervalloS == 0)
                            ? deltaS
                            : (r->intervalloS * 3 + deltaS) / 4;   // media mobile
+          if (r->intervalloCampioni < UINT16_MAX) r->intervalloCampioni++;
         }
       } else {
         // seq tornato indietro: il nodo e' ripartito da zero. Con nodi a
