@@ -154,7 +154,14 @@
 // La versione avanza lo stesso: il sorgente e' cambiato, e due sorgenti
 // diversi non possono chiamarsi entrambi v46. FW_VERSION e' l'unico modo di
 // sapere da remoto cosa sta girando davvero.
-static const char FW_VERSION[] = "v47";
+// v48 (2026-09-03) — anche il PRIMO delta dopo un riavvio di un nodo non e'
+// un periodo, e va saltato come i buchi. E' il residuo della correzione della
+// v44, trovato guardando i numeri veri subito dopo aver aggiornato il nodo a
+// batteria: il suo primo DATA dopo il riavvio e' arrivato 671 s dopo il
+// precedente invece di 300 — in mezzo c'era il boot piu' la finestra di veglia
+// da 5 minuti — e siccome il seq era consecutivo (1->2) la media mobile se
+// l'e' preso: cadenza appresa 393 s e soglia del muto 1012 invece di 780.
+static const char FW_VERSION[] = "v48";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW

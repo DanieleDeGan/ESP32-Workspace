@@ -78,6 +78,13 @@ struct RemoteNode {
   // non una stima presa dai buchi.
   uint16_t intervalloCampioni;
 
+  // Il PRIMO delta dopo un riavvio del nodo non e' un periodo, anche se il
+  // seq e' consecutivo: in mezzo c'e' il boot, e su un nodo a batteria pure
+  // la finestra di veglia da 5 minuti. Misurato il 2026-09-03: 671 s invece
+  // di 300, che nella media mobile a peso 1/4 diventano 393 s di cadenza
+  // appresa e 1012 s di soglia del muto invece di 780.
+  bool     saltaDelta;
+
   time_t   ultimoTs;        // ora a muro dell'ultimo DATA (0 = mai)
   uint32_t ultimoMs;        // millis() dell'ultimo DATA
   uint32_t intervalloS;     // cadenza osservata (0 = non ancora nota)

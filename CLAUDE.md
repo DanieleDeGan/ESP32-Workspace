@@ -1111,6 +1111,18 @@ la RAM ad ogni risveglio, quindi il suo storico **non può** stare su di lui.
   non i **buchi**. `/api/nodi` espone `intervallo_campioni`: se sta fermo
   mentre `persi` sale, la cadenza mostrata è l'ultima buona, non una stima
   presa dai buchi.
+- **E nemmeno il PRIMO delta dopo un RIAVVIO del nodo** (`v48`, 2026-09-03): e'
+  consecutivo nel `seq` ma non e' un periodo, perche' in mezzo c'e' il boot — e
+  su un nodo a batteria pure la finestra di veglia da 5 minuti. **Misurato**: il
+  primo DATA dopo l'aggiornamento del nodo a batteria e' arrivato **671 s** dopo
+  il precedente invece di 300, e la media mobile lo ha portato a **393 s** di
+  cadenza appresa con la soglia del muto a **1012 invece di 780**. E' lo stesso
+  difetto dei buchi visto dall'altro lato: `riavvii++` arma un flag e il delta
+  successivo si scarta, **uno solo**.
+  - **Provato sul campo** riavviando apposta il nodo a muro: `pacch` 2→3 con
+    `seq` 1→2 consecutivo e `camp` **fermo a 0** (il delta saltato), poi
+    `camp` 1 con `intervallo` **300 al primo campione** — cioe' giusto subito,
+    invece di partire da 393 e ricadere in quaranta minuti.
 - **Il salto di `seq` ha un tetto** (`PERSI_SALTO_MAX`, 1000). Il `seq`
   attraversa il deep sleep passando dalla RTC memory: un valore sporco letto da
   lì diventerebbe qualche milione di "pacchetti persi" **permanenti**, cioè un

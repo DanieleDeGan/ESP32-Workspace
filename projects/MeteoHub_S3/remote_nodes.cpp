@@ -462,16 +462,32 @@ static void aggiornaDaLibreria() {
         // che torna indietro) — cioe' il caso di cui parlava il commento — e
         // non i buchi.
         if (salto == 0 && deltaS >= 1 && deltaS <= INTERVALLO_MAX_S) {
-          r->intervalloS = (r->intervalloS == 0)
-                           ? deltaS
-                           : (r->intervalloS * 3 + deltaS) / 4;   // media mobile
-          if (r->intervalloCampioni < UINT16_MAX) r->intervalloCampioni++;
+          // ...e nemmeno il PRIMO delta dopo un riavvio del nodo, che e'
+          // consecutivo nel seq ma non e' un periodo: in mezzo c'e' il boot,
+          // e su un nodo a batteria pure la finestra di veglia da 5 minuti.
+          //
+          // E' lo stesso difetto dei buchi visto dall'altro lato, ed e' stato
+          // MISURATO il 2026-09-03 sul nodo a batteria appena aggiornato: il
+          // primo DATA dopo il riavvio e' arrivato 671 s dopo il precedente
+          // invece di 300, e la media mobile lo ha portato a 393 s di cadenza
+          // appresa (300*3 + 671)/4 -- con la soglia del muto salita da 780 a
+          // 1012 s, cioe' quattro minuti di ritardo nel dichiarare morto un
+          // nodo che lo e' davvero.
+          if (r->saltaDelta) {
+            r->saltaDelta = false;
+          } else {
+            r->intervalloS = (r->intervalloS == 0)
+                             ? deltaS
+                             : (r->intervalloS * 3 + deltaS) / 4;   // media mobile
+            if (r->intervalloCampioni < UINT16_MAX) r->intervalloCampioni++;
+          }
         }
       } else {
         // seq tornato indietro: il nodo e' ripartito da zero. Con nodi a
         // batteria e' un'informazione che vale, perche' un nodo che si
         // riavvia spesso ha un problema di alimentazione, non di radio.
         r->riavvii++;
+        r->saltaDelta = true;   // il prossimo delta comprende il boot: non e' un periodo
       }
     }
 
