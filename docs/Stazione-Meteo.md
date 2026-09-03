@@ -1,5 +1,192 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-03 — leggere il codice invece delle idee, e sei difetti
+
+Una lettura sistematica di `MeteoHub_S3` (`v43`), `MeteoNode_C3` (`v15`) e
+`EspNowLink` partendo dai **sorgenti** invece che dalle idee. Il taccuino delle
+feature era già curato e non serviva un'altra lista di cose belle da fare:
+serviva sapere cosa il codice fa oggi e non fa bene. Il risultato è in
+`docs/Proposte-2026-09-02.md` (commit `bd259a4`), riassunto una riga per voce nel
+backlog (17-40); qui il racconto e i numeri.
+
+Ne sono usciti **sei difetti**, e tre falsavano numeri su cui si sarebbero
+appoggiate le statistiche future — cioè il tipo di errore che si eredita in
+silenzio. Sono stati corretti tutti in `v44` (commit `96dd404`), che è in
+servizio dalle 06:39 del 03/09.
+
+### Il difetto che spostava tutto il resto
+
+`aggiornaDaLibreria()` imparava la cadenza di un nodo da **qualunque** DATA con
+`seq` crescente. Il commento sopra quel codice diceva la cosa giusta —
+*«la cadenza si impara solo dai messaggi in sequenza»* — ma la guardia che
+c'era (`dato.seq > r->seq`) esclude i **riavvii**, cioè il caso di cui parla il
+commento, e **non i buchi**.
+
+Con un pacchetto perso il delta è due periodi, e la media mobile a peso ¼ se lo
+porta dentro:
+
+| pacchetti persi di fila | delta misurato | cadenza appresa |
+|---|---|---|
+| 0 | 300 s | 300 s |
+| 1 | 600 s | **375 s** |
+| 2 | 900 s | **450 s** |
+
+e da 375 si torna a 300 in **otto pacchetti**, cioè quaranta minuti. Nel
+frattempo si sposta tutto ciò che dalla cadenza dipende: `sogliaMuto`
+(2,5 × intervallo, quindi un nodo davvero morto dichiarato muto a 967 s invece
+che a 780 — **tre minuti buoni di ritardo**, per un pacchetto perso solo),
+`nodoInRitardo()` e `cadenzaNodiMs()`, che decide ogni quanto si ridisegna il
+pannello.
+
+**Un delta misurato a cavallo di un buco non è un periodo rumoroso da mediare:
+è il periodo di un'altra grandezza.** La correzione è una condizione
+(`salto == 0`), e accanto c'è `intervallo_campioni`: se sta fermo mentre `persi`
+sale, la cadenza mostrata è l'ultima buona e non una stima presa dai buchi.
+Senza quel campo la differenza fra «vecchia» e «sbagliata» non si vedrebbe.
+
+### Gli altri cinque
+
+| | cosa succedeva | dove |
+|---|---|---|
+| `seq` senza tetto | un contatore sporco letto dalla RTC memory poteva iniettare **milioni** di «pacchetti persi» permanenti in `persi`, e nessuno può azzerarli. Ora i salti fuori scala vanno in `seq_assurdi`, che compare in `/api/salute` | `remote_nodes.cpp` |
+| timer per posizione | `remote_forget()` **compatta** il registro e i suoi array paralleli, ma quello nello sketch nessuno lo compattava. Ora si indicizza per MAC | `MeteoHub_S3.ino` |
+| WELCOME tutti insieme | fino a **8 s di `loop()` fermo** dopo un blackout, proprio mentre tutti i nodi ritrasmettono. Ora uno per giro, a turno | `EspNowLink` |
+| antighosting invisibile | `epd_parziali_da_full` e `epd_ultimo_full` in `/api/stato`: il ghosting è l'unica cosa che l'anteprima del pannello non può mostrare | `web_ui.cpp` |
+| errore ingoiato | la dashboard mostrava `404 Not Found` invece di «file inesistente». È la lezione di `postJson()` applicata a metà | `www/dashboard.html` |
+
+Più una riga di commento in `MeteoNode_C3.ino`: prevedeva un `ventilation.h`
+**sul nodo** per il «quando aprire le finestre». Sulla grandezza aveva ragione
+(umidità **assoluta**), sul posto no — il verdetto è un confronto **fra due
+nodi**, e un nodo vede solo sé stesso. Va sull'hub, per la stessa ragione per
+cui ci è finito il trend barometrico. Solo commento: il nodo resta `v15` e non
+è stato riflashato.
+
+### Due volte la correzione ovvia era sbagliata
+
+È la parte che vale la pena ricordare, perché in entrambi i casi la versione
+sbagliata sembrava a posto.
+
+**Il `break` che affama.** Per i WELCOME avevo scritto «una riga: `break` invece
+di continuare il ciclo». Non basta, e **introduce un guasto peggiore**: il flag
+`welcomePending` si pulisce solo se l'invio riesce — di proposito — quindi
+ripartendo sempre dall'indice 0 un nodo spento a metà associazione si prende
+**l'unico invio di ogni giro** e gli altri non ricevono mai il loro WELCOME. Da
+un blocco di otto secondi si sarebbe passati a un'associazione che non funziona
+più, in silenzio. Serve un **turno**: si riparte da dove ci si era fermati.
+
+**Lo stimatore che dava un numero credibile e sbagliato.** Fra le analisi c'è la
+costante di tempo termica della casa: di notte, a impianto fermo, la differenza
+dentro-fuori decade e il τ che ne esce descrive l'involucro. Il metodo naturale
+— adattare un'esponenziale a `ln(ΔT)` — su dati costruiti **con τ = 20,0 h**
+restituisce **37 h**, notte dopo notte, con un R² di 0,7. Plausibile, stabile,
+sbagliato dell'87 %.
+
+La causa: quel modello presuppone che l'**esterna sia costante**, e di notte
+scende anche lei, quindi la differenza cala più lentamente di quanto la casa si
+raffreddi. Adattando l'equazione vera — `dT_in/dt = (T_out − T_in)/τ`, dove
+l'esterna compare esplicitamente — lo stimatore ritrova **19,8-21,1 h** su otto
+notti.
+
+**Il punto non è τ**, che è la voce meno importante del documento: è che
+quell'errore era **invisibile**. Senza un valore vero da confrontare sarebbe
+finito nei documenti come una misura della casa, e ci sarebbe rimasto.
+
+### `tools/analisi.py`, e perché ha un'autoprova
+
+Lo strumento che risponde con i CSV veri alle domande di taratura delle
+proposte: completezza delle giornate, cadenza con e senza la correzione, la
+tendenza a 3 h contro la **persistenza**, sensore fermo, soglia del verdetto
+finestre, riepilogo giornaliero e gradi giorno, profilo orario (il sole sul
+sensore), arieggiamenti, costante di tempo. Solo libreria standard, come gli
+altri script del repo.
+
+Ha già cambiato una proposta prima ancora di girare sui dati veri: **la soglia
+del verdetto va applicata con isteresi, non come banda secca.**
+
+| soglia | cambi/giorno, **isteresi** | cambi/giorno, banda secca |
+|---|---|---|
+| 0,0 g/m³ | 10,9 | 10,9 |
+| 0,3 g/m³ | **2,9** | 26,4 |
+| 0,5 g/m³ | **1,7** | 22,3 |
+
+Con la banda, attraversare la zona neutra fa cambiare il verdetto **due volte**
+(asciuga → indifferente → bagna): allargare la soglia per calmare la striscia la
+rende **più** irrequieta, cioè l'opposto dell'intenzione. È la stessa scelta che
+`forecast.h` ha già fatto per il trend, e la regola generale è: **quando una
+soglia serve a calmare qualcosa, la forma giusta è quasi sempre l'isteresi.**
+
+E per la ragione detta sopra c'è `python tools/analisi.py --autoprova`, che
+genera dati con verità **note** e verifica che gli stimatori le ritrovino
+(4 prove su 4). Vale la disciplina di `prova-canale` e `prova-riallineo`: una
+verifica che non gira mai non si sa se funziona.
+
+### Verificato sull'hardware
+
+OTA di 1,44 MB in **8,3 s**, riavvio pulito (`SW`, `boot_count` 48 → 49),
+impostazioni NVS intatte (altitudine 29 m, fascia 21:00 → 07:00), i due nodi
+ripristinati dal registro.
+
+Dopo mezz'ora: `pacchetti=6 / intervallo_campioni=5` e `pacchetti=5 / 4`. È
+**l'invariante `camp = pacch − 1`**, che regge quando non ci sono buchi: ogni
+delta fra due pacchetti consecutivi ha contribuito e nessun buco ha inquinato.
+`persi` e `seq_assurdi` a zero, `/api/salute` **ok** su tutti i giri, il conto
+che torna ad ogni passo (6 = 6+0+0).
+
+I due contatori nuovi si sono confermati a vicenda con i tempi, all'uscita dalla
+fascia notturna:
+
+```
+06:59  in_silenzio=True   refresh=2  parziali_da_full=0  ultimo_full=06:39:24
+07:00  in_silenzio=False  refresh=3  parziali_da_full=0  ultimo_full=07:00:02  2645 ms
+07:02  in_silenzio=False  refresh=4  parziali_da_full=1  ultimo_full=07:00:02  1053 ms
+```
+
+Alle 07:00:02 un **completo**: `ultimo_full` si sposta, `parziali_da_full` resta
+0, e 2645 ms sono i ~2630 misurati il 31/08. Alle 07:02 un **parziale**:
+`parziali_da_full` va a 1, `ultimo_full` non si muove, e 1053 ms sono i ~1040
+documentati. Il contatore dice «parziale» e il cronometro conferma «parziale».
+
+### `v43`, che non aveva un'annotazione qui
+
+Ricostruita dal codice e dalle note, non raccontata: era già in servizio dal
+02/09 ma non committata, ed è uscita insieme a `v44` nello stesso commit —
+separarle avrebbe prodotto un commit intermedio ricostruito a mano e mai
+compilato, cioè una storia più ordinata e falsa.
+
+- **La fascia di silenzio si imposta a quarti d'ora** (0..95 dalla mezzanotte).
+  I quarti stanno in **due chiavi NVS separate** (`silq_da`/`silq_a`) e nel blob
+  resta l'**ora piena**: cambiare `PagBlob` ne cambierebbe il `sizeof`, e un
+  ritorno al firmware precedente farebbe sparire **tutte** le pagine. È la
+  regola generale da riusare quando si aggiunge risoluzione a un campo già
+  persistito. Le funzioni hanno un nome nuovo (`pages_silenzio_da_q()`,
+  `pages_set_silenzio_q()`) apposta: l'unità è cambiata sotto lo stesso
+  `uint8_t`, quindi un chiamante rimasto indietro deve **smettere di compilare**
+  invece di scambiare le 21:00 per le 05:15.
+- **`sil_pagina=253`**: l'immagine della notte si sorteggia fra **tutte** quelle
+  sulla card e **non consuma uno slot** — di notte serve un file, non una
+  pagina. Il nome finisce in `silenzio_immagine`, perché mentre è a schermo
+  `corrente` descrive il modello delle pagine e non il vetro.
+
+Verificata di passaggio durante l'OTA: alle 06:39 l'hub era dentro la fascia e ha
+sorteggiato `Together`, `in_silenzio: true`, `sospeso: true` — quindi
+`epd_refresh` è restato fermo fino alle 07:00, e non era un guasto.
+
+### Cosa resta scoperto
+
+- **Non esiste un binario `v43`**: il rollback da `v44` è `v42`, e passa per la
+  perdita temporanea della fascia a quarti d'ora finché non si ricompila.
+- **`analisi.py` non ha ancora girato sui CSV veri.** Le soglie che propone
+  vengono da dati sintetici: sono ragionevoli, non misurate.
+- Il **Blocco B** del documento — il tempo di giro dell'hub, il watchdog, il
+  diario degli eventi, l'ascolto durante l'associazione — è quello con il
+  rapporto valore/rischio migliore, perché non cambia il comportamento di
+  niente: aggiunge solo occhi. E serve a questo giro: **il blocco degli otto
+  secondi corretto oggi non lascia traccia in nessun contatore attuale**, quindi
+  non c'è modo di sapere quante volte era successo prima.
+- Sul **nodo** il watchdog vale ancora di più che sull'hub: un hub bloccato
+  perde dati, un nodo bloccato non si riaddormenta e svuota una cella da
+  1500 mAh in **~21 ore** contro i mesi che dovrebbe durare.
+
 ## Aggiornamento del 2026-09-01 (4) — il blackout, e il nodo che sembrava sano
 
 È saltata la corrente. Verifica a caldo dei tre dispositivi:
