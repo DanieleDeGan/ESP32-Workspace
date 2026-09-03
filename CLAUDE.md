@@ -736,6 +736,36 @@ dall'altro un nodo convinto di essere associato: **nessuno dei due dice che
 sta parlando con qualcun altro**, e la lettura giusta viene solo dal campo
 `espnow_hub` del nodo confrontato col MAC dell'hub che ci si aspetta.
 
+**L'RSSI c'e', in `hub_on_new_peer()`, e per anni nessuno l'ha letto.** Il
+commento in `EspNowLink.h` diceva che l'RSSI non e' disponibile: e' vero del
+**wrapper Arduino** (`ESP32_NOW.cpp` butta `info` prima di chiamare
+`onReceive()`), non di quel callback, che riceve `esp_now_recv_info_t` e quindi
+`rx_ctrl->rssi`. Non e' l'RSSI di ogni pacchetto — per quello servirebbe
+sostituire il dispatch — ma e' esattamente quello che serve **mentre si
+associa**: dice se il nodo e' dove si pensa che sia, prima di adottarlo.
+
+**L'ascolto durante l'associazione** (`Link_Hub_Unknown()`, hub da `v45`, esposto
+su `/api/pairing/ascolto`). Quando un nodo non si associava, l'hub non mostrava
+**niente**: nessun tentativo, nessun contatore. Le cause sono almeno cinque
+(canale sbagliato, nodo legato a un altro hub, registro pieno, versione diversa,
+nodo che non trasmette) e da fuori erano tutte una lista che non cresce.
+L'informazione veniva buttata **due volte** nello stesso callback: un `return`
+fuori dalla finestra di pairing e un altro sul payload non parsabile.
+
+- **Si annota SEMPRE, anche fuori dalla finestra**: contare non e' adottare.
+  L'hub resta sordo — quella scelta non cambia — ma smette di essere ignaro, e
+  la UI puo' dire «un nodo sconosciuto sta cercando un hub, RSSI -62, 8 s fa».
+- **Lunghezza e versione si guardano SEPARATAMENTE**: `link_parse_message()`
+  torna `false` per entrambe, ma «non e' il nostro protocollo» e «e' il nostro,
+  di un'altra versione» mandano a cercare in due posti diversi.
+- **E' un anello di sei voci, non un log**: senza tetto, un vicino con un
+  dispositivo rumoroso lo riempirebbe. Si scrive dal callback della radio,
+  quindi dentro la sezione critica va solo una copia di pochi byte.
+- **Il limite sta nella risposta**, non lasciato dedurre: un elenco vuoto
+  significa che nessun nodo sta **cercando** un hub, non che non ce ne siano di
+  accesi — uno gia' associato altrove non manda HELLO, e i suoi DATA vanno in
+  unicast a un altro MAC, quindi questa scheda non li riceve nemmeno.
+
 **Un WELCOME per giro, e a turno** (da `v44` dell'hub, 2026-09-03).
 `Link_Hub_Poll()` mandava un WELCOME a **ogni** peer in attesa nello stesso
 giro, e `sendReliable()` blocca fino a ~1 s l'uno: con otto nodi che si
@@ -1501,6 +1531,69 @@ senza di loro si somiglierebbero (schermo che non cambia).
   dell'ultimo OTA e i CSV dei nodi per concludere che non era successo niente:
   con questi due campi sarebbe stata una riga. `boot_count` sta in **NVS**,
   perche' deve sopravvivere proprio all'evento che misura.
+
+- **Il tempo di giro si misura anche qui** (da `v45`): `loop_max_ms`,
+  `loop_max_dove`, `loop_max_ora`, `loop_lenti` in `/api/stato`, trapiantati da
+  `EnvNode_C3`. Serve a distinguere **«si è riavviata»** da **«è rimasta ferma
+  dentro una chiamata»**, che nei CSV hanno lo stesso identico aspetto — un
+  buco — e che `reset_reason`/`boot_count` da soli non separano.
+  - **Il pannello NON entra nel massimo**, ed è deliberato: 2,6 s lì sono
+    normali e coprirebbero per sempre tutto il resto. Si misurano le quattro
+    fasi che vengono **prima di qualunque disegno** (`web`, `nodi`, `seed`,
+    `bottone`), che sono anche tutto ciò che nel `loop()` può bloccare senza
+    doverlo; il disegno ha già `epd_ultimo_ms` e il registro dei refresh.
+  - La fase `web` **non si misura durante un OTA**: sono decine di secondi
+    legittimi. Serve la callback di progresso, che è anche quella che alimenta
+    il watchdog.
+  - Primo dato reale, 25 s dopo l'accensione: `loop_max_ms 1325`, `dove seed` —
+    cioè `seedForecastDaSD()`, la ricostruzione dello storico dai CSV. Una
+    volta per accensione, e non è un guasto: adesso però è un numero.
+
+- **Il watchdog del loop è armato** (hub da `v45`, nodo da `v16`). Fino a lì
+  `app_reset_reason()` traduceva `WDT_TASK`, `WDT_INT` e `WDT` **senza che
+  nessuno potesse produrli**: una diagnosi scritta per un meccanismo che non
+  esisteva. Un `loop()` piantato lasciava un pannello e-ink bistabile, nitido e
+  non più vero, con tutta la diagnostica irraggiungibile insieme all'hub.
+  - **Il baratto va conosciuto**: il core inizializza già il TWDT a 5 s con
+    l'idle task di CPU0 iscritto, e il timeout è **uno solo** per tutto il
+    TWDT. Portarlo a 60 s allunga anche quella protezione — si accetta, perché
+    copre uno scenario in cui la radio è comunque morta, mentre si guadagna la
+    protezione del `loop()`. L'idle di CPU0 resta **iscritto**
+    (`idle_core_mask`): si allunga, non si spegne.
+  - **60 s e non meno**: il caso legittimo più lungo è il budget di invio di un
+    file (20 s) più una `write()` bloccata dentro il core (~10 s). Un timeout
+    stretto trasformerebbe un download lento in un riavvio.
+  - **Durante l'OTA si ALIMENTA, non si sospende** (dalla callback di
+    progresso): così resta armato anche lì, e un aggiornamento che si pianta
+    davvero viene comunque ripreso.
+  - **Sul nodo vale di più**: un hub bloccato perde dati, un nodo bloccato non
+    si riaddormenta e svuota una cella da 1500 mAh in **~21 ore** contro i mesi
+    che dovrebbe durare — e la rete di sicurezza non aiuta, perché sta *dentro*
+    il percorso del sonno. Lì i timeout sono 60 s in veglia e **20 s** nel ciclo
+    di risveglio (non 10: il peggio legittimo è ~9 s, fra `PAIRING_MS` e ricerca
+    del canale), **disarmato prima di `esp_deep_sleep_start()`**, che non torna.
+  - **`wdt_armato` in `/api/stato`**, con avviso in `/api/salute` se è falso:
+    un watchdog configurato male e uno giusto sono indistinguibili da fuori
+    finché non serve, e il log di boot di questa scheda non è leggibile via USB.
+    Non prova che il riavvio funzioni — per quello serve un blocco vero — ma
+    prova che il task è iscritto, che è la metà che si sbaglia in silenzio.
+
+- **Il diario degli eventi** (da `v45`): `/eventi/AAAA-MM.csv` sulla card,
+  `GET /api/eventi`. Esiste perché tre indagini raccontate in
+  `docs/Stazione-Meteo.md` sono state la ricostruzione a mano di un diario che
+  nessuno teneva: i contatori in RAM dicono **quanto**, mai **quando**.
+  - **È una diagnosi, non un log**: una riga per **transizione**, mai una per
+    campione. `nodo_muto` si scrive quando il nodo *diventa* muto, non finché
+    lo è; la card che rifiuta scrive una riga per serie e una quando riprende.
+  - **Tetto per tipo** (dieci righe l'ora) con le soppressioni **dichiarate** in
+    una riga a fine finestra: mai un silenzio.
+  - **L'ora dev'essere vera** (`orario_registrabile()`). Il boot capita *prima*
+    del primo sync NTP, quindi non si può datare quando succede: si tiene da
+    parte e si scrive appena l'orologio è vero, portandosi dietro da quanti
+    secondi la scheda è su.
+  - Il dettaglio è testo libero e finisce in un CSV: virgole e a capo si
+    sostituiscono con spazi invece di virgolettare, perché quel file lo legge
+    anche un occhio umano.
 
 - **Gli handler HTTP che toccherebbero il display accodano e basta**
   (`app_chiedi_pagina()` / `app_chiedi_refresh()`, eseguite dal `loop()`).

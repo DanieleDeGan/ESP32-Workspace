@@ -87,6 +87,7 @@
 #include <esp_wifi.h>     // esp_wifi_stop()/deinit() prima di dormire, vedi vaiADormire()
 #include <esp_now.h>      // esp_now_deinit(): idem, va smontato prima del sonno
 #include <driver/gpio.h>  // gpio_hold_en(): tiene giu' il VDD del sensore nel sonno
+#include <esp_task_wdt.h> // il watchdog: qui un blocco costa la batteria, vedi wdtArma()
 #include <Adafruit_AHTX0.h>
 #include <Adafruit_BMP280.h>
 
@@ -98,6 +99,19 @@
 
 // Da incrementare a ogni firmware caricato: la pagina lo mostra, ed e' l'unico
 // modo per sapere da remoto quale versione sta davvero girando.
+//   v16 2026-09-03  il watchdog e' armato. Qui vale piu' che sull'hub: un hub
+//                   bloccato perde dati, un nodo bloccato NON SI RIADDORMENTA
+//                   e svuota una cella da 1500 mAh in ~21 ore (WiFi acceso,
+//                   ~70 mA) contro i mesi che dovrebbe durare -- e la rete di
+//                   sicurezza non aiuta, perche' sta dentro il percorso del
+//                   sonno e si esegue solo se il codice sta girando. Due
+//                   timeout: 60 s nella finestra di veglia (con l'OTA che lo
+//                   alimenta invece di sospenderlo), 20 s nel ciclo di
+//                   risveglio, disarmato prima di esp_deep_sleep_start().
+//                   NB: 20 e non i 10 previsti dal documento -- il caso
+//                   peggiore legittimo di un risveglio e' ~9 s (4 s di
+//                   pairing + 2,6 s di ricerca del canale + misura e invio),
+//                   e dieci ci passerebbero dentro.
 //   v13 2026-08-29  il canale ESP-NOW mostrato in pagina si chiede alla
 //                   radio invece di ricordare quello dell'avvio: su un nodo
 //                   connesso all'AP il router si sposta e il nodo lo segue
@@ -145,7 +159,7 @@
 //   v2  2026-08-22  storico 24 h in RAM + grafici, previsione dal trend
 //                   barometrico a 3 ore, intervallo e altitudine da pagina web
 //   v1  2026-08-22  bring-up del sensore, web UI, OTA
-static const char FW_VERSION[] = "v15";
+static const char FW_VERSION[] = "v16";
 
 // ---------------------------------------------------------------------
 //  Nome del nodo
@@ -1074,6 +1088,62 @@ const char* app_reset_reason() {
 
 uint32_t app_boot_count() { return s_bootCount; }
 
+// ---------------------------------------------------------------------------
+// Watchdog
+// ---------------------------------------------------------------------------
+// app_reset_reason() qui sopra traduce WDT_TASK, WDT_INT e WDT, ma non c'era
+// una sola chiamata a esp_task_wdt_add(): tre stringhe che non potevano
+// comparire.
+//
+// SU UN NODO A BATTERIA UN BLOCCO NON E' UNA PERDITA DI DATI, E' LA CARICA.
+// Un hub bloccato smette di registrare e prima o poi qualcuno se ne accorge;
+// un nodo bloccato NON SI RIADDORMENTA:
+//
+//   dove si blocca                    corrente     una cella da 1500 mAh dura
+//   finestra di veglia, WiFi acceso   ~70 mA       ~21 ore
+//   ciclo di risveglio, solo ESP-NOW  ~30-70 mA    1-2 giorni
+//   funzionamento normale             ~0,27 mA     mesi
+//
+// E la rete di sicurezza non aiuta: sta DENTRO il percorso del sonno
+// (RISVEGLI_MUTI_MAX), quindi si esegue solo se il codice sta girando, che e'
+// precisamente cio' che in questo caso non succede.
+//
+// DUE TIMEOUT, e il piu' corto non e' quello che avevo previsto. Il documento
+// proponeva 10 s per il ciclo di risveglio, contando la veglia misurata di
+// 0,68 s; ma il caso peggiore LEGITTIMO e' ~9 s (4 s di PAIRING_MS + ~2,6 s di
+// ricerca del canale su tredici canali + misura e invio con i ritentativi), e
+// dieci secondi ci passerebbero dentro. Venti danno il margine senza rinunciare
+// a niente: contro un blocco vero, 20 s e 10 s si equivalgono.
+static const uint32_t WDT_RISVEGLIO_MS = 20000;
+static const uint32_t WDT_VEGLIA_MS    = 60000;
+
+static void wdtArma(uint32_t timeout_ms)
+{
+  esp_task_wdt_config_t cfg = {};
+  cfg.timeout_ms     = timeout_ms;
+  cfg.idle_core_mask = 0;    // sul C3 il core non iscrive nessun idle task
+  cfg.trigger_panic  = true; // riavvia, cosi' reset_reason lo dice
+
+  esp_err_t e = esp_task_wdt_init(&cfg);
+  if (e == ESP_ERR_INVALID_STATE) e = esp_task_wdt_reconfigure(&cfg);
+  if (e != ESP_OK) {
+    Serial.printf("[wdt] non configurato (%d)\n", (int)e);
+    return;
+  }
+  if (esp_task_wdt_add(NULL) != ESP_OK) {
+    Serial.println(F("[wdt] il task loop non si e' iscritto"));
+    return;
+  }
+  Serial.printf("[wdt] armato, timeout %lu s\n", (unsigned long)(timeout_ms / 1000));
+}
+
+// Da chiamare PRIMA di esp_deep_sleep_start(): quella non torna, e un watchdog
+// ancora iscritto a un task che non esiste piu' sarebbe un riavvio a caso.
+static void wdtDisarma()
+{
+  esp_task_wdt_delete(NULL);
+}
+
 bool     app_sleep_enabled() { return s_sleepOn; }
 
 const char* app_node_name() { return nodeName(); }
@@ -1222,6 +1292,9 @@ static void handleSerial() {
 // ---------------------------------------------------------------------------
 static void onOtaProgress(int percent, const char* what) {
   s_otaLastMs = millis();   // vedi la guardia in loop(): non dormire adesso
+  // Il watchdog si alimenta qui invece di sospenderlo: cosi' resta armato, e
+  // un aggiornamento che si pianta davvero viene comunque ripreso.
+  esp_task_wdt_reset();
   static int last = -1;
   if (percent == last) return;
   last = percent;
@@ -1340,6 +1413,12 @@ static void vaiADormire() {
   esp_wifi_deinit();
   delay(100);
 
+  // Il watchdog si disarma per ULTIMO, appena prima di dormire: fino a qui la
+  // sequenza di spegnimento e' ancora codice che puo' piantarsi, ed e' meglio
+  // che sia sorvegliata. esp_deep_sleep_start() non torna, quindi da questo
+  // punto in poi non c'e' piu' nessun task da sorvegliare.
+  wdtDisarma();
+
   esp_sleep_enable_timer_wakeup((uint64_t)secondi * 1000000ULL);
   esp_deep_sleep_start();
 }
@@ -1389,8 +1468,9 @@ static void cicloRisveglio() {
     hub_begin_ex(nodeName(), s_rtcChannel);
     const uint32_t t0 = millis();
     while (!hub_paired() && millis() - t0 < PAIRING_MS) {
-      hub_loop();
-      delay(10);
+      esp_task_wdt_reset();   // 4 s stanno dentro i 20 del timeout, ma questa
+      hub_loop();             // e' l'unica attesa lunga del ciclo: meglio
+      delay(10);              // esplicita che implicita
     }
   }
 
@@ -1495,8 +1575,17 @@ void setup() {
   // secondi sono piu' di quanto duri tutto il ciclo di un risveglio.
   bootDiagBegin();
   if (s_resetReason == ESP_RST_DEEPSLEEP && s_rtcMagic == RTC_MAGIC) {
+    // Il ciclo di risveglio dura 0,68 s misurati, e nel caso peggiore ~9 s
+    // (4 s di pairing + 2,6 s di ricerca del canale + misura e invio).
+    // Vent secondi sono il doppio abbondante di quel peggio.
+    wdtArma(WDT_RISVEGLIO_MS);
     cicloRisveglio();   // non ritorna: finisce in deep sleep
   }
+
+  // Percorso normale: 5 minuti di veglia con WiFi e OTA. Timeout lungo come
+  // sull'hub, per la stessa ragione -- un aggiornamento in corso non deve
+  // diventare un riavvio a meta'.
+  wdtArma(WDT_VEGLIA_MS);
 
   const uint32_t t0 = millis();
   while (!Serial && millis() - t0 < 3000) delay(10);   // CDC: aspetta il monitor
@@ -1551,6 +1640,7 @@ void setup() {
 }
 
 void loop() {
+  esp_task_wdt_reset();   // il giro e' vivo
   net_loop();          // ArduinoOTA + richieste web: a OGNI giro, o l'OTA muore
   runPendingCmd();     // dopo net_loop(): la risposta HTTP e' gia' partita
   handleSerial();

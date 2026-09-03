@@ -363,6 +363,55 @@ bool Link_Hub_GetPeerInfo(int index, uint8_t mac_out[6], link_node_type_t *type_
  *  tentativo fallisce. */
 bool Link_Hub_SendCommand(const uint8_t mac[6], link_message_t *msg);
 
+/* -------------------------------------------------------------------------
+ *  L'orecchio: chi bussa e non entra
+ * -------------------------------------------------------------------------
+ * Quando un nodo non si associa, l'hub non aveva NIENTE da mostrare: non un
+ * elenco di tentativi, non un contatore, non un log. Le cause possibili sono
+ * almeno cinque -- canale sbagliato, nodo ancora legato a un altro hub,
+ * registro pieno, versione di protocollo diversa, nodo che non trasmette
+ * affatto -- e da fuori si presentavano tutte allo stesso modo: una lista di
+ * nodi che non cresce.
+ *
+ * L'informazione c'era gia' e veniva buttata via due volte, in
+ * hub_on_new_peer(): un return silenzioso fuori dalla finestra di pairing, e
+ * un altro quando il payload non si parsa. Adesso si annota SEMPRE, anche
+ * fuori dalla finestra -- contare non e' adottare -- e con l'RSSI, che
+ * quel callback riceve in info->rx_ctrl e nessuno leggeva.
+ *
+ * IL LIMITE VA DETTO IN PAGINA, o il silenzio inganna: un nodo che si crede
+ * gia' associato a un altro hub NON manda HELLO, e i suoi DATA vanno in
+ * unicast a quell'altro MAC, quindi questa scheda non li riceve nemmeno a
+ * livello radio. Un elenco vuoto non significa "non c'e' nessun nodo acceso":
+ * significa "nessun nodo sta cercando un hub".
+ */
+
+/** Perche' un messaggio da un MAC sconosciuto non e' diventato un nodo. */
+typedef enum {
+    LINK_UNK_HELLO       = 0,  /* HELLO valido: adottato, o in attesa che si apra la finestra */
+    LINK_UNK_DATA_ORFANO = 1,  /* DATA unicast da sconosciuto: si crede gia' associato a noi */
+    LINK_UNK_LUNGHEZZA   = 2,  /* payload di lunghezza diversa: non e' il nostro protocollo */
+    LINK_UNK_VERSIONE    = 3,  /* protocol_version diversa dalla nostra */
+    LINK_UNK_ALTRO       = 4,  /* messaggio valido ma non HELLO ne' DATA */
+    LINK_UNK_PIENO       = 5,  /* registro pieno: non c'e' posto per un altro nodo */
+} link_unknown_esito_t;
+
+/** Quante voci tiene l'anello. E' un anello e non un log: se crescesse senza
+ *  limite, un vicino con un dispositivo rumoroso lo riempirebbe. */
+#define LINK_UNKNOWN_MAX 6
+
+/** Legge la voce `i` (0..LINK_UNKNOWN_MAX-1). false se lo slot e' vuoto.
+ *  Ogni puntatore di uscita puo' essere NULL. */
+bool Link_Hub_Unknown(int i, uint8_t mac_out[6], int8_t *rssi_out,
+                      uint32_t *last_ms_out, uint16_t *quante_out,
+                      uint8_t *esito_out);
+
+/** Svuota l'anello. */
+void Link_Hub_UnknownClear(void);
+
+/** Testo dell'esito, per la UI. */
+const char *Link_Hub_UnknownEsito(uint8_t esito);
+
 #ifdef __cplusplus
 }
 #endif

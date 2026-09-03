@@ -35,6 +35,19 @@ uint32_t    app_epd_orologio_ms(); // e quanto costa il solo orologio
 uint32_t    app_epd_parziali_da_full();  // parziali accumulati (pagina nodi)
 time_t      app_epd_ultimo_full_ts();    // ora dell'ultimo completo (0 = mai)
 
+// Quanto e' durato il giro piu' lungo, e dove. NON comprende il disegno del
+// pannello, che e' legittimamente lungo e ha i suoi contatori: qui c'e' solo
+// cio' che nel loop puo' bloccare senza doverlo.
+uint32_t    app_loop_max_ms();
+const char* app_loop_max_dove();
+time_t      app_loop_max_ts();
+uint32_t    app_loop_lenti();
+
+// Il watchdog del loop e' iscritto? Un watchdog configurato male e uno giusto
+// sono indistinguibili da fuori finche' non serve, e allora e' tardi.
+bool        app_wdt_armato();
+uint32_t    app_wdt_timeout_s();
+
 // La tela: i 15.000 byte che sono finiti sul vetro, nel formato dei .bin
 // (1 bit per pixel, MSB per primo, 50 byte per riga, 1 = bianco). Non e' una
 // copia dello stato del pannello: e' lo stato del pannello, perche' ogni

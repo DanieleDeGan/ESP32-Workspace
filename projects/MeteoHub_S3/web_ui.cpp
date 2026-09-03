@@ -18,6 +18,7 @@
 #include "web_ui.h"
 #include "net_ota.h"
 #include "remote_nodes.h"
+#include <EspNowLink.h>    // Link_Hub_Unknown(): l'ascolto di /api/pairing/ascolto
 #include "forecast.h"
 #include "sd_logger.h"
 #include "rtc_time.h"
@@ -226,6 +227,9 @@ static void handleApiSalute() {
   if (!net_isConnected())         guaio("WiFi non connesso", false);
   if (s_invii_interrotti > 0) guaio("qualche invio di file e' stato troncato: un client se n'e' andato a meta'", false);
   if (ESP.getFreeHeap() < 60000)  guaio("memoria libera sotto i 60 kB", false);
+  // Un watchdog che non si e' armato non si vede in nessun altro modo: si
+  // comporta esattamente come uno armato, fino al giorno in cui servirebbe.
+  if (!app_wdt_armato()) guaio("il watchdog del loop NON e' armato: un blocco non verrebbe ripreso", false);
   // Non e' una perdita radio: e' un nodo che ha mandato un seq fuori scala,
   // cioe' quasi sempre un contatore sporco letto dalla RTC memory dopo un
   // risveglio. Vale la pena dirlo, o il contatore resta in /api/nodi e non lo
@@ -421,6 +425,78 @@ static void handleApiPairing() {
   json += (remote_pairing_active() ? "true" : "false");
   json += ",\"pairing_resta_s\":" + String(remote_pairing_remaining_s()) + "}";
   srv.send(200, "application/json", json);
+}
+
+// GET /api/eventi?m=AAAA-MM — il diario di un mese, in CSV.
+//
+// Si serve il file grezzo e non un JSON: sono poche righe testuali al giorno,
+// il formato e' gia' leggibile a occhio, e passare da streamFileLimitato()
+// evita di costruire in RAM una risposta la cui dimensione non si conosce.
+static void handleApiEventi() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+
+  // Senza mese si intende quello corrente: e' la richiesta che si fa il 99%
+  // delle volte, e farla scrivere a mano ogni volta e' solo attrito.
+  char meseOra[8];
+  if (!srv.hasArg("m")) {
+    time_t t = rtctime_now();
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    snprintf(meseOra, sizeof(meseOra), "%04d-%02d", tmv.tm_year + 1900, tmv.tm_mon + 1);
+  }
+  const String mese = srv.hasArg("m") ? srv.arg("m") : String(meseOra);
+
+  File f = sd_open_eventi(mese.c_str());
+  if (!f) { srv.send(404, "text/plain", "nessun diario per quel mese"); return; }
+
+  char disp[64];
+  snprintf(disp, sizeof(disp), "inline; filename=\"eventi_%s.csv\"", mese.c_str());
+  srv.sendHeader("Content-Disposition", disp);
+  streamFileLimitato(srv, f, "text/csv");
+  f.close();
+}
+
+// GET /api/pairing/ascolto — chi bussa, e perche' non entra.
+//
+// Prima, quando un nodo non si associava, questa scheda non mostrava NIENTE:
+// nessun tentativo, nessun contatore, nessun log. Le cause sono almeno cinque
+// e da fuori si presentavano tutte come una lista di nodi che non cresce.
+static void handleApiPairingAscolto() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+
+  String j = "{\"finestra\":";
+  j += (remote_pairing_active() ? "true" : "false");
+  j += ",\"resta_s\":" + String(remote_pairing_remaining_s());
+  j += ",\"sconosciuti\":[";
+
+  bool primo = true;
+  for (int i = 0; i < LINK_UNKNOWN_MAX; i++) {
+    uint8_t  mac[6];
+    int8_t   rssi;
+    uint32_t lastMs;
+    uint16_t quante;
+    uint8_t  esito;
+    if (!Link_Hub_Unknown(i, mac, &rssi, &lastMs, &quante, &esito)) continue;
+
+    if (!primo) j += ',';
+    primo = false;
+    j += "{\"mac\":";   appendJsonMac(j, mac);
+    j += ",\"rssi\":"   + String((int)rssi);
+    j += ",\"visto_s\":" + String((millis() - lastMs) / 1000);
+    j += ",\"quante\":" + String(quante);
+    j += ",\"esito\":";  appendJsonString(j, Link_Hub_UnknownEsito(esito));
+    j += '}';
+  }
+  j += "],";
+
+  // Il limite va detto QUI e non lasciato dedurre: un elenco vuoto non
+  // significa "non c'e' nessun nodo acceso". Un nodo che si crede gia'
+  // associato a un altro hub non manda HELLO, e i suoi DATA vanno in unicast
+  // a quell'altro MAC: questa scheda non li riceve nemmeno a livello radio.
+  j += "\"nota\":\"un elenco vuoto significa che nessun nodo sta CERCANDO un hub, "
+       "non che non ce ne siano di accesi: un nodo gia' associato altrove non manda HELLO\"}";
+  net_server().send(200, "application/json", j);
 }
 
 
@@ -670,6 +746,26 @@ static void handleApiStato() {
     }
   }
   j += "\"invii_interrotti\":" + String(s_invii_interrotti)   + ",";
+  // Il giro piu' lungo, e dove. Serve a distinguere due cose che nei CSV
+  // hanno lo stesso aspetto -- un buco: "si e' riavviata" (lo dicono
+  // reset_reason e boot_count) e "e' rimasta ferma dentro una chiamata".
+  // Il disegno del pannello NON e' qui dentro: 2,6 s sono normali e
+  // coprirebbero per sempre tutto il resto.
+  j += "\"loop_max_ms\":"   + String(app_loop_max_ms()) + ",";
+  j += "\"loop_max_dove\":"; appendJsonString(j, app_loop_max_dove()); j += ',';
+  {
+    const time_t lt = app_loop_max_ts();
+    char lbuf[24];
+    if (lt > 0 && rtctime_format(lt, "%Y-%m-%d %H:%M:%S", lbuf, sizeof(lbuf))) {
+      j += "\"loop_max_ora\":"; appendJsonString(j, lbuf); j += ',';
+    } else {
+      j += "\"loop_max_ora\":null,";
+    }
+  }
+  j += "\"loop_lenti\":"    + String(app_loop_lenti()) + ",";
+  j += "\"wdt_armato\":";   j += (app_wdt_armato() ? "true" : "false"); j += ',';
+  j += "\"wdt_timeout_s\":" + String(app_wdt_timeout_s()) + ",";
+
   j += "\"reset_reason\":\"" + String(app_reset_reason())    + "\",";
   j += "\"boot_count\":"      + String(app_boot_count())      + ",";
   j += "\"uptime\":" + String(millis() / 1000) + ",";
@@ -2185,6 +2281,7 @@ static const Rotta ROTTE[] = {
 
   { HTTP_GET,  "/api/nodi",             handleApiNodi,               "i nodi: valori, cadenza, trend, previsione, pacchetti persi", "" },
   { HTTP_POST, "/api/pairing",          handleApiPairing,            "apre o chiude la finestra di associazione", "on=0|1, s=secondi" },
+  { HTTP_GET,  "/api/pairing/ascolto",  handleApiPairingAscolto,     "chi bussa e non entra: MAC sconosciuti con RSSI e motivo dello scarto, anche fuori dalla finestra", "" },
   { HTTP_POST, "/api/nodi/dimentica",   handleApiNodiDimentica,      "toglie un nodo dal registro (RAM e NVS)", "mac=AA:BB:..." },
   { HTTP_POST, "/api/nodi/altitudine",  handleApiNodiAltitudine,     "quota per riportare la pressione al livello del mare", "m=metri" },
   { HTTP_GET,  "/api/nodi/giorni",      handleApiNodiGiorni,         "i giorni di CSV presenti sulla card per un nodo", "nodo=NOME" },
@@ -2206,6 +2303,7 @@ static const Rotta ROTTE[] = {
   { HTTP_POST, "/api/messaggio/cancella",handleApiMessaggioCancella, "toglie il messaggio dal pannello", "" },
 
   { HTTP_GET,  "/api/immagini",         handleApiImmagini,           "le immagini sulla card, a pagine, col totale filtrato", "da=0&quante=12&cerca=TESTO" },
+  { HTTP_GET,  "/api/eventi",           handleApiEventi,             "il diario degli eventi di un mese (boot, NTP, nodo muto, card, OTA, associazione)", "m=AAAA-MM (default: il mese corrente)" },
   { HTTP_GET,  "/api/epd/totale",       handleApiEpdTotale,          "quanti refresh ha fatto il pannello: si contano dalla card", "" },
   { HTTP_GET,  "/api/epd/registro",     handleApiEpdRegistro,        "il registro dei refresh del pannello, un file al mese", "m=AAAA-MM" },
   { HTTP_GET,  "/api/immagini/mini",    handleApiImmaginiMini,       "la miniatura 80x60 di un'immagine (600 byte)", "nome=NOME" },

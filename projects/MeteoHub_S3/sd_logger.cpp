@@ -735,6 +735,66 @@ int sd_img_list(sd_img_cb_t cb, void* arg, int maxItems) {
   return n;
 }
 
+bool sd_log_evento(const char* tipo, const char* dettaglio) {
+  if (!sd_mounted() || tipo == nullptr) return false;
+
+  char nomeFile[40];
+  time_t ora = time(nullptr);
+  struct tm tmv;
+  localtime_r(&ora, &tmv);
+  snprintf(nomeFile, sizeof(nomeFile), "/eventi/%04d-%02d.csv",
+           tmv.tm_year + 1900, tmv.tm_mon + 1);
+
+  if (!SD.exists("/eventi")) SD.mkdir("/eventi");
+
+  const bool nuovo = !SD.exists(nomeFile);
+  File f = SD.open(nomeFile, FILE_APPEND);
+  if (!f) return false;
+
+  size_t scritti = 0;
+  if (nuovo) scritti += f.println("ts_iso,tipo,dettaglio");
+
+  char ts[24] = "";
+  strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", &tmv);
+  scritti += f.print(ts);
+  scritti += f.print(',');
+  scritti += f.print(tipo);
+  scritti += f.print(',');
+  // Il dettaglio e' testo libero e finisce in un CSV: le virgole e gli a capo
+  // spezzerebbero la riga. Si sostituiscono invece di virgolettare, perche'
+  // questo file lo legge anche un occhio umano da `type` o `cat`.
+  if (dettaglio) {
+    for (const char* c = dettaglio; *c; c++) {
+      const char ch = (*c == ',' || *c == '\n' || *c == '\r') ? ' ' : *c;
+      scritti += f.print(ch);
+    }
+  }
+  scritti += f.println();
+  f.close();
+
+  // Come in sd_log_refresh(): File::write() non alza il writeError, quindi su
+  // una card piena la print() torna 0 e basta. Senza questo controllo il
+  // diario direbbe di aver scritto righe che non esistono.
+  return scritti > 0;
+}
+
+File sd_open_eventi(const char* mese) {
+  if (!sd_mounted() || mese == nullptr) return File();
+
+  // "AAAA-MM" e nient'altro: il nome arriva dalla rete e diventa un pezzo di
+  // path. Si valida invece di comporre a fiducia.
+  if (strlen(mese) != 7 || mese[4] != '-') return File();
+  for (int i = 0; i < 7; i++) {
+    if (i == 4) continue;
+    if (mese[i] < '0' || mese[i] > '9') return File();
+  }
+
+  char nomeFile[40];
+  snprintf(nomeFile, sizeof(nomeFile), "/eventi/%s.csv", mese);
+  if (!SD.exists(nomeFile)) return File();
+  return SD.open(nomeFile, FILE_READ);
+}
+
 bool sd_img_exists(const char* nome) {
   if (!sd_mounted()) return false;
   char path[64];

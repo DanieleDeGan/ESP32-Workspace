@@ -230,13 +230,13 @@ ci vogliono ~8 pacchetti per rientrare. Trascina con sé `sogliaMuto` (+3 min su
 rilevamento di un nodo morto), `nodoInRitardo()` e la cadenza dei refresh.
 **Costo**: bassissimo. **Da fare prima di qualunque statistica.**
 
-### 18. L'hub non misura il proprio tempo di giro
+### 18. L'hub non misura il proprio tempo di giro — FATTA (`v45`)
 `loop_max_ms`/`loop_max_dove`/`loop_lenti` esistono su `EnvNode_C3` (spenta) e
 non sull'hub, che è la scheda che blocca davvero (2630 ms per refresh, 20 s di
 budget d'invio, decine di secondi di OTA). Oggi sa dire *che è ripartito*, non
 *che è rimasto fermo*. **Costo**: basso, il codice si copia.
 
-### 19. Il watchdog non è armato: `WDT_TASK` non può comparire
+### 19. Il watchdog non è armato — FATTA (hub `v45`-`v46`, nodo `v16`)
 `app_reset_reason()` traduce tre cause di watchdog, ma né hub né nodo chiamano
 `esp_task_wdt_add()`. Un `loop()` piantato lascia un pannello e-ink perfetto e
 bistabile con dei numeri non più veri, e toglie insieme a sé tutta la
@@ -291,7 +291,7 @@ informazione per cui il progetto esiste»* e che non è mai stata costruita.
 10,9 a **26,4 al giorno** (attraversare la zona neutra ne costa due), con
 l'isteresi a **2,9**. Stessa scelta già fatta in `forecast.h`.
 
-### 23. Il diario degli eventi su card
+### 23. Il diario degli eventi su card — FATTA (`v45`)
 `/eventi/AAAA-MM.csv`: boot, sync NTP, nodo muto, nodo che torna, errori card,
 OTA, pairing. Una riga **per transizione**, mai per campione. Tre indagini
 raccontate in `docs/Stazione-Meteo.md` sono state, in sostanza, la ricostruzione
@@ -304,7 +304,7 @@ RTC memory proprio lo stato che si voleva guardare**. Un messaggio di stato ogni
 costa **+0,5 %** di carica. Compatibile per costruzione: `link_parse_message()`
 rifiuta le lunghezze diverse, quindi i firmware vecchi lo ignorano.
 
-### 25. L'ascolto durante l'associazione
+### 25. L'ascolto durante l'associazione — FATTA (`v45`)
 Oggi, se un nodo non si associa, l'hub non mostra **nulla**. `hub_on_new_peer()`
 riceve già `esp_now_recv_info_t` — **con l'RSSI** — e scarta in silenzio due
 volte. Un anello di sei voci (MAC, RSSI, motivo dello scarto) permette di dire
@@ -401,13 +401,16 @@ sull'hub**: la pagina deve dirlo. **Costo**: bassissimo. Il ragionamento era gi�
 scritto per intero in `remote_nodes.h` — è stato applicato all'hub e non alla
 pagina del nodo.
 
-### 38. Il watchdog sul nodo vale più che sull'hub: un blocco costa la batteria
+### 38. Il watchdog sul nodo vale più che sull'hub — FATTA (`v16`)
 Un hub bloccato perde dati; un nodo bloccato **non si riaddormenta** e svuota
 una cella da 1500 mAh in **~21 ore** (WiFi acceso, ~70 mA) contro i mesi che
 dovrebbe durare. E la rete di sicurezza non aiuta, perché sta *dentro* il
 percorso del sonno: si esegue solo se il codice sta girando, che è proprio ciò
-che non succede. Due timeout diversi: ~60 s nella finestra di veglia (sospeso
-durante l'OTA), ~10 s nel ciclo di risveglio, che dura 0,68 s misurati. **Da
+che non succede. Due timeout diversi: 60 s nella finestra di veglia (con l'OTA che lo
+**alimenta** invece di sospenderlo, cosi' resta armato anche li') e **20 s** nel
+ciclo di risveglio — non i 10 previsti: il caso peggiore legittimo di un
+risveglio e' ~9 s (4 s di pairing + 2,6 s di ricerca del canale + misura e
+invio), e dieci ci passerebbero dentro. **Da
 disarmare prima di `esp_deep_sleep_start()`.** È la voce col miglior rapporto
 valore/costo dell'analisi.
 
@@ -544,6 +547,7 @@ Solo la riga essenziale: il racconto sta in `docs/Stazione-Meteo.md`.
 | **Nodo muto dopo un blackout**: peer riallineati alla radio + `espnow_peer_canale` + `prova-riallineo` | 2026-09-01 | `MeteoNode_C3` `v15`, `EspNowLink` |
 | `tools/analisi.py` + le sue tarature (isteresi del verdetto, bias del tau) | 2026-09-02 | — |
 | **Blocco A**: cadenza dai soli DATA consecutivi, tetto al salto di `seq`, timer per MAC, un WELCOME per giro a turno, stato dell'antighosting in `/api/stato`, testo dell'errore in dashboard | 2026-09-03 | `MeteoHub_S3` `v44`, `EspNowLink` |
+| **Blocco B**: tempo di giro dell'hub, watchdog armato su entrambe le schede, diario degli eventi su card, ascolto durante l'associazione con RSSI | 2026-09-03 | `MeteoHub_S3` `v45`-`v46`, `MeteoNode_C3` `v16`, `EspNowLink` |
 
 ---
 

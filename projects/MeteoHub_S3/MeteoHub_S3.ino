@@ -82,6 +82,7 @@
 
 #include <WiFi.h>          // solo per WiFi.localIP(), da mostrare sul pannello
 #include <esp_system.h>    // esp_reset_reason(): perche' la scheda e' ripartita
+#include <esp_task_wdt.h>  // il watchdog del loop: vedi wdtBegin()
 #include <Preferences.h>   // boot_count: l'unico contatore che sopravvive al riavvio
 #include <EspNowLink.h>    // ESPNOW_LINK_CHANNEL_CURRENT
 #include "remote_nodes.h"
@@ -118,7 +119,31 @@
 //   - /api/stato dice quanti parziali sono passati dall'ultimo completo e
 //     quando il completo e' stato: il ghosting e' l'unica cosa che
 //     l'anteprima del pannello non puo' mostrare.
-static const char FW_VERSION[] = "v44";
+// v45 (2026-09-03) — il "Blocco B" di docs/Proposte-2026-09-02.md. Anche qui
+// nessuna feature: aggiunge solo OCCHI, cioe' non cambia il comportamento di
+// niente e rende visibile quello che prima non lo era.
+//
+//   - il tempo di giro (loop_max_ms/dove/ora, loop_lenti): distingue "si e'
+//     riavviata" da "e' rimasta ferma dentro una chiamata", che nei CSV hanno
+//     lo stesso aspetto. Il pannello NON entra nel massimo: 2,6 s li' sono
+//     normali e coprirebbero tutto il resto.
+//   - il watchdog e' armato (60 s): fino a v44 app_reset_reason() traduceva
+//     WDT_TASK senza che nessuno potesse produrlo. Alimentato durante l'OTA
+//     invece che sospeso, cosi' resta armato anche li'.
+//   - il diario degli eventi su card (/eventi/AAAA-MM.csv): una riga per
+//     TRANSIZIONE -- boot, NTP, nodo muto, nodo che torna, card, OTA,
+//     associazione -- con un tetto per tipo e le soppressioni dichiarate.
+//   - l'ascolto durante l'associazione (/api/pairing/ascolto): chi bussa e
+//     perche' non entra, con l'RSSI che il callback riceveva gia' e nessuno
+//     leggeva. Si annota anche FUORI dalla finestra: contare non e' adottare.
+// v46 (2026-09-03) — `wdt_armato` e `wdt_timeout_s` in /api/stato, piu' un
+// avviso in /api/salute se non lo e'. Aggiunta subito dopo aver messo in
+// servizio la v45, per una ragione che vale la riga in piu': un watchdog
+// configurato male e uno giusto sono INDISTINGUIBILI da fuori finche' non
+// serve, e quando serve e' tardi. Non prova che il riavvio funzioni -- per
+// quello serve un blocco vero -- ma prova che il task loop e' iscritto, che e'
+// la meta' che si puo' sbagliare in silenzio.
+static const char FW_VERSION[] = "v46";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -213,6 +238,156 @@ static void bootDiagBegin() {
     p.end();
   }
 }
+// ---------------------------------------------------------------------------
+// Quanto e' durato il giro, e dove
+// ---------------------------------------------------------------------------
+// Trapiantato da projects/EnvNode_C3/ (v12), che pero' e' spenta dal 31/08:
+// la misura stava sulla scheda che bloccava di meno, e non su questa, che di
+// mestiere si ferma. Un refresh completo del pannello sono 2630 ms, il budget
+// di invio di un file 20 s, una write su un client morto ~10 s, un OTA decine
+// di secondi.
+//
+// Serve a distinguere DUE COSE CHE NEI CSV HANNO LO STESSO ASPETTO -- un buco:
+// "si e' riavviata" (lo dicono gia' reset_reason e boot_count, da v13) e "e'
+// rimasta ferma dentro una chiamata", che finora non lo diceva nessuno.
+//
+// IL PANNELLO NON ENTRA IN QUESTO MASSIMO, ed e' deliberato: 2,6 s li' sono
+// normali, non un guasto, e coprirebbero per sempre tutto il resto -- che e'
+// la parte interessante. Il tempo del disegno ha gia' due posti suoi,
+// epd_ultimo_ms e il registro dei refresh sulla card. Qui si misura solo cio'
+// che viene PRIMA di qualunque disegno, che e' anche tutto cio' che nel loop
+// puo' bloccare senza doverlo.
+//
+// In RAM di proposito, come sull'altra scheda: il buco nel CSV si data gia' da
+// se', e scrivere in NVS dentro il giro sarebbe un costo continuo per un
+// evento raro.
+static const uint32_t LOOP_LENTO_MS = 500;   // ~meta' del parziale piu' corto
+
+static uint32_t s_loopMaxMs       = 0;
+static char     s_loopMaxDove[12] = "";
+static time_t   s_loopMaxTs       = 0;
+static uint32_t s_loopLenti       = 0;
+
+// Chiude la fase iniziata a "inizio" e apre la successiva: il ritorno e' il
+// nuovo istante di partenza, cosi' nel loop() si incatenano.
+static uint32_t faseFine(const char* nome, uint32_t inizio)
+{
+  const uint32_t durata = millis() - inizio;
+
+  if (durata > s_loopMaxMs) {
+    s_loopMaxMs = durata;
+    strncpy(s_loopMaxDove, nome, sizeof(s_loopMaxDove) - 1);
+    s_loopMaxDove[sizeof(s_loopMaxDove) - 1] = '\0';
+    s_loopMaxTs = rtctime_now();
+  }
+  if (durata >= LOOP_LENTO_MS) {
+    s_loopLenti++;
+    Serial.printf("[lento] %s ha tenuto il giro per %lu ms\n",
+                  nome, (unsigned long)durata);
+  }
+  return millis();
+}
+
+uint32_t    app_loop_max_ms()   { return s_loopMaxMs; }
+const char* app_loop_max_dove() { return s_loopMaxDove; }
+time_t      app_loop_max_ts()   { return s_loopMaxTs; }
+uint32_t    app_loop_lenti()    { return s_loopLenti; }
+
+// ---------------------------------------------------------------------------
+// Watchdog del loop
+// ---------------------------------------------------------------------------
+// app_reset_reason() traduce WDT_TASK, WDT_INT e WDT dalla v13, ma in tutto lo
+// sketch non c'era una sola chiamata a esp_task_wdt_add(): erano tre stringhe
+// che NON POTEVANO COMPARIRE. Una diagnosi scritta per un meccanismo che non
+// esisteva.
+//
+// Cosa lasciava scoperto: un loop() piantato per sempre. Il pannello e-ink e'
+// BISTABILE, quindi resta li' nitido e plausibile anche a scheda ferma; il
+// WebServer non risponde piu', e con lui sparisce tutta la diagnostica
+// dell'hub; i nodi continuano a ricevere l'ACK di livello radio e contano i
+// propri invii come riusciti. Un guasto totale con l'aspetto di un sistema
+// perfetto.
+//
+// IL BARATTO DA CONOSCERE. Il core inizializza gia' il TWDT a 5 s con l'idle
+// task di CPU0 iscritto (CONFIG_ESP_TASK_WDT_*), e il timeout e' UNO SOLO per
+// tutto il TWDT: portarlo a 60 s allunga anche la protezione dell'idle di
+// CPU0. Si accetta, perche' quella protezione copre uno scenario in cui la
+// radio e' comunque morta e cambia solo quanto in fretta si riavvia, mentre
+// qui si guadagna la protezione del loop, che oggi non ha niente ed e' dove
+// sta il rischio vero. L'idle di CPU0 resta iscritto (idle_core_mask), non si
+// toglie: si allunga, non si spegne.
+//
+// PERCHE' 60 s E NON MENO: il caso legittimo piu' lungo e' il budget di invio
+// di un file (20 s) piu' una write bloccata dentro il core (~10 s), cioe' ~30.
+// Un timeout stretto trasformerebbe un download lento in un riavvio, che e'
+// molto peggio del guasto che si sta prevenendo.
+static const uint32_t WDT_TIMEOUT_MS = 60000;
+
+// Il watchdog e' davvero armato? Da fuori, un watchdog configurato male e uno
+// configurato bene sono INDISTINGUIBILI finche' non serve -- e quando serve e'
+// tardi. Questo campo trasforma "spero sia armato" in "la scheda dice che lo
+// e'": non prova che il riavvio funzioni (per quello serve un blocco vero), ma
+// prova che il task loop e' iscritto, che e' la meta' che si puo' sbagliare in
+// silenzio.
+static bool s_wdtArmato = false;
+
+bool     app_wdt_armato()    { return s_wdtArmato; }
+uint32_t app_wdt_timeout_s() { return WDT_TIMEOUT_MS / 1000; }
+
+static void wdtBegin()
+{
+  esp_task_wdt_config_t cfg = {};
+  cfg.timeout_ms    = WDT_TIMEOUT_MS;
+  cfg.idle_core_mask = (1 << 0);   // com'e' gia' configurato dal core sull'S3
+  cfg.trigger_panic = true;        // riavvia, cosi' reset_reason lo dice
+
+  // Il TWDT e' gia' inizializzato dal core (CONFIG_ESP_TASK_WDT_INIT), quindi
+  // init() torna ESP_ERR_INVALID_STATE e si passa da reconfigure(). Si provano
+  // entrambe per non dipendere da quella configurazione.
+  esp_err_t e = esp_task_wdt_init(&cfg);
+  if (e == ESP_ERR_INVALID_STATE) e = esp_task_wdt_reconfigure(&cfg);
+  if (e != ESP_OK) {
+    Serial.printf("[wdt] non configurato (%d): il loop resta senza rete\n", (int)e);
+    return;
+  }
+  if (esp_task_wdt_add(NULL) != ESP_OK) {
+    Serial.println("[wdt] il task loop non si e' iscritto");
+    return;
+  }
+  s_wdtArmato = true;
+  Serial.printf("[wdt] armato sul loop, timeout %lu s\n",
+                (unsigned long)(WDT_TIMEOUT_MS / 1000));
+}
+
+// ---------------------------------------------------------------------------
+// OTA in corso
+// ---------------------------------------------------------------------------
+// Serve a due cose insieme, ed e' il motivo per cui questa callback esiste
+// adesso e prima no:
+//
+//  1. il tempo speso dentro handleClient() mentre si scrive la partizione sono
+//     decine di secondi LEGITTIMI, e finirebbero nel massimo del giro
+//     coprendo per sempre il guasto che quel contatore deve far vedere;
+//  2. il watchdog va alimentato, o l'aggiornamento si riavvierebbe da solo a
+//     meta'. Si alimenta qui e non sospendendo il watchdog, perche' cosi'
+//     resta armato: un OTA che si pianta davvero viene comunque ripreso.
+static bool s_otaAttivo = false;
+
+static void onOtaProgress(int percent, const char* what)
+{
+  // Una riga sola all'inizio, non una per percentuale: e' il diario, non un
+  // log. Che l'aggiornamento sia poi ANDATO A BUON FINE lo dice la riga di
+  // boot successiva, con reset_reason SW e il firmware nuovo.
+  if (!s_otaAttivo) evento("ota", what ? what : "aggiornamento iniziato");
+  s_otaAttivo = true;
+  esp_task_wdt_reset();
+  static int ultimo = -1;
+  if (percent == ultimo) return;
+  ultimo = percent;
+  if (percent < 0) Serial.printf("[OTA] %s: in corso...\n", what);
+  else             Serial.printf("[OTA] %s: %d%%\n", what, percent);
+}
+
 uint32_t    app_scritture_ko()  { return s_scrittureKo; }
 uint32_t    app_epd_refresh()   { return s_epdRefresh; }
 uint32_t    app_epd_ultimo_ms() { return s_epdUltimoMs; }
@@ -1580,6 +1755,122 @@ static bool orario_registrabile()
   return rtctime_isSynced() || millis() >= ORARIO_GRAZIA_MS;
 }
 
+// ---------------------------------------------------------------------------
+// Il diario degli eventi
+// ---------------------------------------------------------------------------
+// UNA RIGA PER TRANSIZIONE, mai una per campione: se ci finisse dentro ogni
+// pacchetto diventerebbe illeggibile, e un diario che non si legge non serve a
+// niente. Il perche' lungo sta in sd_logger.h.
+//
+// IL TETTO NON E' UN DI PIU'. Un nodo che oscilla fra online e muto
+// scriverebbe due righe per oscillazione, e l'oscillazione capita davvero (e'
+// il difetto che ha richiesto RITARDO_CONFERMA_MS). Oltre EV_MAX_ORA righe
+// l'ora per tipo si smette di scrivere e si CONTA: alla fine della finestra
+// esce una riga sola che dice quante ne sono state soppresse. Mai un silenzio.
+static const uint8_t  EV_MAX_ORA   = 10;
+static const uint32_t EV_FINESTRA_MS = 3600000UL;
+
+struct EvTetto {
+  const char* tipo;         // confronto per PUNTATORE: sono letterali costanti
+  uint32_t    finestraDa;
+  uint8_t     scritti;
+  uint16_t    soppressi;
+};
+static EvTetto s_evTetto[8] = {};
+
+// Il boot capita PRIMA del primo sync NTP, quindi non si puo' datare quando
+// succede: si tiene da parte e si scrive appena l'orologio e' vero, portandosi
+// dietro quanti secondi erano passati. Una riga datata con l'ora di
+// compilazione -- identica ad ogni riavvio -- non e' un dato salvato, e' un
+// dato falsificato.
+static bool s_evBootDaScrivere = true;
+
+// Il guasto della card e' gia' segnalato? Serve a scrivere una riga sola per
+// serie, e a riarmarla quando torna a scrivere.
+static bool s_sdKoSegnalato = false;
+
+static void eventoScrivi(const char* tipo, const char* dettaglio)
+{
+  if (!sd_log_evento(tipo, dettaglio)) return;
+  Serial.printf("[diario] %s: %s\n", tipo, dettaglio ? dettaglio : "");
+}
+
+static void evento(const char* tipo, const char* dettaglio)
+{
+  if (!orario_registrabile()) return;
+
+  EvTetto* t = nullptr;
+  for (size_t i = 0; i < sizeof(s_evTetto) / sizeof(s_evTetto[0]); i++) {
+    if (s_evTetto[i].tipo == tipo) { t = &s_evTetto[i]; break; }
+    if (s_evTetto[i].tipo == nullptr && t == nullptr) t = &s_evTetto[i];
+  }
+  if (t == nullptr) { eventoScrivi(tipo, dettaglio); return; }   // tabella piena: si scrive
+
+  if (t->tipo != tipo) { t->tipo = tipo; t->finestraDa = millis(); t->scritti = 0; t->soppressi = 0; }
+
+  if (millis() - t->finestraDa >= EV_FINESTRA_MS) {
+    if (t->soppressi > 0) {
+      char buf[64];
+      snprintf(buf, sizeof(buf), "%u righe soppresse nell'ora precedente", (unsigned)t->soppressi);
+      eventoScrivi(tipo, buf);
+    }
+    t->finestraDa = millis();
+    t->scritti = 0;
+    t->soppressi = 0;
+  }
+
+  if (t->scritti < EV_MAX_ORA) { t->scritti++; eventoScrivi(tipo, dettaglio); }
+  else if (t->soppressi < 0xFFFF) t->soppressi++;
+}
+
+// Nodi che tacciono e nodi che tornano. Lo stato precedente si tiene PER MAC,
+// non per posizione: remote_forget() compatta il registro, e un array
+// parallelo indicizzato per indice si disallineerebbe (stessa lezione di
+// s_ritardo, e stessa ragione per cui remote_forget() compatta i suoi).
+struct EvNodo { uint8_t mac[6]; bool usato; bool online; time_t muto_da; uint32_t persi_da; };
+static EvNodo s_evNodi[REMOTE_MAX_NODES] = {};
+
+static void diarioNodi()
+{
+  for (int i = 0; i < remote_count(); i++) {
+    RemoteNode n;
+    if (!remote_get(i, &n) || !n.hasData) continue;
+
+    EvNodo* e = nullptr;
+    for (int k = 0; k < REMOTE_MAX_NODES; k++) {
+      if (s_evNodi[k].usato && memcmp(s_evNodi[k].mac, n.mac, 6) == 0) { e = &s_evNodi[k]; break; }
+      if (!s_evNodi[k].usato && e == nullptr) e = &s_evNodi[k];
+    }
+    if (e == nullptr) continue;
+
+    if (!e->usato) {
+      // Primo incontro: si prende nota dello stato senza scrivere niente. Un
+      // "e' online" all'avvio non e' una transizione, e riempirebbe il diario
+      // di righe ad ogni riavvio.
+      e->usato = true;
+      memcpy(e->mac, n.mac, 6);
+      e->online = n.online;
+      continue;
+    }
+    if (e->online == n.online) continue;
+
+    char buf[96];
+    if (!n.online) {
+      snprintf(buf, sizeof(buf), "%s muto da %lu s (soglia %lu)",
+               n.nome, (unsigned long)n.silenzioS, (unsigned long)n.sogliaMutoS);
+      e->muto_da  = rtctime_now();
+      e->persi_da = n.persi;
+      evento("nodo_muto", buf);
+    } else {
+      const uint32_t quanto = (e->muto_da > 0) ? (uint32_t)(rtctime_now() - e->muto_da) : 0;
+      snprintf(buf, sizeof(buf), "%s torna dopo %lu s, %lu persi nel frattempo",
+               n.nome, (unsigned long)quanto, (unsigned long)(n.persi - e->persi_da));
+      evento("nodo_torna", buf);
+    }
+    e->online = n.online;
+  }
+}
+
 static void onDatoNodo(const RemoteNode* n)
 {
   if (n == nullptr) return;
@@ -1616,6 +1907,12 @@ static void onDatoNodo(const RemoteNode* n)
                     n->seq, n->value, n->batteria_mv))
   {
     s_righeScritte++;
+    // Tornata a scrivere: si riarma la segnalazione, cosi' il prossimo guasto
+    // si vede anche se questo si era risolto da solo.
+    if (s_sdKoSegnalato) {
+      s_sdKoSegnalato = false;
+      evento("sd_ok", "la card ha ripreso a scrivere");
+    }
   }
   else
   {
@@ -1623,6 +1920,14 @@ static void onDatoNodo(const RemoteNode* n)
     // distingue "card che ha rifiutato" da "riga scritta": prima la funzione
     // rispondeva sempre true e il contatore saliva comunque.
     s_scrittureKo++;
+
+    // Solo la PRIMA di una serie: una card piena rifiuta OGNI riga, e una riga
+    // di diario per ogni rifiuto sarebbe il log che questo file non vuole
+    // essere. Il conto completo sta in /api/salute.
+    if (!s_sdKoSegnalato) {
+      s_sdKoSegnalato = true;
+      evento("sd_errore", sd_last_error());
+    }
   }
   Serial.printf("[hub] %s  %.1f C  %.0f %%  %.1f hPa  seq %lu%s\n",
                 n->nome, n->value[0], n->value[1], n->value[2],
@@ -2457,6 +2762,11 @@ void setup()
   Serial.printf("[boot] avvio n. %lu, causa %s\n",
                 (unsigned long)s_bootCount, app_reset_reason());
 
+  // Subito dopo la diagnosi del boot e prima di qualunque cosa che possa
+  // bloccare: da qui in poi un loop() piantato viene ripreso invece di
+  // lasciare sul vetro una pagina nitida e non piu' vera.
+  wdtBegin();
+
   pinMode(PIN_BOOT, INPUT_PULLUP);
 
   // PRIMA di toccare il bus: la microSD della Sense e' sullo stesso SPI e il
@@ -2523,6 +2833,9 @@ void setup()
   // Rete: net_begin() e' bloccante per al massimo 15 s, poi ritenta in
   // background. Il pannello e' gia' stato inizializzato ma non ancora
   // disegnato: la prima pagina esce dopo, cosi' porta gia' IP e ora.
+  // PRIMA di net_begin(): la callback e' anche quella che alimenta il watchdog
+  // durante un aggiornamento, e un OTA puo' partire appena il server e' su.
+  net_setOtaProgressCb(onOtaProgress);
   net_begin();
   web_ui_begin();
   if (net_isConnected()) rtctime_onWifiConnected();
@@ -2567,10 +2880,26 @@ void setup()
 
 void loop()
 {
+  // Il giro e' vivo. Sta in cima e non in fondo perche' il loop() ha molti
+  // return (ogni disegno del pannello ne fa uno): messo in fondo verrebbe
+  // saltato proprio nei giri piu' lunghi.
+  esp_task_wdt_reset();
+
+  uint32_t t = millis();
+
   // net_loop() PRIMA di tutto e ad ogni giro: e' quella che serve il web server
   // e fa avanzare l'OTA. Se salta un giro, un aggiornamento via rete si pianta
   // a meta' — ed e' l'unico modo di aggiornare questa scheda una volta montata.
   net_loop();
+
+  // Le fasi si misurano solo FINO AL PRIMO DISEGNO: da li' in poi il loop()
+  // esce con un return e il tempo del pannello ha gia' i suoi posti
+  // (epd_ultimo_ms e il registro dei refresh sulla card). Vedi faseFine().
+  //
+  // Durante un OTA il web server scrive la partizione dentro handleClient():
+  // sono decine di secondi legittimi, e finirebbero nel massimo coprendo per
+  // sempre il guasto che questo contatore deve far vedere.
+  t = s_otaAttivo ? millis() : faseFine("web", t);
 
   // Riconnessione WiFi: il sync NTP va rilanciato ad OGNI ritorno della rete,
   // non solo al primo. Senza, una scheda che perde l'AP per un giorno resta con
@@ -2586,11 +2915,42 @@ void loop()
   // loro. remote_loop() preleva i DATA dal driver — se non gira, i pacchetti
   // arrivano alla radio e nessuno li raccoglie.
   remote_loop();
+  diarioNodi();
+  t = faseFine("nodi", t);
+
+  // L'orologio e' diventato vero. Una riga sola per accensione, e vale la pena
+  // perche' DATA TUTTO IL RESTO: le righe del diario e dei CSV scritte prima
+  // di questo istante portano un orario stimato.
+  {
+    static bool s_ntpPrec = false;
+    const bool ora = rtctime_isSynced();
+    if (ora && !s_ntpPrec) {
+      s_ntpPrec = true;
+      char buf[64];
+      snprintf(buf, sizeof(buf), "orario sincronizzato dopo %lu s di accensione",
+               (unsigned long)(millis() / 1000));
+      evento("ntp", buf);
+    }
+  }
+
+  // Il boot non si puo' datare quando succede: si scrive appena l'orologio e'
+  // vero, portandosi dietro da quanti secondi la scheda e' su.
+  if (s_evBootDaScrivere && orario_registrabile()) {
+    s_evBootDaScrivere = false;
+    char buf[96];
+    snprintf(buf, sizeof(buf), "%s n.%lu fw=%s, ripartita %lu s fa, ora %s",
+             app_reset_reason(), (unsigned long)s_bootCount, FW_VERSION,
+             (unsigned long)(millis() / 1000), rtctime_source());
+    evento("boot", buf);
+  }
 
   // Aspetta il primo sync NTP e poi gira una volta sola.
   seedForecastDaSD();
+  t = faseFine("seed", t);
 
   const uint8_t ev = bootEvent();
+  t = faseFine("bottone", t);
+  (void)t;   // ultima fase prima dei disegni: da qui in poi si esce con return
   if (ev == BOOT_LUNGO)
   {
     if (remote_pairing_active()) remote_pairing_close();
@@ -2619,7 +2979,12 @@ void loop()
   {
     static bool s_pairingPrec = false;
     const bool ora = remote_pairing_active();
-    if (ora != s_pairingPrec) { s_pairingPrec = ora; s_nodiDirty = true; }
+    if (ora != s_pairingPrec) {
+      s_pairingPrec = ora;
+      s_nodiDirty = true;
+      evento("pairing", ora ? "finestra di associazione aperta"
+                            : "finestra di associazione chiusa");
+    }
   }
 
   // --- comandi che arrivano dalla web UI (accodati, vedi app_chiedi_*) -----
@@ -2759,6 +3124,12 @@ void loop()
           // sta guardando, e la mattina si troverebbe un errore al posto dei
           // dati.
           Serial.println("[epd] ore di silenzio: nessuna immagine sulla card, resto com'ero");
+          // Questo e' l'unico ramo del silenzio che vale una riga di diario:
+          // gli altri sono prevedibili dalla fascia configurata, questo no --
+          // il pannello resta com'era e da fuori non si distingue da un
+          // pannello che non si aggiorna piu'.
+          evento("silenzio_senza_immagine",
+                 "nessuna immagine sulla card: il pannello resta com'era");
         }
         return;
       }

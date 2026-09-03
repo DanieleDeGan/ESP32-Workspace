@@ -33,6 +33,90 @@ static portMUX_TYPE s_registry_mux = portMUX_INITIALIZER_UNLOCKED;
 static LinkPeer *s_trash[ESPNOW_LINK_MAX_PEERS] = {nullptr};
 static int s_trash_count = 0;
 
+// --- l'orecchio: chi bussa e non entra (vedi EspNowLink.h) ----------------
+typedef struct {
+    uint8_t  mac[6];
+    int8_t   rssi;
+    uint32_t last_ms;   // 0 = slot vuoto
+    uint16_t quante;
+    uint8_t  esito;
+} link_unknown_t;
+
+static link_unknown_t s_unknown[LINK_UNKNOWN_MAX] = {};
+
+// Chiamata DAL CALLBACK DELLA RADIO: dentro la sezione critica va solo una
+// copia di pochi byte, mai un new e mai il driver. Vale la stessa lezione
+// gia' scritta su hub_insert_peer(), dove il lock si deve rilasciare proprio
+// perche' dentro si alloca.
+static void unknown_note(const uint8_t mac[6], int8_t rssi, uint8_t esito)
+{
+    uint32_t now = millis();
+    if (now == 0) now = 1;   // 0 e' la sentinella di "slot vuoto"
+
+    portENTER_CRITICAL(&s_registry_mux);
+    int slot = -1, libero = -1, piuVecchio = 0;
+    for (int i = 0; i < LINK_UNKNOWN_MAX; i++) {
+        if (s_unknown[i].last_ms == 0) {
+            if (libero < 0) libero = i;
+            continue;
+        }
+        if (memcmp(s_unknown[i].mac, mac, 6) == 0) { slot = i; break; }
+        // (int32_t) sulla differenza: regge all'overflow dei 49 giorni
+        if ((int32_t)(s_unknown[i].last_ms - s_unknown[piuVecchio].last_ms) < 0 ||
+            s_unknown[piuVecchio].last_ms == 0) {
+            piuVecchio = i;
+        }
+    }
+    if (slot < 0) {
+        // Nessun posto libero: esce la voce piu' vecchia. E' un anello.
+        slot = (libero >= 0) ? libero : piuVecchio;
+        memcpy(s_unknown[slot].mac, mac, 6);
+        s_unknown[slot].quante = 0;
+    }
+    s_unknown[slot].rssi    = rssi;
+    s_unknown[slot].last_ms = now;
+    s_unknown[slot].esito   = esito;
+    if (s_unknown[slot].quante < 0xFFFF) s_unknown[slot].quante++;
+    portEXIT_CRITICAL(&s_registry_mux);
+}
+
+bool Link_Hub_Unknown(int i, uint8_t mac_out[6], int8_t *rssi_out,
+                      uint32_t *last_ms_out, uint16_t *quante_out,
+                      uint8_t *esito_out)
+{
+    if (i < 0 || i >= LINK_UNKNOWN_MAX) return false;
+    portENTER_CRITICAL(&s_registry_mux);
+    const bool pieno = (s_unknown[i].last_ms != 0);
+    if (pieno) {
+        if (mac_out)     memcpy(mac_out, s_unknown[i].mac, 6);
+        if (rssi_out)    *rssi_out    = s_unknown[i].rssi;
+        if (last_ms_out) *last_ms_out = s_unknown[i].last_ms;
+        if (quante_out)  *quante_out  = s_unknown[i].quante;
+        if (esito_out)   *esito_out   = s_unknown[i].esito;
+    }
+    portEXIT_CRITICAL(&s_registry_mux);
+    return pieno;
+}
+
+void Link_Hub_UnknownClear(void)
+{
+    portENTER_CRITICAL(&s_registry_mux);
+    memset(s_unknown, 0, sizeof(s_unknown));
+    portEXIT_CRITICAL(&s_registry_mux);
+}
+
+const char *Link_Hub_UnknownEsito(uint8_t esito)
+{
+    switch (esito) {
+        case LINK_UNK_HELLO:       return "HELLO valido: cerca un hub";
+        case LINK_UNK_DATA_ORFANO: return "DATA unicast: si crede gia' associato a noi";
+        case LINK_UNK_LUNGHEZZA:   return "scartato: lunghezza diversa, non e' il nostro protocollo";
+        case LINK_UNK_VERSIONE:    return "scartato: versione di protocollo diversa";
+        case LINK_UNK_PIENO:       return "registro pieno: non c'e' posto per un altro nodo";
+        default:                   return "scartato: messaggio valido ma non HELLO ne' DATA";
+    }
+}
+
 /**
  * Inserimento nel registro, unico punto per tutte le strade che portano a un
  * peer nuovo: la scoperta radio (hub_on_new_peer, che gira nel task del driver
@@ -131,14 +215,38 @@ static LinkPeer *hub_insert_peer(const uint8_t mac[6], link_node_type_t type,
 
 static void hub_on_new_peer(const esp_now_recv_info_t *info, const uint8_t *data, int len, void *arg)
 {
+    const bool broadcast = memcmp(info->des_addr, ESP_NOW.BROADCAST_ADDR, 6) == 0;
+
+    // L'RSSI c'e' e nessuno lo leggeva. Non e' l'RSSI di ogni pacchetto (per
+    // quello servirebbe sostituire il dispatch del wrapper Arduino, che lo
+    // butta prima di consegnare) ma e' esattamente quello che serve mentre si
+    // associa: dice se il nodo e' dove si pensa che sia, PRIMA di adottarlo.
+    const int8_t rssi = (info->rx_ctrl != nullptr) ? (int8_t)info->rx_ctrl->rssi : 0;
+
+    // Perche' questo messaggio non diventera' un nodo. Si distingue la
+    // lunghezza dalla versione guardandole separatamente: link_parse_message()
+    // torna false per entrambe, e "non e' il nostro protocollo" e "e' il
+    // nostro, ma di un'altra versione" mandano a cercare in due posti diversi.
+    link_message_t msg;
+    uint8_t esito;
+    if (len != (int)sizeof(link_message_t))              esito = LINK_UNK_LUNGHEZZA;
+    else if (data == nullptr || data[0] != LINK_PROTOCOL_VERSION)
+                                                         esito = LINK_UNK_VERSIONE;
+    else if (!link_parse_message(data, len, &msg))       esito = LINK_UNK_ALTRO;
+    else if (broadcast && msg.msg_type == LINK_MSG_HELLO) esito = LINK_UNK_HELLO;
+    else if (!broadcast && msg.msg_type == LINK_MSG_DATA) esito = LINK_UNK_DATA_ORFANO;
+    else                                                 esito = LINK_UNK_ALTRO;
+
+    // SEMPRE, anche fuori dalla finestra di pairing: contare non e' adottare.
+    // Fuori dalla finestra l'hub resta sordo -- quella scelta non cambia -- ma
+    // smette di essere anche ignaro, e la UI puo' dire "un nodo sconosciuto
+    // sta cercando un hub: apri l'associazione" invece di non dire niente.
+    unknown_note(info->src_addr, rssi, esito);
+
     if (!s_pairing_mode) {
         return;   // fuori dalla finestra di pairing: ignora mittenti sconosciuti
     }
-
-    const bool broadcast = memcmp(info->des_addr, ESP_NOW.BROADCAST_ADDR, 6) == 0;
-
-    link_message_t msg;
-    if (!link_parse_message(data, len, &msg)) {
+    if (esito != LINK_UNK_HELLO && esito != LINK_UNK_DATA_ORFANO) {
         return;
     }
 
@@ -159,17 +267,19 @@ static void hub_on_new_peer(const esp_now_recv_info_t *info, const uint8_t *data
     //    la sua pagina dice che va tutto bene, mentre l'hub non mostra nulla.
     //    Verificato su hardware il 2026-08-23 fra EnvNode_C3 e MeteoNode_C3:
     //    quindici DATA "riusciti" e zero nodi visti dall'hub.
-    const bool hello = broadcast  && msg.msg_type == LINK_MSG_HELLO;
-    const bool orfano = !broadcast && msg.msg_type == LINK_MSG_DATA;
-    if (!hello && !orfano) {
-        return;
-    }
+    const bool orfano = (esito == LINK_UNK_DATA_ORFANO);
 
     LinkPeer *peer = hub_insert_peer(info->src_addr, (link_node_type_t)msg.node_type,
                                      msg.name, /*queue_welcome=*/true,
                                      orfano ? &msg : nullptr);
     if (peer == nullptr) {
-        return;   // registro pieno, o gia' presente
+        // Registro pieno, oppure gia' presente. Il primo caso e' un guasto che
+        // va detto: senza, un nono nodo sparirebbe in silenzio e la pagina
+        // direbbe soltanto che non si associa.
+        if (s_peer_count >= ESPNOW_LINK_MAX_PEERS) {
+            unknown_note(info->src_addr, rssi, LINK_UNK_PIENO);
+        }
+        return;
     }
 
     link_notify_app(info->src_addr, &msg);

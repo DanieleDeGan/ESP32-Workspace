@@ -1,5 +1,164 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-03 (2) — il Blocco B: solo occhi, e il primo che ha già visto qualcosa
+
+Le quattro voci del Blocco B di `docs/Proposte-2026-09-02.md`. Non cambiano il
+comportamento di niente: **aggiungono solo occhi**, e per questo erano il blocco
+con il rapporto valore/rischio migliore. Hub a `v45`, poi `v46`; nodo a `v16`.
+
+### Il tempo di giro, e cosa ha misurato al primo colpo
+
+`loop_max_ms`, `loop_max_dove`, `loop_max_ora`, `loop_lenti` in `/api/stato`,
+trapiantati da `EnvNode_C3` — che è spenta dal 31/08, quindi la misura stava
+sulla scheda che bloccava di meno e non su questa, che di mestiere si ferma.
+
+**Il pannello non entra nel massimo**, ed è deliberato: 2,6 s lì sono normali e
+coprirebbero per sempre tutto il resto, che è la parte interessante. Si misurano
+le quattro fasi che vengono **prima di qualunque disegno** — `web`, `nodi`,
+`seed`, `bottone` — che sono anche tutto ciò che nel `loop()` può bloccare senza
+doverlo. Il tempo del disegno ha già due posti suoi, `epd_ultimo_ms` e il
+registro dei refresh sulla card.
+
+Venticinque secondi dopo l'accensione aveva già il suo primo dato:
+
+```
+loop_max_ms=1325  dove='seed'  ora=2026-09-03 08:04:44  lenti=1
+```
+
+Cioè `seedForecastDaSD()`, la ricostruzione dello storico dai CSV al boot:
+**1325 ms**, una volta per accensione. Non è un guasto ed è tempo speso bene —
+è la funzione che dopo un riavvio evita tre ore di «non ancora noto» — ma
+adesso è un numero invece che un'ipotesi. La soglia dei «lenti» è a 500 ms,
+circa metà del refresh parziale più corto.
+
+### Il watchdog, e il baratto che comporta
+
+Fino a `v44` `app_reset_reason()` traduceva `WDT_TASK`, `WDT_INT` e `WDT`, e in
+tutto lo sketch non c'era una sola chiamata a `esp_task_wdt_add()`: **tre
+stringhe che non potevano comparire**, una diagnosi scritta per un meccanismo
+che non esisteva.
+
+**Il baratto va conosciuto.** Il core inizializza già il TWDT a 5 s con l'idle
+task di CPU0 iscritto, e il timeout è **uno solo** per tutto il TWDT: portarlo a
+60 s allunga anche quella protezione. Si accetta, perché copre uno scenario in
+cui la radio è comunque morta e cambia solo quanto in fretta si riavvia, mentre
+si guadagna la protezione del `loop()`, che non aveva niente ed è dove sta il
+rischio vero. L'idle di CPU0 resta **iscritto**: si allunga, non si spegne.
+
+Sessanta secondi e non meno perché il caso legittimo più lungo è il budget di
+invio di un file (20 s) più una `write()` bloccata dentro il core (~10 s). Un
+timeout stretto trasformerebbe un download lento in un riavvio.
+
+**Durante l'OTA il watchdog si alimenta invece di sospenderlo**, dalla callback
+di progresso: così resta armato anche lì, e un aggiornamento che si pianta
+davvero viene comunque ripreso.
+
+**Sul nodo vale di più che sull'hub**, e il conto lo dice: un hub bloccato perde
+dati, un nodo bloccato **non si riaddormenta** e svuota una cella da 1500 mAh in
+**~21 ore** (WiFi acceso, ~70 mA) contro i mesi che dovrebbe durare. E la rete
+di sicurezza non aiuta, perché sta *dentro* il percorso del sonno e si esegue
+solo se il codice sta girando — che è precisamente ciò che non succede.
+
+Lì i timeout sono due: 60 s nella finestra di veglia, **20 s** nel ciclo di
+risveglio, disarmato prima di `esp_deep_sleep_start()` (quella non torna, e un
+watchdog iscritto a un task che non esiste più sarebbe un riavvio a caso).
+
+**Venti e non dieci, come avevo scritto.** Il documento proponeva 10 s contando
+la veglia misurata di 0,68 s; ma il caso peggiore *legittimo* di un risveglio è
+~9 s — 4 s di `PAIRING_MS`, ~2,6 s di ricerca del canale su tredici canali,
+più misura e invio con i ritentativi — e dieci secondi ci passerebbero dentro,
+producendo riavvii falsi proprio nei risvegli difficili. Contro un blocco vero,
+20 s e 10 s si equivalgono.
+
+### `wdt_armato`, cioè la ragione della `v46`
+
+`v45` era già in servizio da due minuti quando è arrivata `v46`, per una riga
+che vale il giro in più: **un watchdog configurato male e uno giusto sono
+indistinguibili da fuori finché non serve**, e quando serve è tardi. Il log di
+boot di questa scheda non è leggibile via USB (si ferma a 256 byte), quindi il
+`[wdt] armato` sulla seriale non lo vedrebbe nessuno.
+
+`/api/stato` riporta ora `wdt_armato` e `wdt_timeout_s`, e `/api/salute` alza un
+avviso se è falso. Non prova che il riavvio funzioni — per quello serve un
+blocco vero — ma prova che il task `loop` **è iscritto**, che è la metà che si
+può sbagliare in silenzio. Sulla scheda: `armato=True, timeout=60 s`.
+
+### Il diario degli eventi
+
+`/eventi/AAAA-MM.csv` sulla card, `GET /api/eventi?m=AAAA-MM` (senza `m` è il
+mese corrente). Una riga per **transizione**: boot, primo sync NTP, un nodo che
+tace, un nodo che torna, la card che rifiuta righe, un OTA, la finestra di
+associazione.
+
+Esiste perché almeno tre indagini raccontate in questo documento sono state, in
+sostanza, la ricostruzione a mano di un diario che nessuno teneva: il buco di
+456 s del 24/08, l'uptime di 0,7 h del 30/08, i dodici minuti muti dell'01/09.
+Tutte e tre hanno la stessa forma — l'evento è passato e l'unica traccia che ha
+lasciato è indiretta. I contatori in RAM dicono **quanto**, mai **quando**.
+
+Tre scelte che lo tengono leggibile:
+
+- **una riga per cambio di stato, mai una per campione.** `nodo_muto` si scrive
+  quando il nodo *diventa* muto, non finché lo è. La card che rifiuta scrive una
+  riga sola per serie, e una quando riprende.
+- **un tetto per tipo** (dieci righe l'ora) e le soppressioni **dichiarate**:
+  alla fine della finestra esce una riga che dice quante ne mancano. Mai un
+  silenzio.
+- **l'ora dev'essere vera.** Il boot capita *prima* del primo sync NTP, quindi
+  non si può datare quando succede: si tiene da parte e si scrive appena
+  l'orologio è vero, portandosi dietro quanti secondi erano passati. Una riga
+  datata con l'ora di compilazione — identica ad ogni riavvio — non è un dato
+  salvato, è un dato falsificato.
+
+Le prime due righe scritte, che sono anche la prova che il meccanismo funziona:
+
+```
+2026-09-03T08:04:43,ntp,orario sincronizzato dopo 10 s di accensione
+2026-09-03T08:04:43,boot,SW n.50 fw=v45  ripartita 10 s fa  ora NTP
+```
+
+### L'ascolto durante l'associazione
+
+`GET /api/pairing/ascolto`: i MAC sconosciuti sentiti di recente, con **RSSI**,
+da quanto, quante volte, e **perché non sono diventati un nodo**.
+
+L'informazione c'era già e veniva buttata via **due volte**, in
+`hub_on_new_peer()`: un `return` silenzioso fuori dalla finestra di pairing, e un
+altro quando il payload non si parsa. E l'RSSI arriva in `info->rx_ctrl` — il
+commento in `EspNowLink.h` diceva che non è disponibile, ed è vero del *wrapper*
+Arduino, non di questo callback.
+
+Adesso si annota **sempre, anche fuori dalla finestra**: contare non è adottare.
+L'hub resta sordo — quella scelta non cambia — ma smette di essere anche
+ignaro, e diventa possibile la frase che prima non si poteva dire: *«un nodo
+sconosciuto sta cercando un hub, RSSI −62, otto secondi fa: apri
+l'associazione»*.
+
+Gli esiti distinguono la **lunghezza** dalla **versione** guardandole
+separatamente, perché `link_parse_message()` torna `false` per entrambe e «non è
+il nostro protocollo» e «è il nostro, di un'altra versione» mandano a cercare in
+due posti diversi. C'è anche `LINK_UNK_PIENO`: con il registro pieno, un nono
+nodo sparirebbe in silenzio.
+
+**Il limite è nella risposta**, non lasciato dedurre: un elenco vuoto significa
+che nessun nodo sta *cercando* un hub, non che non ce ne siano di accesi — uno
+già associato altrove non manda HELLO, e i suoi DATA vanno in unicast a un
+altro MAC, quindi questa scheda non li riceve nemmeno a livello radio.
+
+### Cosa resta scoperto
+
+- **Il watchdog non è stato provato con un blocco vero.** `wdt_armato` dice che
+  il task è iscritto, non che il riavvio funzioni. Servirebbe il `prova-blocco`
+  previsto dal documento, che è una funzione che fabbrica il guasto — stessa
+  disciplina di `prova-canale` e `prova-riallineo` — e costa un'interruzione
+  deliberata di poco più di un minuto.
+- **Il nodo è a `v16` nel repo ma non sulle schede.** Il nodo a muro si
+  aggiorna via OTA; quello a batteria dorme e non ha IP, quindi richiede un
+  power-cycle e i cinque minuti di veglia.
+- Il blocco degli otto secondi corretto ieri con il Blocco A **ora lascerebbe
+  traccia** in `loop_max_dove: nodi`. Prima non la lasciava, ed è il motivo per
+  cui non si saprà mai quante volte fosse già successo.
+
 ## Aggiornamento del 2026-09-03 — leggere il codice invece delle idee, e sei difetti
 
 Una lettura sistematica di `MeteoHub_S3` (`v43`), `MeteoNode_C3` (`v15`) e

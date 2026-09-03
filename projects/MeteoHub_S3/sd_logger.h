@@ -266,6 +266,37 @@ bool sd_img_mini(const char* nome, uint8_t* out);
 //   tipo    completo | parziale
 bool sd_log_refresh(const char* motivo, bool completo, uint32_t ms);
 
+// ---------------------------------------------------------------------
+//  Diario degli eventi
+// ---------------------------------------------------------------------
+// Una riga per TRANSIZIONE in /eventi/AAAA-MM.csv: boot, sync NTP, un nodo
+// che tace, un nodo che torna, la card che rifiuta righe, un OTA, una
+// finestra di associazione.
+//
+// PERCHE' ESISTE. `docs/Stazione-Meteo.md` racconta almeno tre indagini che
+// sono state, in sostanza, la ricostruzione a mano di questo diario: il buco
+// di 456 s del 24/08, l'uptime di 0,7 h del 30/08, i dodici minuti muti dopo
+// il blackout dell'01/09. Tutte e tre hanno la stessa forma -- l'evento e'
+// passato e l'unica traccia che ha lasciato e' indiretta. I contatori in RAM
+// dicono QUANTO (boot_count 49), mai QUANDO; i CSV dei nodi dicono che c'e'
+// un buco, mai perche'.
+//
+// E' UNA DIAGNOSI, NON UN LOG. Se ci finisse dentro ogni pacchetto diventerebbe
+// illeggibile e non lo guarderebbe piu' nessuno: una riga per CAMBIO DI STATO,
+// mai una riga per campione. `nodo_muto` si scrive quando il nodo DIVENTA
+// muto, non finche' lo e'.
+//
+// Sulla card e non in NVS per la stessa ragione del registro dei refresh: gli
+// eventi sono pochi, testuali e storici, e la flash interna ha cicli di erase
+// finiti mentre la card no.
+//
+// Colonne: ts_iso,tipo,dettaglio
+bool sd_log_evento(const char* tipo, const char* dettaglio);
+
+// Il file di un mese ("AAAA-MM"), per il download. File falsy se assente o se
+// il nome non e' valido.
+File sd_open_eventi(const char* mese);
+
 bool sd_img_exists(const char* nome);
 File sd_img_open(const char* nome);              // lettura, File falsy se assente
 File sd_img_open_for_write(const char* nome);    // crea /images, tronca
