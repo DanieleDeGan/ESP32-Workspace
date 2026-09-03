@@ -48,6 +48,11 @@ uint32_t    app_loop_lenti();
 bool        app_wdt_armato();
 uint32_t    app_wdt_timeout_s();
 
+// Fabbrica il guasto che il watchdog deve riprendere: blocca il loop() per
+// `secondi` senza alimentarlo. ACCODA e basta -- il blocco lo fa il loop, o la
+// risposta HTTP non partirebbe mai. Vedi la nota in fondo a MeteoHub_S3.ino.
+void        app_chiedi_blocco(uint32_t secondi);
+
 // La tela: i 15.000 byte che sono finiti sul vetro, nel formato dei .bin
 // (1 bit per pixel, MSB per primo, 50 byte per riga, 1 = bianco). Non e' una
 // copia dello stato del pannello: e' lo stato del pannello, perche' ogni

@@ -1595,8 +1595,25 @@ senza di loro si somiglierebbero (schermo che non cambia).
   - **`wdt_armato` in `/api/stato`**, con avviso in `/api/salute` se è falso:
     un watchdog configurato male e uno giusto sono indistinguibili da fuori
     finché non serve, e il log di boot di questa scheda non è leggibile via USB.
-    Non prova che il riavvio funzioni — per quello serve un blocco vero — ma
-    prova che il task è iscritto, che è la metà che si sbaglia in silenzio.
+    Prova che il task è **iscritto**, che è la metà che si sbaglia in silenzio.
+  - **E l'altra metà si prova fabbricando il guasto**: `POST /api/prova/blocco`
+    (da `v49`) blocca il `loop()` apposta senza alimentare il watchdog. Il
+    comando si **accoda**, non si esegue nell'handler HTTP, o la risposta non
+    partirebbe e il client resterebbe appeso senza sapere se è arrivato. Il
+    tetto di 120 s serve al caso in cui la prova **fallisce**: senza, un numero
+    sbagliato terrebbe ferma la scheda per ore.
+    - **Eseguita il 2026-09-03, e riuscita**: blocco chiesto 90 s, watchdog
+      scattato a **~60** (l'ha interrotto), 14 s di boot, **75 s** dal comando
+      al ritorno in rete. `reset_reason` **WDT_TASK** e `boot_count` 54 → 55 —
+      la prima volta che quella stringa compare da quando esiste il progetto.
+      Tutto ciò che sta in NVS è sopravvissuto: registro nodi, pagine,
+      impostazioni.
+    - Il diario ha registrato **la prova e il suo esito** (`prova_blocco` alle
+      13:02:54, `boot WDT_TASK` alle 13:04:10): le due funzioni del Blocco B si
+      sono verificate a vicenda.
+    - **Se il watchdog non funzionasse** il blocco durerebbe tutti i secondi
+      chiesti e il codice scriverebbe `FALLITA` sulla seriale **e nel diario**:
+      il risultato negativo non è un silenzio.
 
 - **Il diario degli eventi** (da `v45`): `/eventi/AAAA-MM.csv` sulla card,
   `GET /api/eventi`. Esiste perché tre indagini raccontate in

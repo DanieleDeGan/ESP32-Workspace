@@ -549,6 +549,7 @@ Solo la riga essenziale: il racconto sta in `docs/Stazione-Meteo.md`.
 | **Blocco A**: cadenza dai soli DATA consecutivi, tetto al salto di `seq`, timer per MAC, un WELCOME per giro a turno, stato dell'antighosting in `/api/stato`, testo dell'errore in dashboard | 2026-09-03 | `MeteoHub_S3` `v44`, `EspNowLink` |
 | **Blocco B**: tempo di giro dell'hub, watchdog armato su entrambe le schede, diario degli eventi su card, ascolto durante l'associazione con RSSI | 2026-09-03 | `MeteoHub_S3` `v45`-`v46`, `MeteoNode_C3` `v16`, `EspNowLink` |
 | Il primo delta dopo un **riavvio** di un nodo non e' un periodo: residuo della voce 17, misurato in servizio (671 s invece di 300) e provato riavviando apposta un nodo | 2026-09-03 | `MeteoHub_S3` `v48` |
+| **`prova-blocco`, e il watchdog provato per davvero**: `reset_reason` **WDT_TASK** per la prima volta nella storia del progetto (blocco 90 s, scattato a 60, tornata in 75) | 2026-09-03 | `MeteoHub_S3` `v49` |
 
 ---
 

@@ -161,7 +161,13 @@
 // precedente invece di 300 — in mezzo c'era il boot piu' la finestra di veglia
 // da 5 minuti — e siccome il seq era consecutivo (1->2) la media mobile se
 // l'e' preso: cadenza appresa 393 s e soglia del muto 1012 invece di 780.
-static const char FW_VERSION[] = "v48";
+// v49 (2026-09-03) — `POST /api/prova/blocco`: fabbrica il guasto che il
+// watchdog deve riprendere. `wdt_armato` diceva che il task e' iscritto, non
+// che il riavvio funzioni — la meta' verificabile a costo zero, che resta
+// meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
+// funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
+// funzione che non si sa se esiste.
+static const char FW_VERSION[] = "v49";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -351,6 +357,35 @@ static bool s_wdtArmato = false;
 
 bool     app_wdt_armato()    { return s_wdtArmato; }
 uint32_t app_wdt_timeout_s() { return WDT_TIMEOUT_MS / 1000; }
+
+// --- prova-blocco: fabbricare il guasto invece di aspettarlo ---------------
+// `wdt_armato` dice che il task e' iscritto, NON che il riavvio funzioni: e'
+// la meta' che si puo' verificare a costo zero, e resta meta'. Questo comando
+// blocca il loop() apposta, senza alimentare il watchdog, e la prova riesce se
+// la scheda riparte da sola con reset_reason WDT_TASK -- una stringa che fino
+// alla v45 non poteva comparire.
+//
+// E' la stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo, e per
+// la stessa ragione: una funzione che si attiva una volta all'anno, e mai sotto
+// osservazione, e' una funzione che non si sa se esiste.
+//
+// SI ACCODA, non si esegue nell'handler HTTP: bloccando li' la risposta non
+// partirebbe e il client resterebbe appeso senza sapere se il comando e'
+// arrivato. Stessa regola di app_chiedi_pagina()/app_chiedi_refresh().
+//
+// IL TETTO SERVE AL CASO IN CUI LA PROVA FALLISCE. Se il watchdog NON scatta,
+// il blocco dura tutto il tempo chiesto: senza limite, un numero sbagliato
+// terrebbe ferma la scheda per ore. Con il tetto il caso peggiore e' due
+// minuti, ed e' anche il risultato negativo che si voleva vedere.
+static const uint32_t BLOCCO_MAX_S = 120;
+static uint32_t s_bloccoChiesto = 0;
+
+void app_chiedi_blocco(uint32_t secondi)
+{
+  if (secondi == 0) secondi = 1;
+  if (secondi > BLOCCO_MAX_S) secondi = BLOCCO_MAX_S;
+  s_bloccoChiesto = secondi;
+}
 
 // La maschera degli idle task si LEGGE da come il core e' configurato, non si
 // scrive a mano: passarne una sbagliata li disiscriverebbe, togliendo in
@@ -2936,6 +2971,28 @@ void loop()
   // sono decine di secondi legittimi, e finirebbero nel massimo coprendo per
   // sempre il guasto che questo contatore deve far vedere.
   t = s_otaAttivo ? millis() : faseFine("web", t);
+
+  // Prova del watchdog: si blocca QUI, dopo net_loop(), cosi' la risposta HTTP
+  // e' gia' partita e chi ha dato il comando sa che e' arrivato. Da questo
+  // punto in poi nessuno alimenta il watchdog: se e' armato davvero, la scheda
+  // riparte da sola entro WDT_TIMEOUT_MS e reset_reason dira' WDT_TASK.
+  if (s_bloccoChiesto) {
+    const uint32_t secondi = s_bloccoChiesto;
+    s_bloccoChiesto = 0;   // una volta sola: un riavvio non deve ripeterla
+    evento("prova_blocco", "loop bloccato apposta per provare il watchdog");
+    Serial.printf("[prova] blocco il loop per %lu s SENZA alimentare il "
+                  "watchdog: se e' armato, riparto da solo\n",
+                  (unsigned long)secondi);
+    Serial.flush();
+    const uint32_t fine = millis() + secondi * 1000UL;
+    while ((int32_t)(millis() - fine) < 0) { /* apposta: niente wdt_reset */ }
+    // Ci si arriva SOLO se il watchdog non ha fatto il suo lavoro. Non e' un
+    // errore del comando: e' il risultato negativo, e va detto forte.
+    Serial.println("[prova] FALLITA: il blocco e' finito e la scheda non e' "
+                   "ripartita. Il watchdog NON sta funzionando.");
+    evento("prova_blocco", "FALLITA: nessun riavvio, il watchdog non funziona");
+    t = millis();
+  }
 
   // Riconnessione WiFi: il sync NTP va rilanciato ad OGNI ritorno della rete,
   // non solo al primo. Senza, una scheda che perde l'AP per un giorno resta con

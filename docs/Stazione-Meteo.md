@@ -145,13 +145,51 @@ che nessun nodo sta *cercando* un hub, non che non ce ne siano di accesi — uno
 già associato altrove non manda HELLO, e i suoi DATA vanno in unicast a un
 altro MAC, quindi questa scheda non li riceve nemmeno a livello radio.
 
+### Il watchdog provato per davvero (`v49`, stessa giornata)
+
+`wdt_armato` diceva che il task è iscritto, non che il riavvio funzioni: la
+metà verificabile a costo zero, che resta metà. Per l'altra serve fabbricare il
+guasto, ed è quello che fa `POST /api/prova/blocco`.
+
+**Due scelte di disegno che valgono più del comando.** Si **accoda**, non si
+esegue nell'handler HTTP — bloccando lì la risposta non partirebbe e chi ha dato
+il comando resterebbe appeso senza sapere se è arrivato, che è la stessa regola
+di `app_chiedi_pagina()`. E ha un **tetto di 120 s**, che serve al caso in cui la
+prova *fallisce*: se il watchdog non scatta, il blocco dura tutti i secondi
+chiesti, e senza limite un numero sbagliato terrebbe ferma la scheda per ore.
+
+Eseguita alle 13:02:54 con 90 s:
+
+```
+13:02:54  prova_blocco  loop bloccato apposta per provare il watchdog
+13:04:10  boot          WDT_TASK n.55 fw=v49  ripartita 14 s fa
+```
+
+| | |
+|---|---|
+| blocco chiesto | 90 s |
+| watchdog scattato a | **~60 s** — l'ha interrotto |
+| boot fino a NTP | 14 s |
+| dal comando al ritorno in rete | **75 s** |
+
+`reset_reason` **WDT_TASK**, `boot_count` 54 → 55. È la prima volta che quella
+stringa compare da quando esiste il progetto: fino alla `v45`
+`app_reset_reason()` sapeva tradurla e nessun meccanismo poteva produrla.
+
+Tutto ciò che sta in NVS è sopravvissuto — registro nodi, pagine, impostazioni —
+e il diario ha registrato **la prova e il suo esito**, quindi le due voci del
+Blocco B si sono verificate a vicenda.
+
+**Se il watchdog non avesse funzionato** il blocco sarebbe durato 90 s e il
+codice avrebbe scritto `FALLITA` sulla seriale *e nel diario*: il risultato
+negativo non è un silenzio, ed è la parte che rende la prova una prova.
+
 ### Cosa resta scoperto
 
-- **Il watchdog non è stato provato con un blocco vero.** `wdt_armato` dice che
-  il task è iscritto, non che il riavvio funzioni. Servirebbe il `prova-blocco`
-  previsto dal documento, che è una funzione che fabbrica il guasto — stessa
-  disciplina di `prova-canale` e `prova-riallineo` — e costa un'interruzione
-  deliberata di poco più di un minuto.
+- **Il watchdog del NODO non è provato allo stesso modo.** Lì ha due timeout
+  diversi e va disarmato prima del deep sleep: stesso codice e stesso
+  ragionamento, ma è inferenza, non misura. Servirebbe un comando analogo, e il
+  nodo a batteria non è raggiungibile mentre dorme.
 - **Il nodo è a `v16` nel repo ma non sulle schede.** Il nodo a muro si
   aggiorna via OTA; quello a batteria dorme e non ha IP, quindi richiede un
   power-cycle e i cinque minuti di veglia.

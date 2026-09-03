@@ -427,6 +427,28 @@ static void handleApiPairing() {
   srv.send(200, "application/json", json);
 }
 
+// POST /api/prova/blocco?s=90 — fabbrica il guasto che il watchdog deve
+// riprendere. La scheda smette di rispondere per qualche decina di secondi e
+// riparte da sola: e' voluto, ed e' l'unico modo di sapere se il watchdog
+// funziona davvero invece di essere solo configurato.
+static void handleApiProvaBlocco() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+
+  const uint32_t s = srv.hasArg("s") ? (uint32_t)srv.arg("s").toInt() : 90;
+  app_chiedi_blocco(s);
+
+  // La risposta parte ADESSO, prima che il loop si blocchi: il comando si
+  // accoda e basta. Dice anche cosa aspettarsi, perche' da fuori un blocco
+  // voluto e una scheda morta si somigliano parecchio.
+  String j = "{\"ok\":true,\"blocco_s\":" + String(s);
+  j += ",\"wdt_armato\":"; j += (app_wdt_armato() ? "true" : "false");
+  j += ",\"wdt_timeout_s\":" + String(app_wdt_timeout_s());
+  j += ",\"atteso\":\"la scheda smette di rispondere e riparte da sola entro il "
+       "timeout; poi /api/stato deve dire reset_reason WDT_TASK\"}";
+  srv.send(200, "application/json", j);
+}
+
 // GET /api/eventi?m=AAAA-MM — il diario di un mese, in CSV.
 //
 // Si serve il file grezzo e non un JSON: sono poche righe testuali al giorno,
@@ -2304,6 +2326,7 @@ static const Rotta ROTTE[] = {
 
   { HTTP_GET,  "/api/immagini",         handleApiImmagini,           "le immagini sulla card, a pagine, col totale filtrato", "da=0&quante=12&cerca=TESTO" },
   { HTTP_GET,  "/api/eventi",           handleApiEventi,             "il diario degli eventi di un mese (boot, NTP, nodo muto, card, OTA, associazione)", "m=AAAA-MM (default: il mese corrente)" },
+  { HTTP_POST, "/api/prova/blocco",     handleApiProvaBlocco,        "PROVA: blocca il loop apposta per verificare che il watchdog riavvii davvero. La scheda smette di rispondere e riparte", "s=secondi (default 90, max 120)" },
   { HTTP_GET,  "/api/epd/totale",       handleApiEpdTotale,          "quanti refresh ha fatto il pannello: si contano dalla card", "" },
   { HTTP_GET,  "/api/epd/registro",     handleApiEpdRegistro,        "il registro dei refresh del pannello, un file al mese", "m=AAAA-MM" },
   { HTTP_GET,  "/api/immagini/mini",    handleApiImmaginiMini,       "la miniatura 80x60 di un'immagine (600 byte)", "nome=NOME" },
