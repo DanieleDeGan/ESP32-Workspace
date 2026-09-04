@@ -136,6 +136,26 @@ int sd_list_remote_days(const char* nodeName, sd_date_cb_t cb, void* arg, int ma
 // Come sd_open_day(), ma per un nodo remoto (download del CSV grezzo).
 File sd_open_remote_day(const char* nodeName, const char* isoDate);
 
+// Legge il CSV di un giorno di un nodo riga per riga, gia' parsato. E' il
+// posto UNICO dove si interpreta quel formato: prima lo stesso parser stava
+// copiato in due punti del .ino, e una colonna aggiunta un domani avrebbe
+// dovuto essere ricordata in entrambi.
+//
+// La lettura e' BUFFERIZZATA (512 byte per volta). Non e' un dettaglio: la
+// versione precedente chiamava File::read() un byte alla volta, e su un bus
+// SPI ogni chiamata attraversa il driver della card. Con un giorno a 60 s
+// (1440 righe, ~115 kB) il riepilogo costava 2125 ms di loop() bloccato.
+//
+//   codaMaxBytes  0 = tutto il file. Altrimenti si parte da quel tanto di
+//                 coda (la prima riga, tagliata a meta', viene scartata):
+//                 serve a chi ricostruisce una finestra recente e non vuole
+//                 pagare la lettura di giorni interi.
+//
+// Torna quante righe sono state passate alla callback.
+typedef void (*sd_remote_row_cb_t)(time_t ts, uint32_t seq, const float v[3], void* arg);
+int sd_read_remote_day(const char* nodeName, const char* isoDate,
+                       sd_remote_row_cb_t cb, void* arg, size_t codaMaxBytes);
+
 // ---------------------------------------------------------------------
 //  Riepilogo giornaliero — /nodi/<NOME>/riepilogo.csv
 // ---------------------------------------------------------------------

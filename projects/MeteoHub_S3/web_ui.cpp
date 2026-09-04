@@ -423,6 +423,169 @@ static void handleApiNodiRiepilogoRicalcola() {
 
 static void handleAnalisi() { servePagina("analisi", ANALISI_PAGE); }
 
+// ---------------------------------------------------------------------
+//  Serie concatenata su piu' giorni, DECIMATA A BORDO
+// ---------------------------------------------------------------------
+// Il riepilogo risponde a "che mese e' stato"; questa risponde a "come sono
+// andate queste settantadue ore" e "il 2 e il 3 settembre a confronto", che
+// vogliono i dati ORARI e non una riga al giorno.
+//
+// LA DECIMAZIONE SI FA QUI, NON NEL BROWSER, ed e' tutto il punto: sette
+// giorni di CSV sono ~160 kB che uscirebbero dal WebServer sincrono un chunk
+// per volta, e per tutto quel tempo l'hub non preleva i DATA dal driver
+// ESP-NOW, che ne tiene UNO per nodo. Aggregando a bordo escono ~12 kB. Su un
+// grafico da 900 px i 2016 punti di una settimana non sono nemmeno
+// distinguibili: e' banda spesa per pixel che non esistono.
+//
+// Ogni cesto porta MEDIA, MIN e MAX: la media da sola nasconderebbe proprio i
+// picchi, cioe' la ragione per cui si guarda un grafico.
+//
+//   nodo    nome del nodo
+//   da, a   giorni estremi compresi (AAAA-MM-GG); `a` assente = come `da`
+//   punti   quanti cesti (default 300, max 1000)
+#define SERIE_GIORNI_MAX 14
+#define SERIE_PUNTI_MAX  1000
+
+struct SerieCesto {
+  double somma;  uint32_t n;
+  float  minimo, massimo;
+};
+
+struct SerieCtx {
+  SerieCesto* c;
+  int      punti;
+  time_t   t0;
+  uint32_t passo;       // secondi per cesto
+  uint32_t righe;
+  int      quale;       // 0=temp 1=umidita 2=pressione
+};
+
+static void serieRiga(time_t ts, uint32_t seq, const float v[3], void* arg)
+{
+  (void)seq;
+  SerieCtx* x = (SerieCtx*)arg;
+  x->righe++;
+  const float val = v[x->quale];
+  if (!isfinite(val)) return;                 // un buco resta un buco
+  if (ts < x->t0) return;
+  const uint32_t i = (uint32_t)(ts - x->t0) / x->passo;
+  if (i >= (uint32_t)x->punti) return;
+  SerieCesto& c = x->c[i];
+  if (c.n == 0) { c.minimo = val; c.massimo = val; }
+  else {
+    if (val < c.minimo) c.minimo = val;
+    if (val > c.massimo) c.massimo = val;
+  }
+  c.somma += (double)val;
+  c.n++;
+}
+
+// Il giorno dopo `iso`, sull'epoch e non sulle cifre: al 31 non segue il 32.
+static bool giornoDopo(const char* iso, char* out, size_t cap)
+{
+  struct tm tmv; memset(&tmv, 0, sizeof(tmv));
+  int aa = 0, mm = 0, gg = 0;
+  if (sscanf(iso, "%4d-%2d-%2d", &aa, &mm, &gg) != 3) return false;
+  tmv.tm_year = aa - 1900; tmv.tm_mon = mm - 1; tmv.tm_mday = gg;
+  tmv.tm_hour = 12; tmv.tm_isdst = -1;         // mezzogiorno: immune all'ora legale
+  const time_t t = mktime(&tmv) + 24 * 3600;
+  struct tm out_tm; localtime_r(&t, &out_tm);
+  return strftime(out, cap, "%Y-%m-%d", &out_tm) > 0;
+}
+
+static time_t mezzanotteDi(const char* iso)
+{
+  struct tm tmv; memset(&tmv, 0, sizeof(tmv));
+  int aa = 0, mm = 0, gg = 0;
+  if (sscanf(iso, "%4d-%2d-%2d", &aa, &mm, &gg) != 3) return 0;
+  tmv.tm_year = aa - 1900; tmv.tm_mon = mm - 1; tmv.tm_mday = gg;
+  tmv.tm_hour = 0; tmv.tm_min = 0; tmv.tm_sec = 0; tmv.tm_isdst = -1;
+  return mktime(&tmv);
+}
+
+static void handleApiNodiSerie() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+
+  if (!srv.hasArg("nodo") || !srv.hasArg("da")) {
+    srv.send(400, "text/plain", "servono i parametri nodo e da"); return;
+  }
+  const String nodo = srv.arg("nodo");
+  const String da   = srv.arg("da");
+  const String a    = srv.hasArg("a") ? srv.arg("a") : da;
+  if (!sd_name_is_safe(da.c_str()) || !sd_name_is_safe(a.c_str())) {
+    srv.send(400, "text/plain", "date non valide (AAAA-MM-GG)"); return;
+  }
+  if (strcmp(da.c_str(), a.c_str()) > 0) {
+    srv.send(400, "text/plain", "il primo giorno viene dopo il secondo"); return;
+  }
+
+  int punti = srv.hasArg("punti") ? srv.arg("punti").toInt() : 300;
+  if (punti < 10) punti = 10;
+  if (punti > SERIE_PUNTI_MAX) punti = SERIE_PUNTI_MAX;
+
+  int quale = srv.hasArg("v") ? srv.arg("v").toInt() : 0;
+  if (quale < 0 || quale > 2) quale = 0;
+
+  // Quanti giorni, con il tetto. Il tetto non e' prudenza generica: ogni
+  // giorno e' una lettura di CSV dentro un handler HTTP, e il loop() sta
+  // fermo per tutto il tempo.
+  char g[11]; strlcpy(g, da.c_str(), sizeof(g));
+  int giorni = 1;
+  while (strcmp(g, a.c_str()) != 0) {
+    if (!giornoDopo(g, g, sizeof(g))) { srv.send(400, "text/plain", "data non valida"); return; }
+    if (++giorni > SERIE_GIORNI_MAX) {
+      srv.send(400, "text/plain", "troppi giorni: il massimo e' " + String(SERIE_GIORNI_MAX));
+      return;
+    }
+  }
+
+  const time_t t0 = mezzanotteDi(da.c_str());
+  if (t0 == 0) { srv.send(400, "text/plain", "data non valida"); return; }
+  const uint32_t durata = (uint32_t)giorni * 24u * 3600u;
+
+  SerieCesto* cesti = (SerieCesto*)calloc(punti, sizeof(SerieCesto));
+  if (!cesti) { srv.send(500, "text/plain", "memoria insufficiente"); return; }
+
+  SerieCtx ctx;
+  ctx.c = cesti; ctx.punti = punti; ctx.t0 = t0;
+  ctx.passo = durata / (uint32_t)punti; if (ctx.passo == 0) ctx.passo = 1;
+  ctx.righe = 0; ctx.quale = quale;
+
+  strlcpy(g, da.c_str(), sizeof(g));
+  for (int i = 0; i < giorni; i++) {
+    sd_read_remote_day(nodo.c_str(), g, serieRiga, &ctx, 0);
+    if (i + 1 < giorni && !giornoDopo(g, g, sizeof(g))) break;
+  }
+
+  // Risposta compatta: un cesto vuoto e' `null`, MAI uno zero -- nel grafico
+  // dev'essere un buco, e uno zero sarebbe una temperatura che nessuno ha
+  // misurato. Stessa regola dei campi vuoti nel CSV.
+  String j;
+  j.reserve((size_t)punti * 26 + 200);
+  j  = F("{\"nodo\":\"");     j += nodo;
+  j += F("\",\"da\":\"");      j += da;
+  j += F("\",\"a\":\"");       j += a;
+  j += F("\",\"v\":");         j += quale;
+  j += F(",\"t0\":");          j += (uint32_t)t0;
+  j += F(",\"passo\":");       j += ctx.passo;
+  j += F(",\"punti\":");       j += punti;
+  j += F(",\"righe_lette\":"); j += ctx.righe;
+  j += F(",\"s\":[");
+  for (int i = 0; i < punti; i++) {
+    if (i) j += ',';
+    if (cesti[i].n == 0) { j += F("null"); continue; }
+    j += '[';
+    j += String((float)(cesti[i].somma / cesti[i].n), 2); j += ',';
+    j += String(cesti[i].minimo, 2);  j += ',';
+    j += String(cesti[i].massimo, 2); j += ']';
+  }
+  j += F("]}");
+  free(cesti);
+
+  srv.send(200, "application/json", j);
+}
+
 static void handleApiNodiAltitudine() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
   WebServer& srv = net_server();
@@ -631,7 +794,7 @@ static const char HUB_PAGE[] PROGMEM = R"HTML(
  stanno molto piu' vicini di cosi'.</p>
 </div>
 <div id="lista"></div>
-<p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/pagine">pagine</a> &mdash; <a href="/api">API</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
+<p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/analisi">analisi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/pagine">pagine</a> &mdash; <a href="/api">API</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
 <p class="muted">I registri dei nodi stanno su microSD, un file per giorno per nodo.</p>
 <script>
 const E=document.getElementById.bind(document);
@@ -2237,7 +2400,7 @@ static const char DASH_UPLOAD_PAGE[] PROGMEM = R"HTML(
  <progress id="p" value="0" max="100" hidden></progress></form>
  <p class="muted" id="s"></p>
  <button id="br" class="dan">Ripristina dashboard di default</button>
- <p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/pagine">pagine</a> &mdash; <a href="/api">API</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
+ <p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/analisi">analisi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/pagine">pagine</a> &mdash; <a href="/api">API</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
 <script>
 const f=document.getElementById('f'),b=document.getElementById('b'),p=document.getElementById('p'),s=document.getElementById('s'),br=document.getElementById('br');
 f.addEventListener('submit',e=>{e.preventDefault();const fd=new FormData(f),x=new XMLHttpRequest();
@@ -2358,6 +2521,7 @@ static const Rotta ROTTE[] = {
   { HTTP_GET,  "/api/nodi/giorni",      handleApiNodiGiorni,         "i giorni di CSV presenti sulla card per un nodo", "nodo=NOME" },
   { HTTP_GET,  "/api/nodi/scarica",     handleApiNodiScarica,        "il CSV di un giorno (ts_iso,ts_unix,fonte_ora,mac,seq,temp_c,hum_pct,press_hpa,batt_mv)", "nodo=NOME, d=AAAA-MM-GG" },
   { HTTP_GET,  "/api/nodi/riepilogo",   handleApiNodiRiepilogo,      "una riga per giorno CHIUSO: min/max/media di T, RH, pressione e rugiada, con campioni/attesi e buchi. La rugiada e' mediata campione per campione, non calcolata dalle medie", "nodo=NOME" },
+  { HTTP_GET,  "/api/nodi/serie",       handleApiNodiSerie,          "serie oraria concatenata su piu' giorni, DECIMATA a bordo in cesti con media/min/max: e' cio' che rende possibile un grafico multi-giorno senza far uscire 160 kB da un server sincrono", "nodo=NOME, da=AAAA-MM-GG, a=AAAA-MM-GG (max 14 giorni), punti=1..1000, v=0|1|2 (T|RH|P)" },
   { HTTP_POST, "/api/nodi/riepilogo/rifai", handleApiNodiRiepilogoRicalcola, "cancella il riepilogo e lo fa ricostruire (un giorno per giro): serve quando cambia il formato o si corregge un difetto, perche' una riga gia' scritta non viene mai riscritta", "nodo=NOME (assente = tutti)" },
 
   { HTTP_GET,  "/api/pannello",         handleApiPannello,           "elenco delle pagine, rotazione, ore di silenzio", "" },

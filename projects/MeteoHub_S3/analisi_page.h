@@ -4,7 +4,7 @@
 //  GENERATO DA www/gen_page.py - NON MODIFICARE A MANO.
 //  La sorgente e' www/analisi.html: si modifica quella e si
 //  rilancia  python www/gen_page.py analisi  prima di ricompilare.
-//  (14284 byte di pagina, serviti su /analisi)
+//  (24721 byte di pagina, serviti su /analisi)
 // ============================================================
 
 static const char ANALISI_PAGE[] PROGMEM = R"ANALISIPAGE(
@@ -44,6 +44,11 @@ static const char ANALISI_PAGE[] PROGMEM = R"ANALISIPAGE(
  svg{display:block;width:100%;height:auto}
  .lg{color:var(--dim);font-size:.75rem;margin-top:.4rem;line-height:1.5}
  .lg i{font-style:normal;padding:0 .3rem}
+ .tabs{display:flex;gap:.4rem;margin-bottom:.9rem;flex-wrap:wrap}
+ .tab{background:#1a1a1d;border:1px solid var(--bordo);color:var(--dim);
+  border-radius:9px;padding:6px 13px;font-size:.85rem;cursor:pointer;font-family:inherit}
+ .tab.on{background:#20343f;border-color:#2f5470;color:#79c0ff}
+ label{color:var(--dim);font-size:.85rem;display:flex;align-items:center;gap:.35rem}
  nav{margin:1.6rem 0 .5rem;display:flex;flex-wrap:wrap;gap:.4rem 1rem;font-size:.85rem}
  a{color:var(--acc);text-decoration:none}
 </style></head><body><div class="wrap">
@@ -53,6 +58,12 @@ gi&agrave; chiuso</b> calcolata dall&rsquo;hub sui CSV: una richiesta per nodo i
 per giorno. I giorni <b>incompleti restano visibili e segnati</b> &mdash; un minimo
 calcolato sul 40&nbsp;% dei campioni ha lo stesso aspetto di un minimo vero, e
 nasconderlo sarebbe il modo pi&ugrave; comodo di sbagliare.</p>
+
+<div class="tabs">
+ <button class="tab on" data-v="giorni">Per giorno</button>
+ <button class="tab" data-v="serie">Andamento continuo</button>
+ <button class="tab" data-v="conf">Confronto giorni</button>
+</div>
 
 <div class="barra">
  <select id="nodo"></select>
@@ -67,6 +78,24 @@ nasconderlo sarebbe il modo pi&ugrave; comodo di sbagliare.</p>
   <option value="0">non segnare niente</option>
  </select>
  <button id="ric">ricarica</button>
+</div>
+
+<div class="barra" id="barraSerie" hidden>
+ <label>dal <select id="sDa"></select></label>
+ <label>al <select id="sA"></select></label>
+ <select id="sV"><option value="0">temperatura</option><option value="1">umidit&agrave;</option>
+  <option value="2">pressione</option></select>
+ <select id="sP"><option value="300">300 punti</option><option value="600">600 punti</option>
+  <option value="150">150 punti</option></select>
+ <button id="sGo">disegna</button>
+</div>
+
+<div class="barra" id="barraConf" hidden>
+ <label>giorno A <select id="cA"></select></label>
+ <label>giorno B <select id="cB"></select></label>
+ <select id="cV"><option value="0">temperatura</option><option value="1">umidit&agrave;</option>
+  <option value="2">pressione</option></select>
+ <button id="cGo">confronta</button>
 </div>
 
 <div id="msg"></div>
@@ -290,7 +319,195 @@ async function carica(){
  }catch(e){ avviso('Non riesco a leggere: '+esc(e.message),'err'); }
 }
 
-$('nodo').onchange=disegna; $('per').onchange=disegna; $('sog').onchange=disegna;
+
+// =======================================================================
+//  Andamento continuo e confronto: usano /api/nodi/serie, che DECIMA A
+//  BORDO. Sette giorni di CSV sono ~160 kB e uscirebbero da un WebServer
+//  sincrono un chunk per volta, con l'hub che nel frattempo non preleva i
+//  DATA dal driver ESP-NOW (che ne tiene uno per nodo). Aggregati, sono
+//  ~12 kB -- e su 900 px i 2016 punti di una settimana non si vedrebbero
+//  comunque.
+// =======================================================================
+const NOMI_V=['temperatura','umidit\u00e0','pressione'];
+const UNI_V=['\u00b0C','%','hPa'];
+const DEC_V=[1,0,1];
+
+function giorniDelNodo(){ return (DATI[$('nodo').value]||[]).map(r=>r.giorno); }
+
+function riempiSelect(id,giorni,vDefault){
+ const e=$(id); const prima=e.value;
+ e.innerHTML=giorni.map(g=>'<option>'+g+'</option>').join('');
+ if(prima&&giorni.includes(prima)) e.value=prima; else if(vDefault) e.value=vDefault;
+}
+
+// Banda min-max piu' la media, sull'asse dei tempi. `s` e' l'array di cesti:
+// null dove non c'e' nulla, e li' la linea si INTERROMPE invece di tirare
+// dritto -- un segmento sopra un buco direbbe che la temperatura e' passata
+// di li', che nessuno ha misurato.
+function grafSerie(serie,col){
+ const s=serie.s, n=s.length;
+ const vals=[]; s.forEach(c=>{ if(c){vals.push(c[1],c[2]);} });
+ if(!vals.length) return '<p class="lg">nessun dato in questo intervallo</p>';
+ let lo=Math.min(...vals), hi=Math.max(...vals);
+ if(hi-lo<0.5){const m=(hi+lo)/2;lo=m-0.5;hi=m+0.5;}
+ const p=(hi-lo)*0.08; lo-=p; hi+=p;
+ const H2=230, MB2=30;
+ const X=i=>ML+i*(W-ML-MR)/Math.max(1,n-1);
+ const Y=v=>MT+(H2-MT-MB2)*(1-(v-lo)/(hi-lo));
+
+ let o='', dec=DEC_V[serie.v];
+ for(let k=0;k<=4;k++){
+  const v=lo+(hi-lo)*k/4, y=Y(v);
+  o+='<line x1="'+ML+'" y1="'+y.toFixed(1)+'" x2="'+(W-MR)+'" y2="'+y.toFixed(1)+
+     '" stroke="#26262b"/><text x="'+(ML-6)+'" y="'+(y+3.5).toFixed(1)+
+     '" fill="#8e8e96" font-size="10" text-anchor="end">'+v.toFixed(dec)+'</text>';
+ }
+ // Etichette dell'asse: l'ORA VERA, non "-3 g". Un istante resta vero anche
+ // guardando il grafico domani.
+ const passi=Math.min(8,n), ogni=Math.max(1,Math.floor(n/passi));
+ for(let i=0;i<n;i+=ogni){
+  const d=new Date((serie.t0+i*serie.passo)*1000);
+  const gg=String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0');
+  const hh=String(d.getHours()).padStart(2,'0')+':00';
+  o+='<text x="'+X(i).toFixed(1)+'" y="'+(H2-14)+'" fill="#8e8e96" font-size="10" text-anchor="middle">'+hh+'</text>'+
+     '<text x="'+X(i).toFixed(1)+'" y="'+(H2-3)+'" fill="#6a6a72" font-size="9" text-anchor="middle">'+gg+'</text>';
+ }
+ // La banda min/max, spezzata sui buchi.
+ let seg=[],bande='';
+ const chiudi=()=>{
+  if(seg.length<2){seg=[];return;}
+  let a='M'+seg.map(q=>X(q.i).toFixed(1)+' '+Y(q.max).toFixed(1)).join(' L');
+  for(let k=seg.length-1;k>=0;k--) a+=' L'+X(seg[k].i).toFixed(1)+' '+Y(seg[k].min).toFixed(1);
+  bande+='<path d="'+a+' Z" fill="'+col+'" fill-opacity=".18"/>'; seg=[];
+ };
+ s.forEach((c,i)=>{ if(c) seg.push({i:i,min:c[1],max:c[2]}); else chiudi(); });
+ chiudi();
+ let linea='',giu=true;
+ s.forEach((c,i)=>{ if(!c){giu=true;return;}
+  linea+=(giu?'M':' L')+X(i).toFixed(1)+' '+Y(c[0]).toFixed(1); giu=false; });
+
+ const vuoti=s.filter(c=>!c).length;
+ return '<svg viewBox="0 0 '+W+' '+H2+'" preserveAspectRatio="none">'+o+bande+
+  '<path d="'+linea+'" fill="none" stroke="'+col+'" stroke-width="1.8"/></svg>'+
+  '<div class="lg">'+serie.righe_lette+' campioni letti dai CSV, aggregati in '+n+
+  ' punti da '+Math.round(serie.passo/60)+' min'+
+  (vuoti?' &middot; <b>'+vuoti+'</b> senza dati: la linea si interrompe':'')+'</div>';
+}
+
+// Due giorni sovrapposti sulle stesse 24 ore. Confronta le FORME, che e' la
+// domanda vera ("ieri e oggi si somigliano?"), e per questo l'asse e' l'ora
+// del giorno e non l'istante.
+function grafConfronto(A,B,col){
+ const n=Math.max(A.s.length,B.s.length);
+ const vals=[]; [A,B].forEach(S=>S.s.forEach(c=>{ if(c){vals.push(c[1],c[2]);} }));
+ if(!vals.length) return '<p class="lg">nessun dato per questi giorni</p>';
+ let lo=Math.min(...vals),hi=Math.max(...vals);
+ if(hi-lo<0.5){const m=(hi+lo)/2;lo=m-0.5;hi=m+0.5;}
+ const p=(hi-lo)*0.08; lo-=p; hi+=p;
+ const H2=230, MB2=26;
+ const X=i=>ML+i*(W-ML-MR)/Math.max(1,n-1);
+ const Y=v=>MT+(H2-MT-MB2)*(1-(v-lo)/(hi-lo));
+ let o='',dec=DEC_V[A.v];
+ for(let k=0;k<=4;k++){
+  const v=lo+(hi-lo)*k/4,y=Y(v);
+  o+='<line x1="'+ML+'" y1="'+y.toFixed(1)+'" x2="'+(W-MR)+'" y2="'+y.toFixed(1)+
+     '" stroke="#26262b"/><text x="'+(ML-6)+'" y="'+(y+3.5).toFixed(1)+
+     '" fill="#8e8e96" font-size="10" text-anchor="end">'+v.toFixed(dec)+'</text>';
+ }
+ for(let h=0;h<=24;h+=3){
+  const i=Math.round(h/24*(n-1));
+  o+='<text x="'+X(i).toFixed(1)+'" y="'+(H2-8)+'" fill="#8e8e96" font-size="10" text-anchor="middle">'+
+     String(h).padStart(2,'0')+'</text>';
+ }
+ // Tratto pieno e tratteggiato, non due colori: e' la stessa regola del
+ // pannello e-ink, e resta leggibile anche stampata o daltonica.
+ const linea=(S,dash)=>{
+  let d='',giu=true;
+  S.s.forEach((c,i)=>{ if(!c){giu=true;return;}
+   d+=(giu?'M':' L')+X(i).toFixed(1)+' '+Y(c[0]).toFixed(1); giu=false; });
+  return '<path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="1.8"'+
+         (dash?' stroke-dasharray="5 4"':'')+'/>';
+ };
+ const med=S=>{const v=S.s.filter(c=>c).map(c=>c[0]);return v.length?v.reduce((a,b)=>a+b,0)/v.length:NaN;};
+ const mA=med(A), mB=med(B), d=mA-mB;
+ return '<svg viewBox="0 0 '+W+' '+H2+'" preserveAspectRatio="none">'+o+linea(A,false)+linea(B,true)+'</svg>'+
+  '<div class="lg"><i>&#9472;</i>'+A.da+' &middot; <i>&#9476;</i>'+B.da+
+  ' &middot; media '+(isFinite(mA)?mA.toFixed(dec):'&mdash;')+' contro '+
+  (isFinite(mB)?mB.toFixed(dec):'&mdash;')+' '+UNI_V[A.v]+
+  (isFinite(d)?' (<b>'+(d>=0?'+':'')+d.toFixed(dec)+'</b>)':'')+
+  ' &middot; asse: ora del giorno</div>';
+}
+
+async function serie(nodo,da,a,v,punti){
+ const u='/api/nodi/serie?nodo='+encodeURIComponent(nodo)+'&da='+da+'&a='+a+
+         '&v='+v+'&punti='+punti;
+ return chiedi(u,'json');
+}
+
+async function vistaSerie(){
+ const nodo=$('nodo').value, v=parseInt($('sV').value,10);
+ avviso('lettura dei CSV sulla card&hellip;');
+ try{
+  const S=await serie(nodo,$('sDa').value,$('sA').value,v,parseInt($('sP').value,10));
+  $('msg').innerHTML='';
+  $('cont').innerHTML='<div class="card"><h2>'+NOMI_V[v]+' &mdash; dal '+S.da+' al '+S.a+
+   '</h2>'+grafSerie(S,'var(--hot)')+'</div>';
+ }catch(e){ avviso('Non riesco a leggere la serie: '+esc(e.message),'err'); }
+}
+
+async function vistaConfronto(){
+ const nodo=$('nodo').value, v=parseInt($('cV').value,10);
+ avviso('lettura dei CSV sulla card&hellip;');
+ try{
+  // Stesso numero di punti per entrambi: 96 = un quarto d'ora.
+  const A=await serie(nodo,$('cA').value,$('cA').value,v,96);
+  const B=await serie(nodo,$('cB').value,$('cB').value,v,96);
+  $('msg').innerHTML='';
+  $('cont').innerHTML='<div class="card"><h2>'+NOMI_V[v]+' &mdash; '+A.da+' contro '+B.da+
+   '</h2>'+grafConfronto(A,B,'var(--acc)')+'</div>'+confrontoTabella(A.da,B.da);
+ }catch(e){ avviso('Non riesco a confrontare: '+esc(e.message),'err'); }
+}
+
+// Il confronto dei due riepiloghi, che e' gia' in RAM: nessuna richiesta in
+// piu' per la tabella.
+function confrontoTabella(ga,gb){
+ const righe=DATI[$('nodo').value]||[];
+ const A=righe.find(r=>r.giorno==ga), B=righe.find(r=>r.giorno==gb);
+ if(!A||!B) return '';
+ const r=(k,et,d,u)=>{
+  const a=A[k], b=B[k];
+  if(a==null||b==null) return '';
+  const dd=a-b;
+  return '<tr><td>'+et+'</td><td>'+a.toFixed(d)+u+'</td><td>'+b.toFixed(d)+u+'</td>'+
+   '<td><b>'+(dd>=0?'+':'')+dd.toFixed(d)+'</b></td></tr>';
+ };
+ return '<div class="card"><h2>I due giorni a confronto</h2><div class="tw"><table>'+
+  '<thead><tr><th></th><th>'+ga+'</th><th>'+gb+'</th><th>differenza</th></tr></thead><tbody>'+
+  r('tmin','minima',1,'&deg;')+r('tmax','massima',1,'&deg;')+r('tmed','media',1,'&deg;')+
+  r('hmed','umidit&agrave; media',0,'%')+r('pmed','pressione media',1,'')+
+  r('tdmed','rugiada media',1,'&deg;')+r('compl','completezza',1,'%')+
+  '</tbody></table></div><div class="lg">dai riepiloghi gi&agrave; caricati: '+
+  'nessuna richiesta in pi&ugrave; alla scheda.</div></div>';
+}
+
+// --- schede -------------------------------------------------------------
+let VISTA='giorni';
+function mostraVista(v){
+ VISTA=v;
+ document.querySelectorAll('.tab').forEach(b=>b.className='tab'+(b.dataset.v==v?' on':''));
+ $('barraSerie').hidden = v!='serie';
+ $('barraConf').hidden  = v!='conf';
+ $('per').hidden = v!='giorni';
+ $('sog').hidden = v!='giorni';
+ const g=giorniDelNodo();
+ if(v=='serie'){ riempiSelect('sDa',g,g[Math.max(0,g.length-4)]); riempiSelect('sA',g,g[g.length-1]); vistaSerie(); }
+ else if(v=='conf'){ riempiSelect('cA',g,g[g.length-1]); riempiSelect('cB',g,g[g.length-2]||g[0]); vistaConfronto(); }
+ else disegna();
+}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>mostraVista(b.dataset.v));
+$('sGo').onclick=vistaSerie; $('cGo').onclick=vistaConfronto;
+
+$('nodo').onchange=()=>mostraVista(VISTA); $('per').onchange=disegna; $('sog').onchange=disegna;
 $('ric').onclick=carica;
 carica();
 </script></div></body></html>

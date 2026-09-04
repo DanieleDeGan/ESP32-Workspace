@@ -495,6 +495,69 @@ File sd_open_remote_day(const char* nodeName, const char* isoDate) {
 }
 
 // ---------------------------------------------------------------------
+//  Lettura di un giorno di un nodo, bufferizzata e gia' parsata
+// ---------------------------------------------------------------------
+int sd_read_remote_day(const char* nodeName, const char* isoDate,
+                       sd_remote_row_cb_t cb, void* arg, size_t codaMaxBytes) {
+  if (!cb) return 0;
+  File f = sd_open_remote_day(nodeName, isoDate);
+  if (!f) return 0;
+
+  if (codaMaxBytes > 0 && f.size() > codaMaxBytes) {
+    f.seek(f.size() - codaMaxBytes);
+    // La prima riga dopo un seek e' tagliata a meta': si butta.
+    while (f.available() && f.read() != '\n') { }
+  }
+
+  uint8_t buf[512];
+  size_t  n = 0, i = 0;
+  char    riga[160];
+  size_t  r = 0;
+  int     righe = 0;
+
+  for (;;) {
+    if (i >= n) {
+      const int letti = f.read(buf, sizeof(buf));
+      if (letti <= 0) break;
+      n = (size_t)letti;
+      i = 0;
+    }
+    const char c = (char)buf[i++];
+    if (c == '\r') continue;
+    if (c != '\n') {
+      if (r < sizeof(riga) - 1) riga[r++] = c;
+      continue;
+    }
+    riga[r] = '\0';
+    r = 0;
+
+    // Colonne: ts_iso,ts_unix,fonte_ora,mac,seq,temp_c,hum_pct,press_hpa,batt_mv
+    char* campo[9];
+    int nc = 0;
+    campo[nc++] = riga;
+    for (char* q = riga; *q && nc < 9; q++) {
+      if (*q == ',') { *q = '\0'; campo[nc++] = q + 1; }
+    }
+    if (nc < 8) continue;
+
+    // L'intestazione cade da sola: "ts_unix" non e' un numero.
+    const time_t ts = (time_t)strtoul(campo[1], nullptr, 10);
+    if (ts == 0) continue;
+
+    // Un campo VUOTO e' una lettura che il nodo non e' riuscito a fare, e
+    // resta NAN: nel grafico dev'essere un buco, non uno zero.
+    float v[3];
+    v[0] = campo[5][0] ? atof(campo[5]) : NAN;
+    v[1] = campo[6][0] ? atof(campo[6]) : NAN;
+    v[2] = campo[7][0] ? atof(campo[7]) : NAN;
+    cb(ts, (uint32_t)strtoul(campo[4], nullptr, 10), v, arg);
+    righe++;
+  }
+  f.close();
+  return righe;
+}
+
+// ---------------------------------------------------------------------
 //  Riepilogo giornaliero
 // ---------------------------------------------------------------------
 #define RIEP_HEADER "giorno,campioni,attesi,cadenza_s,completezza_pct,buchi,"                     "t_min,t_min_ora,t_max,t_max_ora,t_med,"                     "h_min,h_max,h_med,p_min,p_max,p_med,p_var24,"                     "td_min,td_max,td_med"

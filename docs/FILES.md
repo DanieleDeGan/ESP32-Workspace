@@ -1506,6 +1506,7 @@ pannello si vede o non si vede allo stesso modo.
 | `secrets.h.example` | si copia in `secrets.h` (gitignorato): WiFi, `OTA_HOSTNAME` `meteohub-s3`, credenziali web |
 | `remote_nodes.h/.cpp` | copia da `EnvNode_C3`: registro nodi, cadenza appresa, nodo muto, trend, NVS |
 | `forecast.h` | copia da `EnvNode_C3`: trend a 3 h con isteresi, header-only e pura |
+| `tools/controlla_piedi.py` | verifica che OGNI pagina servita porti il piede di navigazione completo. Esiste perche' il piede vive in piu' posti e in due formati, e le pagine dimenticate sono quelle che non si aprono mai |
 | `www/analisi.html` | pagina di analisi dei riepiloghi (grafici SVG a mano, nessuna libreria). **Sorgente unica**: `analisi_page.h` si rigenera con `python www/gen_page.py analisi` |
 | `analisi_page.h` | generato dalla precedente, servito su `/analisi`. Non si modifica a mano |
 | `daily.h` | aggregati di una giornata (min/max/media di T, RH, pressione, rugiada; completezza e cadenza dedotta dal giorno stesso), header-only e puro. La rugiada si media campione per campione, non si calcola dalle medie |

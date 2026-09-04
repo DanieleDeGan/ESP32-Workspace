@@ -1619,6 +1619,27 @@ senza di loro si somiglierebbero (schermo che non cambia).
       chiesti e il codice scriverebbe `FALLITA` sulla seriale **e nel diario**:
       il risultato negativo non è un silenzio.
 
+- **`GET /api/nodi/serie`** (da `v53`): la serie ORARIA concatenata su piu'
+  giorni, **decimata a bordo** in cesti con media/min/max. E' cio' che rende
+  possibile un grafico multi-giorno: sette giorni di CSV sono ~160 kB che
+  uscirebbero da un server **sincrono** un chunk per volta, e in quel tempo
+  l'hub non preleva i DATA dal driver (che ne tiene **uno** per nodo).
+  Misurato: 4 giorni, 1015 righe, **395 ms** e **5,6 kB** invece di ~83 kB.
+  Tetto di **14 giorni**, perche' ogni giorno e' una lettura dentro un handler.
+  Un cesto vuoto e' `null`, mai uno zero.
+- **`sd_read_remote_day()` e' l'UNICO posto dove si interpreta il CSV dei
+  nodi** (da `v53`), e legge **a blocchi di 512 byte**: prima `leggiRiga()`
+  chiamava `File::read()` un byte alla volta, e su SPI ogni chiamata attraversa
+  il driver della card. Il riepilogo di un giorno a 60 s e' passato da
+  **2125 ms a 367 ms**, con `loop_lenti` da 1 a 0. Lo stesso parser era
+  copiato in due punti del `.ino`: una colonna aggiunta un domani avrebbe
+  dovuto essere ricordata in entrambi.
+- **`tools/controlla_piedi.py` verifica che ogni pagina porti il piede**, e
+  serve perche' il difetto **a mano non si trova**: aggiungendo `/analisi` in
+  `v52` la sostituzione e' stata fatta su un formato solo (`<nav>`) mentre nel
+  firmware ce n'e' un secondo (`<p class="muted">`), e sono rimaste indietro
+  **due pagine su nove, fra cui la home**. Le pagine dimenticate sono sempre
+  quelle che non si aprono. Esce con codice 1, quindi si puo' mettere in un hook.
 - **La pagina `/analisi`** (da `v52`, 2026-09-04) legge i riepiloghi e li
   disegna: banda min/max con la media per temperatura, pressione e umidita',
   barre della completezza, record del periodo e tabella. **Una richiesta per
@@ -1631,6 +1652,12 @@ senza di loro si somiglierebbero (schermo che non cambia).
   - **Grafici SVG scritti a mano, nessuna libreria**: la scheda non ha
     internet e la pagina dev'essere un file solo. Stessa scelta dei grafici
     di `MeteoNode_C3`.
+  - **Tre viste da `v53`**: «per giorno» (dai riepiloghi), **«andamento
+    continuo»** (la serie concatenata, banda min/max + media, linea che si
+    **interrompe sui buchi** e asse con l'ora vera) e **«confronto giorni»**
+    (due giornate sovrapposte sulle stesse 24 h, distinte per **tratto** e non
+    per colore — stessa regola del pannello e-ink; la tabella delle differenze
+    esce dai riepiloghi **gia' in RAM**, senza richieste in piu').
   - **Sostituibile dalla card** come le altre (`/www/analisi.html` via
     `/pagine`), ed e' il caso d'uso per cui quel meccanismo esiste: una
     pagina di grafici si itera molte volte, e ogni giro non deve costare un

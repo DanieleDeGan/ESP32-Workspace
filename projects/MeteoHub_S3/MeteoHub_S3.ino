@@ -168,7 +168,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v52";
+static const char FW_VERSION[] = "v53";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1678,70 +1678,33 @@ static void screenNodi(bool full)
 // rifarlo ci sono gia': sono i CSV che questo stesso hub scrive.
 static bool s_seedFatto = false;
 
-// Una riga dal File senza allocare String: su un CSV di un giorno intero
-// sarebbero migliaia di allocazioni in un colpo solo.
-static size_t leggiRiga(File& f, char* buf, size_t cap)
+// Il seeding di un nodo da un giorno di CSV. Il parser sta in sd_logger
+// (sd_read_remote_day): era copiato qui e nel riepilogo, e una colonna
+// aggiunta un domani avrebbe dovuto essere ricordata in due punti.
+struct SeedCtx { const RemoteNode* n; time_t minTs; int* righe; };
+
+static void seedRiga(time_t ts, uint32_t seq, const float v[3], void* arg)
 {
-  size_t n = 0;
-  while (f.available() && n < cap - 1)
-  {
-    const char c = (char)f.read();
-    if (c == '\n') break;
-    if (c != '\r') buf[n++] = c;
-  }
-  buf[n] = '\0';
-  return n;
+  (void)seq;
+  SeedCtx* c = (SeedCtx*)arg;
+  if (ts < c->minTs) return;
+
+  // Temperatura e pressione vanno in due storici diversi: 24 h a mezz'ora per
+  // il disegno, 3 h a dieci minuti per il trend.
+  if (isfinite(v[0])) remote_seed_temp(c->n->mac, ts, v[0]);
+  if (!isfinite(v[2])) return;
+  remote_seed_pressure(c->n->mac, ts, v[2]);
+  (*c->righe)++;
 }
 
-// Colonne: ts_iso,ts_unix,fonte_ora,mac,seq,temp_c,hum_pct,press_hpa,batt_mv
 static void seedNodoDaCsv(const RemoteNode* n, const char* giorno, time_t minTs, int* righe)
 {
-  File f = sd_open_remote_day(n->nome, giorno);
-  if (!f) return;
-
-  // Solo la coda del file. Da quando c'e' anche il grafico a 24 h la finestra
-  // e' un giorno intero, non piu' tre ore: 128 kB coprono ~26 h del nodo piu'
-  // veloce (60 s, ~80 byte a riga). Oltre non si va — leggere due file interi
-  // per nodo bloccherebbe loop(), e con lui web server, OTA e raccolta dei
-  // DATA. Se la coda non arriva abbastanza indietro il grafico parte con
-  // qualche slot vuoto, che e' esattamente cio' che gli slot vuoti dicono.
-  const size_t size = f.size();
-  const size_t CODA = 131072;
-  if (size > CODA)
-  {
-    f.seek(size - CODA);
-    char scarto[160];
-    leggiRiga(f, scarto, sizeof(scarto));   // la prima riga e' tagliata a meta'
-  }
-
-  char buf[160];
-  while (leggiRiga(f, buf, sizeof(buf)) > 0)
-  {
-    char* campo[9];
-    int nc = 0;
-    campo[nc++] = buf;
-    for (char* p = buf; *p && nc < 9; p++)
-    {
-      if (*p == ',') { *p = '\0'; campo[nc++] = p + 1; }
-    }
-    if (nc < 8) continue;
-
-    // L'intestazione cade da sola: "ts_unix" non e' un numero, strtoul da' 0 e
-    // remote_seed_pressure scarta i timestamp non validi.
-    const time_t ts = (time_t)strtoul(campo[1], nullptr, 10);
-    if (ts < minTs) continue;
-
-    // Temperatura (campo 5) e pressione (campo 7) vanno in due storici
-    // diversi: 24 h a mezz'ora per il disegno, 3 h a dieci minuti per il
-    // trend. Un campo vuoto nel CSV e' una lettura che il nodo non e' riuscito
-    // a fare, e resta un buco anche qui.
-    if (campo[5][0] != '\0') remote_seed_temp(n->mac, ts, atof(campo[5]));
-    if (campo[7][0] == '\0') continue;   // campo vuoto = valore non finito
-
-    remote_seed_pressure(n->mac, ts, atof(campo[7]));
-    (*righe)++;
-  }
-  f.close();
+  // Solo la CODA del file. Da quando c'e' anche il grafico a 24 h la finestra
+  // e' un giorno intero: 128 kB coprono ~26 h del nodo piu' veloce (60 s,
+  // ~80 byte a riga). Oltre non si va - leggere due file interi per nodo
+  // bloccherebbe loop(), e con lui web server, OTA e raccolta dei DATA.
+  SeedCtx c = { n, minTs, righe };
+  sd_read_remote_day(n->nome, giorno, seedRiga, &c, 131072);
 }
 
 static void seedForecastDaSD()
@@ -1822,35 +1785,19 @@ static char     s_riepGiornoUlt[11] = "";   // per accorgersi del cambio giorno
 // seedNodoDaCsv(), ma il file si legge TUTTO: qui non si ricostruisce una
 // finestra recente, si chiude una giornata, e una coda troncata darebbe un
 // minimo calcolato su mezzo pomeriggio senza dirlo.
+static void riepRiga(time_t ts, uint32_t seq, const float v[3], void* arg)
+{
+  daily_add(*(daily_t*)arg, ts, seq, v[0], v[1], v[2]);
+}
+
+// Legge il CSV di un giorno e ne produce gli aggregati. Il file si legge
+// TUTTO (coda 0): qui non si ricostruisce una finestra recente, si chiude una
+// giornata, e una coda troncata darebbe un minimo calcolato su mezzo
+// pomeriggio senza dirlo.
 static bool riepilogoDaCsv(const RemoteNode* n, const char* giorno, daily_t& d)
 {
-  File f = sd_open_remote_day(n->nome, giorno);
-  if (!f) return false;
-
   daily_reset(d);
-
-  char buf[160];
-  while (leggiRiga(f, buf, sizeof(buf)) > 0)
-  {
-    char* campo[9];
-    int nc = 0;
-    campo[nc++] = buf;
-    for (char* q = buf; *q && nc < 9; q++)
-      if (*q == ',') { *q = '\0'; campo[nc++] = q + 1; }
-    if (nc < 8) continue;
-
-    const time_t ts = (time_t)strtoul(campo[1], nullptr, 10);
-    if (ts == 0) continue;                      // l'intestazione cade da sola
-
-    const uint32_t seq = (uint32_t)strtoul(campo[4], nullptr, 10);
-    // Campo vuoto = lettura che il nodo non e' riuscito a fare: resta NAN e
-    // daily_add() la tiene fuori da tutto, invece di farla entrare come zero.
-    const float vt = campo[5][0] ? atof(campo[5]) : NAN;
-    const float vh = campo[6][0] ? atof(campo[6]) : NAN;
-    const float vp = campo[7][0] ? atof(campo[7]) : NAN;
-    daily_add(d, ts, seq, vt, vh, vp);
-  }
-  f.close();
+  sd_read_remote_day(n->nome, giorno, riepRiga, &d, 0);
   return d.campioni > 0;
 }
 

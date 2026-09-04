@@ -1,5 +1,76 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-04 (4) — `v53`: andamento continuo, confronto giorni, e i piedi che mancavano
+
+### Prima: i due piedi dimenticati, e perché non si trovavano a mano
+
+Aggiungendo `/analisi` in `v52` avevo sostituito il piede **in un formato solo**
+(`<nav>`), e nel firmware ce n'è un secondo (`<p class="muted">`). Sono rimaste
+indietro **due pagine su nove — fra cui la home**. Il difetto è invisibile per
+costruzione: le pagine dimenticate sono proprio quelle che non si aprono.
+
+Ora c'è **`tools/controlla_piedi.py`**, che estrae ogni blocco HTML in PROGMEM
+più i tre `.html` sulla card e verifica che tutti portino le sei voci. Esce con
+codice 1 se manca qualcosa, quindi si può mettere in un hook. Nove pagine
+controllate, zero mancanti.
+
+### La lettura dei CSV era il collo di bottiglia, e si vedeva
+
+`leggiRiga()` chiamava `File::read()` **un byte alla volta**, e su SPI ogni
+chiamata attraversa il driver della card. Ora c'è **`sd_read_remote_day()`** in
+`sd_logger`: legge a blocchi di 512 byte e restituisce le righe **già parsate**.
+
+| | prima | dopo |
+|---|---|---|
+| riepilogo di un giorno a 60 s | **2125 ms** | **367 ms** |
+| `loop_lenti` | 1 | 0 |
+
+**È anche l'unico posto dove ora si interpreta quel formato**: lo stesso parser
+stava copiato in `seedNodoDaCsv()` e in `riepilogoDaCsv()`, e una colonna
+aggiunta un domani avrebbe dovuto essere ricordata in due punti. La prova che
+il refactor non ha cambiato niente: rifacendo i riepiloghi, **gli stessi
+identici valori** di prima.
+
+### `GET /api/nodi/serie` — la decimazione si fa a bordo
+
+Il riepilogo risponde a *«che mese è stato»*; questa risponde a *«come sono
+andate queste settantadue ore»*, che vuole i dati **orari**.
+
+**Perché non si scaricano i CSV e basta**: sette giorni sono ~160 kB che
+uscirebbero da un WebServer **sincrono** un chunk per volta, e per tutto quel
+tempo l'hub non preleva i DATA dal driver ESP-NOW, che ne tiene **uno solo** per
+nodo. Aggregando a bordo escono ~12 kB — e su un grafico da 900 px i 2016 punti
+di una settimana non sarebbero comunque distinguibili: è banda spesa per pixel
+che non esistono.
+
+**Misurato**: 4 giorni, 1015 righe lette dalla card, **395 ms** in tutto
+(rete compresa) e **5,6 kB** scaricati invece di ~83 kB.
+
+Ogni cesto porta **media, minimo e massimo**: la media da sola nasconderebbe
+proprio i picchi, cioè la ragione per cui si guarda un grafico. Un cesto senza
+dati è `null` e **mai uno zero** — stessa regola dei campi vuoti nel CSV.
+
+Tetto di **14 giorni**, e non è prudenza generica: ogni giorno è una lettura di
+CSV dentro un handler HTTP, e il `loop()` sta fermo per tutto il tempo.
+
+### Le due viste nuove
+
+- **Andamento continuo**: la serie concatenata su più giornate, banda min/max
+  più la media. La linea **si interrompe sui buchi** invece di tirare dritto —
+  un segmento sopra un'ora senza dati direbbe che la temperatura è passata di
+  lì, che nessuno ha misurato. L'asse porta **l'ora vera**, non «-3 g».
+- **Confronto giorni**: due giornate sovrapposte sulle stesse 24 ore, con la
+  tabella delle differenze presa dai riepiloghi **già in RAM** (nessuna
+  richiesta in più). L'asse è l'**ora del giorno**, perché la domanda è se le
+  due giornate si somigliano come *forma*. Si distinguono per **tratto** —
+  pieno e tratteggiato — non per colore: la stessa regola del pannello e-ink,
+  e resta leggibile stampata o daltonica.
+
+Provate come la `v52`: la pagina **scaricata dalla scheda** eseguita in node
+contro le risposte vere. Niente `NaN`, niente `undefined`, la linea spezzata sui
+36 cesti vuoti e la legenda che li dichiara.
+
+
 ## Aggiornamento del 2026-09-04 (3) — `v52`: la pagina di analisi
 
 I riepiloghi esistevano da un'ora e si leggevano come CSV. `/analisi` li
