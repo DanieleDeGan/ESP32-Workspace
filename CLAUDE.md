@@ -1854,6 +1854,29 @@ nodo e guardia della `Serial` si scelgono a compile-time dal tipo di chip.
 - **Niente microSD**: lo storico 24 h (720 slot da 2 min, ~4,3 kB) vive in RAM e
   si azzera ad ogni riavvio. I grafici storici veri stanno sull'hub, che riceve
   i DATA e li scrive su card — vedi `projects/EnvNode_C3/`.
+- **Il trend del nodo legge una griglia che puo' essere sistematicamente
+  disallineata**, e per una settimana lo e' stata: lo storico ha slot da
+  **120 s**, il trend cerca quello a **tre ore**, e con l'intervallo a 300 s si
+  riempiono solo le fasi {0, 2} modulo 5. `aggiornaTrend()` gira **mentre si
+  misura**, dove `back = 0` e' l'ultimo slot gia' chiuso: lo slot cercato sta
+  quindi **91** posizioni indietro, `91 % 5 = 1`, e le fasi cercate {4, 1} sono
+  **disgiunte** da quelle piene. Risultato: `delta_3h` non compariva **mai** —
+  199 misure su 199 — mentre la pagina diceva "servono tre ore di storico" con
+  lo storico pieno. Corretto in `v18` (2026-09-04) con `histVicino()`, che
+  accetta il pieno piu' vicino entro **+/- 3 slot** ed espone la finestra
+  davvero usata in `delta_3h_finestra_s`.
+  - **Il difetto era invisibile per tre motivi che vale la pena riconoscere**:
+    il trend autorevole si calcola **sull'hub** (che ha slot da 10 min, tutti
+    pieni, e infatti funziona); il messaggio d'errore era **plausibile**, cioe'
+    identico a quello di un nodo appena acceso; ed e' nato il 26/08 quando
+    l'intervallo e' passato da 60 a 300 s **da solo**, per la trappola del
+    default NVS qui sopra — a 60 s ogni slot era pieno e funzionava. **Una
+    modifica non voluta di un parametro ne ha rotto un altro, altrove.**
+  - **La regola generale**: una griglia a passo fisso letta a offset fisso non
+    sbaglia ogni tanto, **non funziona mai**. Il campanello e' il rapporto non
+    intero fra passo della griglia e cadenza di chi la riempie (300/120 = 2,5).
+    Dove le due cose sono **configurabili separatamente**, la coincidenza va
+    verificata, non data per buona.
 - **La pressione si trasmette GREZZA**, non riportata al livello del mare: la
   correzione dipende dall'altitudine, che su questo nodo è ancora un default mai
   calibrato. Trasmettendo il valore corretto si scriverebbe un errore

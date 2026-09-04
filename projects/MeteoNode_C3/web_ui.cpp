@@ -475,6 +475,7 @@ static void handleStato() {
   j += F(",\"press_sea\":");     j += numOrNull(s.press_sea);
   j += F(",\"dewpoint\":");      j += numOrNull(s.dewpoint);
   j += F(",\"delta_3h\":");      j += numOrNull(s.delta_3h);
+  j += F(",\"delta_3h_finestra_s\":"); j += String(s.delta_3h_finestra_s);
   j += F(",\"trend\":\"");       j += forecast_trend_label(tr);          j += F("\"");
   j += F(",\"previsione\":\"");  j += forecast_text(tr, s.press_sea);    j += F("\"");
   j += F(",\"temp_min\":");      j += numOrNull(s.temp_min);

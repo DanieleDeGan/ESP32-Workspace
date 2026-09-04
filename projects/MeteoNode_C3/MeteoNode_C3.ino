@@ -171,7 +171,7 @@
 //   v2  2026-08-22  storico 24 h in RAM + grafici, previsione dal trend
 //                   barometrico a 3 ore, intervallo e altitudine da pagina web
 //   v1  2026-08-22  bring-up del sensore, web UI, OTA
-static const char FW_VERSION[] = "v17";
+static const char FW_VERSION[] = "v18";
 
 // ---------------------------------------------------------------------
 //  Nome del nodo
@@ -534,6 +534,27 @@ static const uint16_t HIST_SLOT      = 720;
 static const uint32_t HIST_PERIODO_S = 120;
 static const uint16_t HIST_SLOT_3H   = (uint16_t)(10800UL / HIST_PERIODO_S);  // 90
 
+// Tolleranza sulla finestra del trend, in slot. NON e' un vezzo: lo slot a
+// esattamente tre ore puo' essere VUOTO PER COSTRUZIONE, e con l'intervallo di
+// misura di serie lo e' SEMPRE. Con misure ogni 300 s e slot da 120 s i pieni
+// cadono sulle fasi {0, 2} modulo 5; lo slot cercato sta 91 posizioni indietro
+// rispetto a quello in cui si sta misurando (90 dall'ultimo CHIUSO), e
+// 91 modulo 5 = 1, quindi le fasi cercate sono {4, 1} — disgiunte da {0, 2}.
+// Nessuna coincidenza possibile: misurato sullo storico vero del nodo a muro,
+// 199 misure su 199 trovavano il vuoto, e la pagina diceva per sempre "servono
+// tre ore di storico" mentre lo storico era pieno. Il difetto era invisibile
+// perche' il trend che conta si calcola sull'hub, e li' funziona: gli slot da
+// 10 minuti dell'hub ricevono due campioni l'uno e sono tutti pieni.
+//
+// Tre slot sono +/- 6 minuti su 180, cioe' il 3,3% della finestra: sotto le
+// soglie di forecast.h (0,5 hPa) vale 0,017 hPa, quindi il delta NON si
+// normalizza — si guadagnerebbe una cifra che non cambia mai una
+// classificazione, al prezzo di un conto in piu' da spiegare. La tolleranza
+// resta stretta apposta: allargandola si finirebbe per calcolare un trend su
+// una finestra molto piu' corta, cioe' a INVENTARE la previsione che il codice
+// qui sotto si rifiuta di dare.
+static const uint16_t HIST_3H_TOLL   = 3;
+
 // Valori a interi scalati invece che float: dimezza la RAM e vale la pena,
 // perche' la risoluzione che serve a un grafico e' molto minore di quella di
 // un float. INT16_MIN fa da sentinella di "slot senza dati".
@@ -578,6 +599,30 @@ static bool histAt(uint16_t back, float* t, float* h, float* p) {
   if (h) *h = (s_hH[pos] == HIST_VUOTO) ? NAN : s_hH[pos] / 100.0f;
   if (p) *p = (s_hP[pos] == HIST_VUOTO) ? NAN : (s_hP[pos] + 10000.0f) / 10.0f;
   return true;
+}
+
+// Come histAt, ma se lo slot chiesto e' vuoto accetta il pieno piu' vicino
+// entro "toll" posizioni. Torna anche QUALE slot ha usato, cosi' chi chiama
+// puo' dire su che finestra ha davvero fatto il conto invece di dichiarare
+// tre ore che non sono tre ore.
+static bool histVicino(uint16_t back, uint16_t toll, float* p, uint16_t* backUsato) {
+  for (uint16_t d = 0; d <= toll; d++) {
+    // A parita' di distanza si prova prima il piu' VECCHIO: la finestra resta
+    // lunga almeno quanto quella chiesta, e un trend calcolato su un tratto
+    // piu' corto e' piu' sensibile al rumore del sensore.
+    const uint16_t cand[2] = { (uint16_t)(back + d), (uint16_t)(back - d) };
+    for (uint8_t k = 0; k < 2; k++) {
+      if (d == 0 && k == 1) continue;             // stesso slot, gia' provato
+      if (cand[k] > (uint16_t)(back + toll)) continue;  // back - d e' andato sotto zero
+      float v = NAN;
+      if (histAt(cand[k], nullptr, nullptr, &v) && !isnan(v)) {
+        if (p) *p = v;
+        if (backUsato) *backUsato = cand[k];
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // Chiude lo slot in accumulo e apre quello nuovo, riempiendo di vuoti gli
@@ -634,14 +679,24 @@ static time_t histUltimoTs() {
 // pagina lo dice invece di mostrare una previsione inventata.
 static forecast_trend_t s_trend   = TREND_IGNOTO;
 static float            s_delta3h = NAN;
+// Su quanti secondi il delta e' stato calcolato davvero. Esposto in
+// /api/stato: senza, il giorno che la tolleranza non bastasse piu' si
+// tornerebbe a "non ancora noto" in silenzio, cioe' allo stesso guasto muto
+// che questa correzione ha tolto.
+static uint32_t         s_delta3hFinestraS = 0;
 
 static void aggiornaTrend() {
   float p3h = NAN;
-  if (isnan(s_press) || !histAt(HIST_SLOT_3H, nullptr, nullptr, &p3h) || isnan(p3h)) {
+  uint16_t backUsato = 0;
+  if (isnan(s_press) ||
+      !histVicino(HIST_SLOT_3H, HIST_3H_TOLL, &p3h, &backUsato) || isnan(p3h)) {
     s_trend = TREND_IGNOTO;
     s_delta3h = NAN;
+    s_delta3hFinestraS = 0;
     return;
   }
+  // +1 perche' back = 0 e' lo slot gia' CHIUSO, quindi vecchio di un periodo.
+  s_delta3hFinestraS = (uint32_t)(backUsato + 1) * HIST_PERIODO_S;
   // Il confronto si fa su valori riportati al livello del mare. Con la stessa
   // altitudine per entrambi il fattore e' costante e la differenza cambia di
   // pochissimo, ma tenerlo esplicito evita di dover ricordare perche' era
@@ -983,6 +1038,7 @@ void app_get_snapshot(app_snapshot_t &out) {
   out.press_sea = isnan(s_press) ? NAN
                                  : forecast_sea_level_hpa(s_press, s_altitudineM);
   out.delta_3h  = s_delta3h;
+  out.delta_3h_finestra_s = s_delta3hFinestraS;
   out.trend     = (uint8_t)s_trend;
 
   out.reads        = s_reads;

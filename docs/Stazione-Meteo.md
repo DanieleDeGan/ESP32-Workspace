@@ -1,5 +1,85 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-04 — `v18` del nodo: il trend che non poteva esistere
+
+Trovato durante un controllo di routine di hub e nodi, che era tutto verde:
+conto incrociato esatto (474 pacchetti = 474 righe), zero persi, watchdog
+armato, pannello che disegna. L'unica stonatura era un campo della pagina del
+nodo a muro: `delta_3h: null` e «raccolgo dati: servono tre ore di storico»
+**dopo 16,5 ore di uptime e 199 letture**.
+
+### Non era «non ho ancora abbastanza dati», era una fase disgiunta
+
+Lo storico del nodo è un anello di slot da **120 s**; il trend legge lo slot a
+**tre ore**. Con l'intervallo di misura a **300 s** solo due slot su cinque si
+riempiono, e i pieni cadono sulle fasi **{0, 2} modulo 5**.
+
+Il conto che spiega tutto sta in una riga: `aggiornaTrend()` gira subito dopo
+`histFeed()`, cioè **mentre si sta misurando**, e lì `back = 0` è l'ultimo slot
+già *chiuso* — quindi lo slot cercato non è 90 posizioni indietro rispetto a
+quello corrente, ma **91**. E `91 modulo 5 = 1`, quindi le fasi cercate sono
+**{4, 1}**: **disgiunte da {0, 2}**. Non è che capitasse spesso di trovare il
+vuoto — **non poteva capitare mai**.
+
+Verificato sullo storico vero scaricato dal nodo, non dedotto: **199 misure su
+199** trovavano lo slot vuoto, zero eccezioni.
+
+### Perché è rimasto invisibile per più di una settimana
+
+Tre cose l'hanno coperto, e sono la parte che vale la pena ricordare:
+
+1. **Il trend che conta si calcola sull'hub** (`v11`, 24/08), e lì funziona
+   perché i suoi slot da 10 minuti ricevono due campioni l'uno e sono tutti
+   pieni. La pagina del nodo era l'unico posto dove il difetto si vedeva, ed è
+   la pagina che si guarda di meno.
+2. **Il messaggio d'errore era plausibile.** «Servono tre ore di storico» è
+   esattamente quello che si legge su un nodo appena acceso: un guasto
+   permanente indossava la faccia di uno stato transitorio normale.
+3. **Ha una data di nascita precisa, e non è quella del codice**: il 26/08 il
+   nodo a muro è passato da 60 a 300 s di intervallo — per la trappola del
+   default NVS raccontata più sotto, quindi *senza che nessuno lo chiedesse*.
+   A 60 s ogni slot da 120 s è pieno e il trend funzionava. **Una modifica non
+   voluta di un parametro ne ha rotto un altro, altrove, in silenzio.**
+
+### La correzione, e perché la tolleranza è stretta
+
+`histVicino()` accetta il pieno più vicino entro **±3 slot** (±6 minuti su 180,
+il 3,3 %) e dice **quale** ha usato. Il delta **non** si normalizza: sulle
+soglie di `forecast.h` (0,5 hPa) quel 3,3 % vale 0,017 hPa, cioè non cambia mai
+una classificazione, e sarebbe un conto in più da spiegare per una cifra che non
+si muove.
+
+La tolleranza resta stretta **apposta**: allargandola si finirebbe per calcolare
+il trend su una finestra molto più corta, cioè a **inventare** la previsione che
+quel codice si rifiuta di dare quando non sa. A parità di distanza si prende il
+campione **più vecchio**, così la finestra non si accorcia mai sotto le tre ore.
+
+**E la finestra reale si espone** (`delta_3h_finestra_s` in `/api/stato`): senza,
+il giorno che la tolleranza non bastasse più si tornerebbe a «non ancora noto»
+in silenzio — cioè esattamente al guasto muto appena tolto.
+
+### Provata sui dati veri prima di caricarla
+
+Rigiocando la nuova logica sullo storico scaricato dal nodo:
+
+| | prima | dopo |
+|---|---|---|
+| trend calcolato | **0 / 199** | **164 / 199** |
+| ancora ignoto | 199 | 35, **contigui e tutti nelle prime 2,83 h** |
+
+I 35 sono il comportamento **giusto**, non un residuo del difetto: sono le prime
+tre ore, in cui lo storico davvero non basta. La finestra usata è 3,000 h (82
+volte) o 3,067 h (81): lo scarto reale è **±240 s**, mai i ±360 concessi.
+
+### La lezione, che non è di questo progetto
+
+**Una griglia a passo fisso, letta a un offset fisso, può essere
+sistematicamente disallineata** — e allora non sbaglia ogni tanto: non funziona
+mai. Il campanello è che il periodo di scrittura e quello di lettura non siano
+in rapporto intero: 300 su 120 fa 2,5, e quel mezzo slot è tutto il guasto.
+Quando il passo di una griglia e la cadenza di chi la riempie sono
+**configurabili separatamente**, la coincidenza va cercata, non data per buona.
+
 ## Aggiornamento del 2026-09-03 (2) — il Blocco B: solo occhi, e il primo che ha già visto qualcosa
 
 Le quattro voci del Blocco B di `docs/Proposte-2026-09-02.md`. Non cambiano il

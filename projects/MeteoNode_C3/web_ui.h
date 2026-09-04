@@ -74,6 +74,7 @@ struct app_snapshot_t {
   float    press_sea;      // riportata al livello del mare, confrontabile
                            // con i bollettini; NAN se non c'e' lettura
   float    delta_3h;       // variazione della pressione sulle ultime 3 ore
+  uint32_t delta_3h_finestra_s;  // su quanti secondi il delta e' stato fatto
   uint8_t  trend;          // forecast_trend_t, gia' filtrato con isteresi
 
   // contatori e diagnostica
