@@ -1634,6 +1634,18 @@ senza di loro si somiglierebbero (schermo che non cambia).
   **2125 ms a 367 ms**, con `loop_lenti` da 1 a 0. Lo stesso parser era
   copiato in due punti del `.ino`: una colonna aggiunta un domani avrebbe
   dovuto essere ricordata in entrambi.
+- **`[hidden]` non nasconde niente se una classe imposta `display`.** Quella
+  regola la mette il foglio di stile del **browser**, che perde contro
+  qualunque regola d'autore: con `.barra{display:flex}` gli elementi marcati
+  `hidden` **restano visibili**. Nella pagina di analisi il sintomo era «i
+  selettori non mostrano i giorni» — si vedevano, vuoti, prima che qualcuno li
+  riempisse, e in JavaScript non c'era niente da trovare. Ogni pagina che usa
+  `hidden` deve avere `[hidden]{display:none!important}`, e `www/gen_page.py`
+  ora lo verifica.
+  - **Il controllo ha sbagliato al primo colpo, ed e' istruttivo**: cercava la
+    stringa `[hidden]` e la trovava **dentro il commento che spiegava il
+    difetto**. Ora toglie i commenti e pretende una *regola*. Un controllo che
+    legge la documentazione invece del codice non controlla niente.
 - **UNA PAGINA SOSTITUITA SULLA CARD NON LA AGGIORNA L'OTA.** E' la trappola
   che ha fatto sparire il link a `/analisi` dal piede della **home** anche dopo
   aver corretto tutti i sorgenti: `/` era servita dalla `dashboard.html` sulla

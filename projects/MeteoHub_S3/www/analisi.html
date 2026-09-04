@@ -4,6 +4,12 @@
  :root{--bg:#0e0e10;--card:#1a1a1d;--bordo:#2e2e33;--txt:#ececee;--dim:#8e8e96;
   --acc:#3987e5;--ok:#3fb950;--warn:#e5a13a;--bad:#e05252;--cold:#58a6ff;--hot:#f0883e}
  *{box-sizing:border-box}
+ /* SERVE, e non e' pignoleria: [hidden]{display:none} lo mette il foglio di
+    stile del browser, che ha priorita' MINORE di qualunque regola scritta
+    qui. Con .barra{display:flex} le barre marcate `hidden` restavano
+    visibili, con i select ancora vuoti — che e' esattamente come si e'
+    presentato il difetto: "i selettori non mostrano i giorni". */
+ [hidden]{display:none!important}
  body{font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:var(--bg);
   color:var(--txt);margin:0;padding:14px}
  .wrap{max-width:980px;margin:0 auto}
@@ -305,7 +311,10 @@ async function carica(){
   if(mancanti.length) avviso('Nessun riepilogo per: <b>'+mancanti.map(esc).join(', ')+
    '</b>. L&rsquo;hub lo scrive quando un giorno &egrave; chiuso, un giorno per giro; '+
    'per rifarlo da capo c&rsquo;&egrave; <code>POST /api/nodi/riepilogo/rifai</code>.');
-  disegna();
+  // La vista ATTIVA, non per forza quella iniziale: i riepiloghi arrivano da
+  // due richieste in fila, e se nel frattempo si e' gia' cambiata scheda i
+  // suoi selettori sono rimasti vuoti e non si riempirebbero piu' da soli.
+  mostraVista(VISTA);
  }catch(e){ avviso('Non riesco a leggere: '+esc(e.message),'err'); }
 }
 
@@ -328,6 +337,19 @@ function riempiSelect(id,giorni,vDefault){
  const e=$(id); const prima=e.value;
  e.innerHTML=giorni.map(g=>'<option>'+g+'</option>').join('');
  if(prima&&giorni.includes(prima)) e.value=prima; else if(vDefault) e.value=vDefault;
+}
+
+// Un elenco vuoto ha due cause diverse che vanno DETTE, non lasciate
+// indovinare: i riepiloghi non sono ancora arrivati, oppure questo nodo non
+// ne ha nessuno. Due select vuoti si somigliano e non spiegano niente.
+function giorniPronti(){
+ const g=giorniDelNodo();
+ if(g.length) return g;
+ avviso(Object.keys(DATI).length
+  ? 'Per <b>'+esc($('nodo').value)+'</b> non c&rsquo;&egrave; ancora nessun giorno chiuso: '+
+    'l&rsquo;hub scrive una riga di riepilogo quando un giorno finisce.'
+  : 'Riepiloghi non ancora caricati: premi <b>ricarica</b>.','err');
+ return null;
 }
 
 // Banda min-max piu' la media, sull'asse dei tempi. `s` e' l'array di cesti:
@@ -489,10 +511,11 @@ function mostraVista(v){
  $('barraConf').hidden  = v!='conf';
  $('per').hidden = v!='giorni';
  $('sog').hidden = v!='giorni';
- const g=giorniDelNodo();
+ if(v=='giorni'){ disegna(); return; }
+ const g=giorniPronti();
+ if(!g){ $('cont').innerHTML=''; return; }
  if(v=='serie'){ riempiSelect('sDa',g,g[Math.max(0,g.length-4)]); riempiSelect('sA',g,g[g.length-1]); vistaSerie(); }
- else if(v=='conf'){ riempiSelect('cA',g,g[g.length-1]); riempiSelect('cB',g,g[g.length-2]||g[0]); vistaConfronto(); }
- else disegna();
+ else { riempiSelect('cA',g,g[g.length-1]); riempiSelect('cB',g,g[g.length-2]||g[0]); vistaConfronto(); }
 }
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>mostraVista(b.dataset.v));
 $('sGo').onclick=vistaSerie; $('cGo').onclick=vistaConfronto;

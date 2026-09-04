@@ -23,6 +23,7 @@ Il default senza argomenti resta `dither` perche' l'hook di Claude Code in
 
 import io
 import os
+import re
 import sys
 
 QUI = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +33,39 @@ PAGINE = {
     'dither':  ('DITHER_PAGE',  '/immagini'),
     'analisi': ('ANALISI_PAGE', '/analisi'),
 }
+
+
+def avvisa_hidden(nome, html):
+    """Avvisa se la pagina usa l'attributo `hidden` senza una regola per
+    [hidden] mentre delle classi impostano `display`.
+
+    NON e' teoria: [hidden]{display:none} lo mette il foglio di stile del
+    BROWSER, che ha priorita' minore di qualunque regola d'autore. Con
+    .barra{display:flex} le barre marcate `hidden` restavano visibili, e nella
+    pagina di analisi il sintomo era "i selettori non mostrano i giorni" —
+    perche' si vedevano, vuoti, prima che qualcuno li riempisse. La causa non
+    somiglia al sintomo, e in JavaScript non c'e' niente da trovare.
+    """
+    usa = re.search(r'<[^>]+\shidden(\s|>)', html) is not None
+    if not usa:
+        return
+
+    # I commenti si tolgono PRIMA di cercare, o il controllo si autoassolve:
+    # la prima versione taceva perche' trovava "[hidden]" dentro il commento
+    # che spiegava il difetto. Un controllo che legge la documentazione invece
+    # del codice non controlla niente.
+    pulito = re.sub(r'/\*.*?\*/', '', html, flags=re.S)
+
+    # E si cerca la REGOLA (`[hidden]` seguito da una graffa), non la stringa.
+    if re.search(r'\[hidden\][^{}]*\{', pulito):
+        return
+    classi = re.findall(r'\.[A-Za-z_-][\w-]*\s*\{[^}]*display\s*:', pulito)
+    if classi:
+        print('ATTENZIONE (%s.html): usa l\'attributo `hidden` e %d regola/e di '
+              'classe impostano `display`, ma non c\'e\' nessuna regola per '
+              '[hidden]. Nel browser quelle regole VINCONO e gli elementi '
+              'nascosti restano visibili. Aggiungi:  [hidden]{display:none'
+              '!important}' % (nome, len(classi)))
 
 
 def genera(nome):
@@ -48,6 +82,7 @@ def genera(nome):
     delim = nome.upper() + 'PAGE'
 
     html = io.open(sorgente, encoding='utf-8').read()
+    avvisa_hidden(nome, html)
 
     fine = ')' + delim + '"'
     if fine in html:

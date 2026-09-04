@@ -1,5 +1,44 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-04 (5) — `v54`: i selettori vuoti, e un controllo che si autoassolveva
+
+Sintomo riferito: *«i selettori del range delle date non mostrano i giorni
+disponibili»*. In JavaScript non c'era niente da trovare — riprodotto il
+caricamento con un DOM finto, i select **si riempivano**.
+
+### La causa era nel CSS, e non somiglia al sintomo
+
+`[hidden]{display:none}` lo mette il **foglio di stile del browser**, che ha
+priorità **minore** di qualunque regola d'autore. Con `.barra{display:flex}` le
+due barre marcate `hidden` **non si nascondevano mai**: si vedevano da subito,
+con i select vuoti perché `mostraVista()` non era ancora stata chiamata. Da
+fuori è identico a "i selettori non si popolano", ma il difetto non è nel
+codice che li popola — è che non dovevano essere lì.
+
+Corretto con `[hidden]{display:none!important}`. Sistemato anche un caso di
+gara vero: i riepiloghi arrivano da due richieste in fila, e chi cambiava scheda
+nel frattempo restava con i select vuoti **per sempre**, perché `carica()`
+terminava chiamando `disegna()` (la vista iniziale) invece della vista attiva.
+
+E un elenco vuoto ora **dice quale delle due cause è**: riepiloghi non ancora
+arrivati, oppure quel nodo non ha giorni chiusi. Due select vuoti si
+somigliano e non spiegano niente.
+
+### Il controllo che si autoassolveva
+
+`www/gen_page.py` ora avvisa quando una pagina usa `hidden` senza una regola per
+`[hidden]` mentre delle classi impostano `display`. Alla prima prova **non ha
+avvisato**: cercava la stringa `[hidden]` e la trovava **dentro il commento che
+spiegava il difetto**.
+
+*Un controllo che legge la documentazione invece del codice non controlla
+niente.* Ora toglie i commenti prima di cercare e pretende una **regola**
+(`[hidden]` seguito da una graffa), non una stringa. Provato in entrambi i
+versi — tace con la regola, avvisa senza — perché un controllo che non si è
+visto scattare è un controllo di cui non si sa niente. È la stessa disciplina
+di `prova-canale` e `POST /api/prova/blocco`.
+
+
 ## Aggiornamento del 2026-09-04 (4) — `v53`: andamento continuo, confronto giorni, e i piedi che mancavano
 
 ### Prima: i due piedi dimenticati, e perché non si trovavano a mano
