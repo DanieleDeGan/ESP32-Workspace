@@ -1634,12 +1634,30 @@ senza di loro si somiglierebbero (schermo che non cambia).
   **2125 ms a 367 ms**, con `loop_lenti` da 1 a 0. Lo stesso parser era
   copiato in due punti del `.ino`: una colonna aggiunta un domani avrebbe
   dovuto essere ricordata in entrambi.
+- **UNA PAGINA SOSTITUITA SULLA CARD NON LA AGGIORNA L'OTA.** E' la trappola
+  che ha fatto sparire il link a `/analisi` dal piede della **home** anche dopo
+  aver corretto tutti i sorgenti: `/` era servita dalla `dashboard.html` sulla
+  **card**, caricata ai tempi della `v44`, e il file nel repo e' **solo un
+  sorgente**. Ricompilare e ricaricare il firmware non tocca la card.
+  - **Dopo ogni modifica al piede** (o a qualunque cosa in una pagina
+    sostituibile) vanno **ricaricate le pagine che stanno sulla card**, da
+    `/pagine` o con
+    `curl -F "pagina=@www/dashboard.html" ".../api/pagine/carica?nome=dashboard"`.
+  - **Il campo `fw_caricata` di `/api/pagine/elenco` lo diceva gia'** — quel
+    campo esiste apposta — ma nessuno lo guardava. Ora lo guarda
+    `controlla_piedi.py --host`.
 - **`tools/controlla_piedi.py` verifica che ogni pagina porti il piede**, e
   serve perche' il difetto **a mano non si trova**: aggiungendo `/analisi` in
   `v52` la sostituzione e' stata fatta su un formato solo (`<nav>`) mentre nel
   firmware ce n'e' un secondo (`<p class="muted">`), e sono rimaste indietro
   **due pagine su nove, fra cui la home**. Le pagine dimenticate sono sempre
   quelle che non si aprono. Esce con codice 1, quindi si puo' mettere in un hook.
+  - **Ha DUE modi, e servono entrambi.** Senza argomenti controlla i
+    **sorgenti**; con `--host <ip>` scarica le pagine **come le serve la
+    scheda** e confronta anche `fw_caricata` con il firmware che gira. La
+    lezione del 2026-09-04: sui soli sorgenti diceva "tutte e nove a posto"
+    mentre la home servita non aveva il link. **Quando i due modi divergono,
+    ha ragione la scheda.**
 - **La pagina `/analisi`** (da `v52`, 2026-09-04) legge i riepiloghi e li
   disegna: banda min/max con la media per temperatura, pressione e umidita',
   barre della completezza, record del periodo e tabella. **Una richiesta per

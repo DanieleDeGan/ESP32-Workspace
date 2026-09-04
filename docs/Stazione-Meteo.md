@@ -10,9 +10,20 @@ indietro **due pagine su nove — fra cui la home**. Il difetto è invisibile pe
 costruzione: le pagine dimenticate sono proprio quelle che non si aprono.
 
 Ora c'è **`tools/controlla_piedi.py`**, che estrae ogni blocco HTML in PROGMEM
-più i tre `.html` sulla card e verifica che tutti portino le sei voci. Esce con
-codice 1 se manca qualcosa, quindi si può mettere in un hook. Nove pagine
-controllate, zero mancanti.
+più i tre `.html` e verifica che tutti portino le sei voci. Esce con codice 1 se
+manca qualcosa, quindi si può mettere in un hook. Nove pagine, zero mancanti.
+
+**E non bastava.** Con i sorgenti a posto e il firmware caricato, nella home il
+link **continuava a non esserci** — perché `/` è servita dalla `dashboard.html`
+sulla **card**, caricata ai tempi della `v44`, e il file nel repo è *solo un
+sorgente*: l'OTA non la tocca. Il campo `fw_caricata` di `/api/pagine/elenco` lo
+diceva già (`v44` contro `v53`), ma nessuno lo guardava.
+
+Da qui il secondo modo dello script: **`--host <ip>`** scarica le pagine **come
+le serve la scheda**, elencandole da `/api/pagine/elenco` — quindi vede anche
+quelle sostituite dalla card — e segnala quelle caricate con un firmware
+diverso da quello che gira. **Quando i due modi divergono, ha ragione la
+scheda.**
 
 ### La lettura dei CSV era il collo di bottiglia, e si vedeva
 
