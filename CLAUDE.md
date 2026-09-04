@@ -1679,9 +1679,22 @@ senza di loro si somiglierebbero (schermo che non cambia).
     la regola che tiene in piedi la feature: toglierli farebbe sparire anche
     l'informazione che sono mancati, cioe' rifarebbe con la grafica l'errore
     che la colonna `completezza_pct` serve a evitare.
-  - **Grafici SVG scritti a mano, nessuna libreria**: la scheda non ha
-    internet e la pagina dev'essere un file solo. Stessa scelta dei grafici
-    di `MeteoNode_C3`.
+  - **Da `v57` i grafici li fa ECharts 5.5, scaricata dal CDN DAL BROWSER**
+    (non dalla scheda: l'hub serve solo HTML e dati, e il suo web server e'
+    sincrono). Misurato dalla LAN di casa: 1,03 MB in 0,69 s, poi in cache.
+    - **I grafici SVG scritti a mano sono rimasti come RISERVA**: se la
+      libreria non arriva entro 7 s la pagina disegna come prima e lo dice.
+      Il caso cattivo non e' "niente rete" (li' l'errore e' immediato) ma
+      "rete che c'e' e non risponde", e senza timeout la pagina resterebbe
+      muta a fissare il vuoto.
+    - **`connectNulls:false` non e' un dettaglio**: ECharts di default unisce
+      i punti ATTRAVERSO un buco, cioe' disegna una linea dove nessuno ha
+      misurato. E' la stessa bugia che il codice SVG evitava a mano.
+    - **La decimazione resta a bordo** anche se la libreria reggerebbe 20.000
+      punti: quei punti sarebbero 160 kB fuori da un server sincrono.
+  - **Sei viste** (`v57`): per giorno, andamento con zoom, confronto fino a
+    tre giorni, confronto fra nodi, **mappa oraria** (heatmap ora x giorno) e
+    distribuzione con percentili.
   - **Tre viste da `v53`**: «per giorno» (dai riepiloghi), **«andamento
     continuo»** (la serie concatenata, banda min/max + media, linea che si
     **interrompe sui buchi** e asse con l'ora vera) e **«confronto giorni»**

@@ -1,5 +1,60 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-04 (7) — `v57`: la pagina di analisi con ECharts, e la riserva che resta
+
+Sei viste al posto di tre, grafici interattivi, e una libreria vera al posto
+dei path SVG scritti a mano.
+
+### La libreria la scarica il BROWSER, non la scheda
+
+`/analisi` carica **ECharts 5.5** da `cdn.jsdelivr.net`. L'hub continua a
+servire solo HTML e dati: il milione di byte della libreria non passa mai dal
+suo web server (che è **sincrono**, e mentre serve non raccoglie i pacchetti
+dei nodi). Verificato dalla LAN di casa: **1,03 MB in 0,69 s**, e poi resta
+nella cache del browser.
+
+**Il prezzo è una dipendenza da internet lato client**, ed è per questo che i
+grafici SVG di prima **sono rimasti nel file** come riserva: se la libreria non
+arriva entro 7 secondi, la pagina disegna come faceva prima e lo scrive in
+chiaro. Il caso cattivo non è "niente rete" — lì l'errore arriva subito — ma
+"rete che c'è e non risponde": senza timeout la pagina resterebbe a fissare il
+vuoto senza spiegare niente.
+
+### Le sei viste
+
+| vista | cosa risponde |
+|---|---|
+| **Per giorno** | com'è andata giorno per giorno: banda min/max, completezza, pressione con la variazione a 24 h, umidità e rugiada |
+| **Andamento** | la serie continua su più giornate, con **zoom e pan** |
+| **Confronto giorni** | fino a **tre** giornate sovrapposte sulle stesse 24 h |
+| **Confronto nodi** | tutti i nodi nella stessa finestra, più la tabella degli scarti medi |
+| **Mappa oraria** | heatmap ora × giorno: le colonne mostrano il ciclo giorno/notte, le righe come cambia da un giorno all'altro |
+| **Distribuzione** | quante ore a ciascun valore, con mediana, media, scarto tipico e 10°/90° percentile |
+
+La **mappa oraria** è quella che dice cose che le altre non dicono: il ciclo
+giornaliero si legge in verticale e le anomalie saltano fuori come macchie.
+
+### Cosa NON è cambiato, di proposito
+
+- **I giorni incompleti restano segnati** anche con la libreria nuova: nella
+  vista per giorno i punti dei giorni sotto soglia hanno un simbolo, e la barra
+  della completezza resta un grafico a sé. Era la regola della `v52` e vale
+  ancora: nascondere un buco è la strada comoda.
+- **Un cesto senza dati resta `null`** e la linea **si interrompe**
+  (`connectNulls:false`). ECharts di default unirebbe i punti attraverso il
+  buco, che è esattamente la bugia da evitare.
+- **La decimazione resta a bordo**: la libreria disegnerebbe anche 20.000
+  punti, ma sarebbero 160 kB fuori da un server sincrono.
+
+### Provata senza browser, in entrambi i modi
+
+Un finto ECharts che **cattura le opzioni** invece di disegnarle: tutte e sei
+le viste costruiscono serie con il numero di punti giusto, **senza `NaN` né
+`undefined`**. Poi lo stesso giro con la libreria assente, per provare la
+riserva: nessuna vista resta vuota. Rifatto infine sulla pagina **scaricata
+dalla scheda**.
+
+
 ## Aggiornamento del 2026-09-04 (6) — `v55`-`v56`: il controllo costava piu' del lavoro
 
 Due cose trovate **spiegando** il riepilogo giornaliero, non usandolo.
