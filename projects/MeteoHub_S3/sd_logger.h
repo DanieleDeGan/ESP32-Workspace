@@ -137,6 +137,50 @@ int sd_list_remote_days(const char* nodeName, sd_date_cb_t cb, void* arg, int ma
 File sd_open_remote_day(const char* nodeName, const char* isoDate);
 
 // ---------------------------------------------------------------------
+//  Riepilogo giornaliero — /nodi/<NOME>/riepilogo.csv
+// ---------------------------------------------------------------------
+// Una riga per giorno CHIUSO, scritta una volta sola. Il calcolo sta in
+// daily.h (puro) e la colla nel .ino: questo modulo sa solo dove va il file
+// e come non scriverlo due volte.
+//
+// PERCHE' NON E' UN TIMER A MEZZANOTTE. Una riga prodotta da un timer
+// sparisce per sempre se in quel minuto la scheda e' spenta, sta facendo un
+// OTA o e' appena ripartita — e nessuno se ne accorge, perche' l'assenza di
+// una riga non somiglia a un guasto. Il giorno si chiude invece quando si
+// scopre che ne e' cominciato uno nuovo, il che rende il lavoro idempotente
+// e recuperabile: dopo qualunque assenza l'hub ritrova i giorni rimasti
+// indietro e li fa, in ordine, uno per giro.
+//
+// Colonne (un valore non finito e' un campo VUOTO, mai uno zero — nello
+// storico dev'essere un buco, non una misura che nessuno ha fatto):
+//   giorno,campioni,attesi,completezza_pct,buchi,
+//   t_min,t_min_ora,t_max,t_max_ora,t_med,
+//   h_min,h_max,h_med, p_min,p_max,p_med,p_var24, td_min,td_max,td_med
+
+#define SD_RIEP_FILE "riepilogo.csv"
+
+// L'ultimo giorno gia' presente nel riepilogo del nodo ("YYYY-MM-DD").
+// false se il file non c'e' o e' vuoto — cioe' "non ne ho ancora fatto
+// nessuno", che e' l'inizio del backfill e non un errore.
+bool sd_riep_ultimo_giorno(const char* nodeName, char* out, size_t outCap);
+
+// Accoda una riga gia' formattata (senza a capo). Scrive l'intestazione se
+// il file e' nuovo. false = card assente o scrittura non arrivata sulla
+// card: il chiamante NON deve considerare fatto quel giorno, o resterebbe
+// un buco permanente nello storico.
+bool sd_riep_append(const char* nodeName, const char* riga);
+
+// Il file per il download. File falsy se assente.
+File sd_open_riep(const char* nodeName);
+
+// Elimina il riepilogo di un nodo, cosi' che il loop() lo rifaccia da zero.
+// E' LA VIA DI RIENTRO, e serve piu' di quanto sembri: una riga di riepilogo
+// non viene mai riscritta, quindi un giorno calcolato male (formato cambiato,
+// difetto corretto dopo) resterebbe sbagliato per sempre e l'unico rimedio
+// sarebbe smontare la card. true anche se il file non c'era.
+bool sd_riep_azzera(const char* nodeName);
+
+// ---------------------------------------------------------------------
 //  Dashboard personalizzata su SD (/www/dashboard.html): se presente,
 //  web_ui.cpp la serve al posto di quella incorporata nel firmware. La
 //  pagina di upload/ripristino (web_ui.cpp) resta pero' SEMPRE quella in

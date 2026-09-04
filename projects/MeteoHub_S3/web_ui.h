@@ -79,3 +79,11 @@ uint32_t app_refresh_evitati();
 // prelievo dei DATA dei nodi dal driver ESP-NOW, che tiene solo l'ultimo.
 void app_chiedi_refresh();
 void app_chiedi_pagina(uint8_t indice);
+
+// Quanti giorni di riepilogo sono stati chiusi da quando la scheda e' accesa.
+uint32_t app_riepiloghi_scritti();
+
+// Cancella il riepilogo (di un nodo, o di tutti con nodo vuoto) e lo fa
+// ricostruire dal loop(), un giorno per giro. Stessa regola del refresh: la
+// richiesta arriva dall'handler, il lavoro lo fa il loop.
+bool app_riepilogo_ricalcola(const char* nodo);

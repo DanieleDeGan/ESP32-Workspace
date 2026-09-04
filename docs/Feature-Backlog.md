@@ -83,7 +83,7 @@ una stanza chiusa di notte può davvero dare lo stesso decimo per parecchie
 letture: guardare i CSV prima di fissare N, o si crea un allarme falso
 ricorrente — che è peggio di nessun allarme.
 
-### 3. Aggregati giornalieri su card
+### 3. Aggregati giornalieri su card — FATTA (hub `v50`-`v51`, 2026-09-04)
 **Cosa**: `/nodi/<NOME>/riepilogo.csv`, una riga per giorno: min, max, media,
 numero di campioni, buchi.
 **Perché qui**: oggi ogni vista storica deve leggere i CSV interi. È il motivo
@@ -98,6 +98,13 @@ un giorno senza riga né una riga scritta due volte.
 **Nota**: è la stessa idea del "rollup giornaliero" già concordato per
 `EnvNode_C3` il 2026-08-09 e mai fatto (vedi voce 12): se si fa qui, conviene
 farla lì con lo stesso formato.
+
+**Fatta il 2026-09-04**, con due scoperte che il piano non prevedeva: la
+cadenza va dedotta **dal giorno stesso** (il nodo a muro è passato da 60 a
+300 s il 26/08, e usare quella di oggi darebbe completezze del 497 %), e la
+colonna della completezza ha ripagato subito — il 31/08 sta al **75,4 %** e il
+27/08 al 24,6 %, giorni il cui minimo sembrava affidabile quanto gli altri.
+Chiude anche la voce 28. Il racconto sta in `docs/Stazione-Meteo.md`.
 
 ### 4. Backup e ripristino della configurazione
 **Cosa**: un JSON scaricabile con pagine, registro nodi, messaggio attivo e
@@ -323,7 +330,7 @@ escono da `/api/nodi`; `remote_temp_history()` (48 mezz'ore, 96 byte in RAM) non
 ha nessun endpoint, e per lo stesso grafico la dashboard scarica il CSV intero.
 **Costo**: basso. Chiude la parte «resta da fare» della voce 1.
 
-### 28. La completezza del dato, accanto a ogni aggregato
+### 28. La completezza del dato, accanto a ogni aggregato — FATTA (con la voce 3)
 `campioni / attesi`. Un minimo calcolato sul 40 % dei campioni ha lo stesso
 aspetto di un minimo vero. Dipende dalla voce 17, o la completezza esce sopra il
 100 %. **Costo**: basso. **Prerequisito di tutte le statistiche.**

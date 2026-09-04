@@ -495,6 +495,98 @@ File sd_open_remote_day(const char* nodeName, const char* isoDate) {
 }
 
 // ---------------------------------------------------------------------
+//  Riepilogo giornaliero
+// ---------------------------------------------------------------------
+#define RIEP_HEADER "giorno,campioni,attesi,cadenza_s,completezza_pct,buchi,"                     "t_min,t_min_ora,t_max,t_max_ora,t_med,"                     "h_min,h_max,h_med,p_min,p_max,p_med,p_var24,"                     "td_min,td_max,td_med"
+
+static bool riepPath(const char* nodeName, char* path, size_t cap) {
+  char dir[20];
+  if (!s_mounted || !sd_node_dir_name(nodeName, dir, sizeof(dir))) return false;
+  snprintf(path, cap, "%s/%s/%s", SD_NODI_DIR, dir, SD_RIEP_FILE);
+  return true;
+}
+
+bool sd_riep_ultimo_giorno(const char* nodeName, char* out, size_t outCap) {
+  char path[64];
+  if (!riepPath(nodeName, path, sizeof(path)) || outCap < 11) return false;
+  File f = SD.open(path, FILE_READ);
+  if (!f) return false;
+
+  // Solo la CODA del file: l'ultima riga e' l'unica che interessa, e su un
+  // anno di righe leggerlo tutto per prendere gli ultimi dieci caratteri
+  // sarebbe una scansione della card ad ogni controllo.
+  const size_t size = f.size();
+  const size_t CODA = 512;
+  if (size > CODA) f.seek(size - CODA);
+
+  char buf[256], ultima[256] = "";
+  size_t n = 0;
+  while (f.available()) {
+    const char c = (char)f.read();
+    if (c == '\n') {
+      buf[n] = '\0';
+      if (n > 0 && buf[0] != 'g') strlcpy(ultima, buf, sizeof(ultima));  // 'g' = intestazione
+      n = 0;
+    } else if (c != '\r' && n < sizeof(buf) - 1) {
+      buf[n++] = c;
+    }
+  }
+  if (n > 0) { buf[n] = '\0'; if (buf[0] != 'g') strlcpy(ultima, buf, sizeof(ultima)); }
+  f.close();
+
+  if (ultima[0] == '\0') return false;
+  strlcpy(out, ultima, 11);          // "YYYY-MM-DD" e basta
+  return sd_name_is_safe(out);
+}
+
+bool sd_riep_append(const char* nodeName, const char* riga) {
+  char path[64];
+  if (!riepPath(nodeName, path, sizeof(path)) || riga == nullptr) return false;
+
+  // La cartella del nodo puo' non esserci ancora (nodo appena associato).
+  char dirPath[64];
+  char dir[20];
+  if (!sd_node_dir_name(nodeName, dir, sizeof(dir))) return false;
+  snprintf(dirPath, sizeof(dirPath), "%s/%s", SD_NODI_DIR, dir);
+  if (!SD.exists(SD_NODI_DIR)) SD.mkdir(SD_NODI_DIR);
+  if (!SD.exists(dirPath))     SD.mkdir(dirPath);
+
+  const bool isNew = !SD.exists(path);
+  File f = SD.open(path, FILE_APPEND);
+  if (!f) {
+    strlcpy(s_lastError, "scrittura riepilogo fallita", sizeof(s_lastError));
+    return false;
+  }
+  const size_t intestazione = isNew ? f.println(RIEP_HEADER) : 1;
+  const size_t scritta      = f.println(riga);
+  f.close();
+
+  // Stessa guardia di sd_log_remote(): le print() non alzano il writeError,
+  // quindi senza guardare il ritorno una card piena direbbe "fatto". Qui il
+  // danno sarebbe silenzioso e definitivo — il chiamante segnerebbe il giorno
+  // come chiuso e non lo rifarebbe mai piu'.
+  if (intestazione == 0 || scritta == 0) {
+    strlcpy(s_lastError, "riga di riepilogo non scritta: card piena?", sizeof(s_lastError));
+    return false;
+  }
+  return true;
+}
+
+bool sd_riep_azzera(const char* nodeName) {
+  char path[64];
+  if (!riepPath(nodeName, path, sizeof(path))) return false;
+  if (!SD.exists(path)) return true;      // gia' assente: niente da fare
+  return SD.remove(path);
+}
+
+File sd_open_riep(const char* nodeName) {
+  char path[64];
+  if (!riepPath(nodeName, path, sizeof(path))) return File();
+  if (!SD.exists(path)) return File();
+  return SD.open(path, FILE_READ);
+}
+
+// ---------------------------------------------------------------------
 //  Elenco giorni disponibili
 // ---------------------------------------------------------------------
 int sd_list_days(sd_date_cb_t cb, void* arg, int maxItems) {

@@ -375,6 +375,51 @@ static void handleApiNodiScarica() {
   f.close();
 }
 
+static void handleApiNodiRiepilogo() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+  if (!srv.hasArg("nodo")) {
+    srv.send(400, "text/plain", "serve il parametro nodo");
+    return;
+  }
+
+  // sd_open_riep() valida il nome, che diventa un pezzo di path: qui non si
+  // compone niente a mano. Stessa regola di handleApiNodiScarica().
+  File f = sd_open_riep(srv.arg("nodo").c_str());
+  if (!f) {
+    // 404 e non un CSV vuoto: "non ho ancora chiuso nessun giorno per questo
+    // nodo" e "ho chiuso dei giorni e sono tutti a zero campioni" sono due
+    // cose diverse, e un file vuoto le farebbe sembrare la stessa.
+    srv.send(404, "text/plain", "nessun riepilogo per questo nodo");
+    return;
+  }
+
+  char disp[80];
+  snprintf(disp, sizeof(disp), "attachment; filename=\"%s_riepilogo.csv\"",
+           srv.arg("nodo").c_str());
+  srv.sendHeader("Content-Disposition", disp);
+  streamFileLimitato(srv, f, "text/csv");
+  f.close();
+}
+
+static void handleApiNodiRiepilogoRicalcola() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+
+  // Senza "nodo" si rifanno tutti: e' il caso di un cambio di formato, che
+  // riguarda per definizione ogni riga gia' scritta.
+  const String nodo = srv.hasArg("nodo") ? srv.arg("nodo") : String();
+  if (!app_riepilogo_ricalcola(nodo.c_str())) {
+    srv.send(404, "text/plain", "nessun riepilogo da rifare (nodo sconosciuto o card assente)");
+    return;
+  }
+  // Il lavoro NON si fa qui: si cancella e si lascia che il loop() ricostruisca
+  // un giorno per giro. Rifare nove giorni dentro un handler HTTP terrebbe
+  // fermo il WebServer -- e con lui l'OTA e il prelievo dei DATA dal driver
+  // ESP-NOW, che ne tiene uno solo per nodo.
+  srv.send(200, "text/plain", "riepilogo azzerato: si ricostruisce da solo, un giorno per giro");
+}
+
 static void handleApiNodiAltitudine() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
   WebServer& srv = net_server();
@@ -2308,6 +2353,8 @@ static const Rotta ROTTE[] = {
   { HTTP_POST, "/api/nodi/altitudine",  handleApiNodiAltitudine,     "quota per riportare la pressione al livello del mare", "m=metri" },
   { HTTP_GET,  "/api/nodi/giorni",      handleApiNodiGiorni,         "i giorni di CSV presenti sulla card per un nodo", "nodo=NOME" },
   { HTTP_GET,  "/api/nodi/scarica",     handleApiNodiScarica,        "il CSV di un giorno (ts_iso,ts_unix,fonte_ora,mac,seq,temp_c,hum_pct,press_hpa,batt_mv)", "nodo=NOME, d=AAAA-MM-GG" },
+  { HTTP_GET,  "/api/nodi/riepilogo",   handleApiNodiRiepilogo,      "una riga per giorno CHIUSO: min/max/media di T, RH, pressione e rugiada, con campioni/attesi e buchi. La rugiada e' mediata campione per campione, non calcolata dalle medie", "nodo=NOME" },
+  { HTTP_POST, "/api/nodi/riepilogo/rifai", handleApiNodiRiepilogoRicalcola, "cancella il riepilogo e lo fa ricostruire (un giorno per giro): serve quando cambia il formato o si corregge un difetto, perche' una riga gia' scritta non viene mai riscritta", "nodo=NOME (assente = tutti)" },
 
   { HTTP_GET,  "/api/pannello",         handleApiPannello,           "elenco delle pagine, rotazione, ore di silenzio", "" },
   { HTTP_POST, "/api/pannello",         handleApiPannelloSet,        "rotazione, ore di silenzio (a quarti d'ora), fascia del messaggio", "rotazione=0|1, sil_da=HH:MM (o 0..23 = ora piena), sil_a=HH:MM, sil_da_q/sil_a_q=0..95, sil_pagina=<slot|-1|254>, fascia=0|1" },

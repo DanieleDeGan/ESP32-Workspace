@@ -91,7 +91,8 @@
 #include "forecast.h"      // i nomi TREND_*: remote_nodes.h non lo include
 
 #include "rtc_time.h"      // serve a remote_nodes per datare i DATA
-#include "sd_logger.h"     // microSD della Sense: i CSV dei nodi
+#include "sd_logger.h"
+#include "daily.h"     // microSD della Sense: i CSV dei nodi
 #include "net_ota.h"       // WiFi + ArduinoOTA + /update + WebServer condiviso
 #include "web_ui.h"        // pagina di stato e API, registrate su net_server()
 #include "pages.h"        // il modello delle pagine: cosa mostrare e quando
@@ -167,7 +168,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v49";
+static const char FW_VERSION[] = "v51";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1791,6 +1792,241 @@ static void seedForecastDaSD()
   s_nodiDirty = true;
 }
 
+// ---------------------------------------------------------------------------
+// Riepilogo giornaliero - una riga per giorno chiuso, in /nodi/<NOME>/riepilogo.csv
+// ---------------------------------------------------------------------------
+// I CSV per giorno rispondono bene a "com'era ieri alle 15:40" e male a "che
+// mese e' stato": ogni vista storica deve rileggerli interi, ed e' il motivo
+// per cui il seeding legge solo la coda e il grafico si ferma a 24 h. Una riga
+// per giorno sposta quel costo a fine giornata, una volta sola.
+//
+// NON E' UN TIMER A MEZZANOTTE, ed e' la scelta che rende la cosa affidabile:
+// una riga prodotta da un timer sparisce per sempre se in quel minuto la
+// scheda e' spenta, sta aggiornandosi o e' appena ripartita - e l'assenza di
+// una riga non somiglia a un guasto, quindi nessuno se ne accorgerebbe. Qui
+// invece si guarda quali giorni CHIUSI non hanno ancora la loro riga e si
+// recuperano in ordine: idempotente per costruzione.
+//
+// UN GIORNO PER GIRO, e a turno fra i nodi. Leggere e aggregare un CSV sono
+// ~23 kB dalla card; farne diciotto di fila (il backfill iniziale) terrebbe
+// fermo il loop() per una decina di secondi, e con lui il WebServer, l'OTA e
+// il prelievo dei DATA dal driver ESP-NOW, che ne tiene UNO solo per nodo. E'
+// la stessa regola del WELCOME uno per giro della v44: il lavoro lungo si
+// spalma, e spalmarlo non ritarda niente perche' i giorni chiusi non scappano.
+static int      s_riepNodo    = 0;      // da quale nodo riprendere il giro
+static bool     s_riepFatto   = false;  // niente piu' da recuperare, per ora
+static uint32_t s_riepScritti = 0;
+static char     s_riepGiornoUlt[11] = "";   // per accorgersi del cambio giorno
+
+// Legge il CSV di un giorno e ne produce gli aggregati. Stesso parser di
+// seedNodoDaCsv(), ma il file si legge TUTTO: qui non si ricostruisce una
+// finestra recente, si chiude una giornata, e una coda troncata darebbe un
+// minimo calcolato su mezzo pomeriggio senza dirlo.
+static bool riepilogoDaCsv(const RemoteNode* n, const char* giorno, daily_t& d)
+{
+  File f = sd_open_remote_day(n->nome, giorno);
+  if (!f) return false;
+
+  daily_reset(d);
+
+  char buf[160];
+  while (leggiRiga(f, buf, sizeof(buf)) > 0)
+  {
+    char* campo[9];
+    int nc = 0;
+    campo[nc++] = buf;
+    for (char* q = buf; *q && nc < 9; q++)
+      if (*q == ',') { *q = '\0'; campo[nc++] = q + 1; }
+    if (nc < 8) continue;
+
+    const time_t ts = (time_t)strtoul(campo[1], nullptr, 10);
+    if (ts == 0) continue;                      // l'intestazione cade da sola
+
+    const uint32_t seq = (uint32_t)strtoul(campo[4], nullptr, 10);
+    // Campo vuoto = lettura che il nodo non e' riuscito a fare: resta NAN e
+    // daily_add() la tiene fuori da tutto, invece di farla entrare come zero.
+    const float vt = campo[5][0] ? atof(campo[5]) : NAN;
+    const float vh = campo[6][0] ? atof(campo[6]) : NAN;
+    const float vp = campo[7][0] ? atof(campo[7]) : NAN;
+    daily_add(d, ts, seq, vt, vh, vp);
+  }
+  f.close();
+  return d.campioni > 0;
+}
+
+// Un float in un campo CSV: non finito diventa VUOTO, mai uno zero.
+static void riepCampo(String& r, float v, int dec)
+{
+  r += ',';
+  if (isfinite(v)) r += String(v, dec);
+}
+
+static void riepOra(String& r, time_t ts)
+{
+  r += ',';
+  if (ts != 0) {
+    char hhmm[6];
+    rtctime_format(ts, "%H:%M", hhmm, sizeof(hhmm));
+    r += hhmm;
+  }
+}
+
+struct RiepScelta { char giorno[11]; };
+static void riepPrimoGiorno(const char* iso, size_t bytes, void* arg)
+{
+  (void)bytes;
+  RiepScelta* sc = (RiepScelta*)arg;
+  if (sc->giorno[0] == '\0') strlcpy(sc->giorno, iso, sizeof(sc->giorno));
+}
+
+// Il prossimo giorno da chiudere per questo nodo. false se non ce n'e'.
+static bool riepProssimoGiorno(const RemoteNode* n, const char* oggi,
+                               char* out, size_t cap)
+{
+  char ultimo[11];
+  if (sd_riep_ultimo_giorno(n->nome, ultimo, sizeof(ultimo)))
+  {
+    // Il giorno dopo l'ultimo gia' fatto, calcolato sull'epoch e non sulle
+    // cifre: al 31 non segue il 32, e i mesi hanno lunghezze diverse.
+    struct tm tmv; memset(&tmv, 0, sizeof(tmv));
+    int aa = 0, mm = 0, gg = 0;
+    if (sscanf(ultimo, "%4d-%2d-%2d", &aa, &mm, &gg) != 3) return false;
+    tmv.tm_year = aa - 1900; tmv.tm_mon = mm - 1; tmv.tm_mday = gg;
+    tmv.tm_hour = 12;              // mezzogiorno: immune ai salti dell'ora legale
+    tmv.tm_isdst = -1;
+    const time_t dopo = mktime(&tmv) + 24 * 3600;
+    rtctime_format(dopo, "%Y-%m-%d", out, cap);
+  }
+  else
+  {
+    // Nessun riepilogo ancora: si parte dal primo CSV che il nodo ha.
+    RiepScelta sc; sc.giorno[0] = '\0';
+    sd_list_remote_days(n->nome, riepPrimoGiorno, &sc, 400);
+    if (sc.giorno[0] == '\0') return false;
+    strlcpy(out, sc.giorno, cap);
+  }
+
+  // Il giorno IN CORSO non si chiude: non e' finito, e una riga scritta
+  // adesso resterebbe per sempre con i dati di mezza giornata.
+  return strcmp(out, oggi) < 0;
+}
+
+static void riepilogoTick()
+{
+  if (!rtctime_isSynced() || !sd_mounted() || remote_count() == 0) return;
+
+  char oggi[11];
+  rtctime_format(rtctime_now(), "%Y-%m-%d", oggi, sizeof(oggi));
+
+  // Cambiato giorno: c'e' una giornata nuova da chiudere, si riapre la caccia.
+  // E' QUESTO il "dopo mezzanotte", senza nessun timer da azzeccare.
+  if (strcmp(oggi, s_riepGiornoUlt) != 0)
+  {
+    strlcpy(s_riepGiornoUlt, oggi, sizeof(s_riepGiornoUlt));
+    s_riepFatto = false;
+  }
+  if (s_riepFatto) return;
+
+  // Un nodo per giro, ripartendo da dove si era rimasti: fermarsi sempre sul
+  // primo lo farebbe avanzare da solo affamando gli altri.
+  for (int giro = 0; giro < remote_count(); giro++)
+  {
+    const int i = (s_riepNodo + giro) % remote_count();
+    RemoteNode n;
+    if (!remote_get(i, &n)) continue;
+
+    char giorno[11];
+    if (!riepProssimoGiorno(&n, oggi, giorno, sizeof(giorno))) continue;
+
+    s_riepNodo = (i + 1) % remote_count();
+
+    daily_t d;
+    if (!riepilogoDaCsv(&n, giorno, d))
+    {
+      // Nessun campione per quel giorno (il nodo taceva, o il file non c'e'):
+      // si scrive lo stesso una riga a zero campioni, o quel giorno resterebbe
+      // "da fare" per sempre e bloccherebbe tutti quelli dopo di lui.
+      String vuota = String(giorno) + ",0,0,0,,0,,,,,,,,,,,,,,,";
+      if (sd_riep_append(n.nome, vuota.c_str())) s_riepScritti++;
+      else s_riepFatto = true;
+      return;
+    }
+
+    // La cadenza si ricava DAL GIORNO STESSO, non da quella appresa dall'hub:
+    // quella e' la cadenza di adesso, e il riepilogo di un giorno passato
+    // dev'essere autosufficiente. Su questa stazione la differenza e' enorme
+    // e non teorica — il nodo a muro stava a 60 s fino al 26/08 e a 300 s
+    // dopo, quindi i 299 s appresi oggi darebbero al 28/08 una completezza
+    // del 497 %. Se il giorno non ha abbastanza campioni per dirlo, `attesi`
+    // resta 0 e la completezza esce VUOTA: e' la verita', non un 100 % finto.
+    const uint32_t cadenza = daily_cadenza_s(d);
+    const uint32_t attesi  = daily_attesi(cadenza, 24UL * 3600UL);
+    const float complPct  = daily_completezza_pct(d.campioni, attesi);
+
+    String r(giorno);
+    r += ','; r += d.campioni;
+    r += ','; r += attesi;
+    r += ','; r += cadenza;      // la base del conto, o la completezza
+                                 // sarebbe un numero non verificabile
+    riepCampo(r, complPct, 1);
+    r += ','; r += d.buchi;
+
+    riepCampo(r, d.t.minimo, 2);  riepOra(r, d.t.oraMin);
+    riepCampo(r, d.t.massimo, 2); riepOra(r, d.t.oraMax);
+    riepCampo(r, daily_media(d.t), 2);
+
+    riepCampo(r, d.h.minimo, 1);  riepCampo(r, d.h.massimo, 1);
+    riepCampo(r, daily_media(d.h), 1);
+
+    riepCampo(r, d.p.minimo, 2);  riepCampo(r, d.p.massimo, 2);
+    riepCampo(r, daily_media(d.p), 2);
+    riepCampo(r, daily_p_var(d), 2);
+
+    riepCampo(r, d.td.minimo, 2); riepCampo(r, d.td.massimo, 2);
+    riepCampo(r, daily_media(d.td), 2);
+
+    if (sd_riep_append(n.nome, r.c_str()))
+    {
+      s_riepScritti++;
+      Serial.printf("[riepilogo] %s %s: %lu campioni su %lu attesi, %lu buchi\n",
+                    n.nome, giorno, (unsigned long)d.campioni,
+                    (unsigned long)attesi, (unsigned long)d.buchi);
+    }
+    else
+    {
+      // Scrittura non arrivata sulla card: NON si segna il giorno come fatto
+      // (non lo e'), e si smette di provare fino al prossimo cambio giorno -
+      // ritentare subito su una card che rifiuta e' solo un modo per rifarlo
+      // mille volte al secondo.
+      evento("riepilogo", "scrittura fallita, riprovo piu' tardi");
+      s_riepFatto = true;
+    }
+    return;   // UN giorno per giro
+  }
+
+  s_riepFatto = true;   // niente da recuperare fino al prossimo cambio giorno
+}
+
+uint32_t app_riepiloghi_scritti() { return s_riepScritti; }
+
+// Rifa' da zero il riepilogo di un nodo (o di tutti, con nodo == nullptr).
+// Cancella il file e riapre la caccia: i giorni si ricalcolano uno per giro,
+// come il backfill iniziale.
+bool app_riepilogo_ricalcola(const char* nodo)
+{
+  if (!sd_mounted()) return false;
+  bool almenoUno = false;
+  for (int i = 0; i < remote_count(); i++)
+  {
+    RemoteNode n;
+    if (!remote_get(i, &n)) continue;
+    if (nodo && *nodo && strcmp(nodo, n.nome) != 0) continue;
+    if (sd_riep_azzera(n.nome)) almenoUno = true;
+  }
+  if (almenoUno) { s_riepFatto = false; s_riepNodo = 0; }
+  return almenoUno;
+}
+
 // Richieste che arrivano dalla web UI: si ACCODANO e le esegue il loop().
 // Un refresh del pannello sono 2,2 s, e dentro un handler HTTP vorrebbe dire
 // tenere fermo il server (e con lui l'OTA e il prelievo dei DATA dei nodi):
@@ -3040,6 +3276,13 @@ void loop()
   // Aspetta il primo sync NTP e poi gira una volta sola.
   seedForecastDaSD();
   t = faseFine("seed", t);
+
+  // Il riepilogo del giorno chiuso: al massimo UN giorno per giro, quindi il
+  // costo di una lettura di CSV (~23 kB) e mai piu' di quello. Sta qui, dopo
+  // il seeding e prima del pannello, per la stessa ragione: e' lavoro su card
+  // che deve stare lontano dai refresh e non deve mai accumularsi.
+  riepilogoTick();
+  t = faseFine("riep", t);
 
   const uint8_t ev = bootEvent();
   t = faseFine("bottone", t);

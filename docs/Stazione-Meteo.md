@@ -1,5 +1,92 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-04 (2) — `v50`-`v51`: il riepilogo giornaliero
+
+La voce 3 del backlog, chiesta perché «di notte il pannello non si aggiorna e
+c'è tempo per fare i conti». La premessa era in parte sbagliata e non importa:
+i **nodi** trasmettono di notte esattamente come di giorno, quindi il loro
+carico non cambia; è l'**hub** ad avere le mani libere. E il costo non era
+comunque il problema — il motivo per farlo a fine giornata è che **a mezzanotte
+il dato è completo**, non che ci sia tempo.
+
+### Non è un timer a mezzanotte, ed è la scelta che lo rende affidabile
+
+Una riga prodotta da un timer **sparisce per sempre** se in quel minuto la
+scheda è spenta, sta aggiornandosi o è appena ripartita — e l'assenza di una
+riga non somiglia a un guasto, quindi nessuno se ne accorgerebbe mai. Il giorno
+si chiude invece **quando ci si accorge che ne è cominciato uno nuovo**, e si
+recuperano tutti quelli rimasti indietro. Idempotente per costruzione: dopo
+qualunque assenza l'hub rimette in pari lo storico da solo.
+
+**Un giorno per giro**, a turno fra i nodi: leggere e aggregare un CSV sono
+~23 kB dalla card, e farne diciotto di fila (il backfill iniziale) terrebbe
+fermo il `loop()` — e con lui il WebServer, l'OTA e il prelievo dei DATA dal
+driver ESP-NOW, che ne tiene **uno solo** per nodo. È la stessa regola del
+WELCOME uno per giro della `v44`.
+
+### I due difetti trovati dai dati veri, non dal ragionamento
+
+**1. La cadenza di oggi non vale per i giorni di ieri.** La prima versione usava
+la cadenza appresa dall'hub. Sbagliato, e i dati lo hanno gridato: il nodo a
+muro stava a **60 s fino al 26/08** e a 300 s dopo, quindi i giorni di fine
+agosto hanno ~1440 campioni e quelli di settembre ~288. Usare i 299 s di oggi
+per il 28/08 avrebbe scritto una completezza del **497 %**, una volta sola,
+dentro una riga che nessuno riscrive più. La cadenza si deduce ora **dal giorno
+stesso**, come **mediana** dei delta fra campioni consecutivi — mediana e non
+media per lo stesso motivo della `v44`: un delta che scavalca un buco è un
+multiplo del periodo.
+
+**2. La rugiada media non è la rugiada delle medie**, ed è vero — ma la
+differenza **misurata** sui giorni veri è `+0,020..+0,031 °C`, sempre dello
+stesso segno (è Jensen, non rumore). Sono tre centesimi di grado: la si fa
+giusta perché non costa niente farla giusta, non perché quel numero cambi una
+decisione. Il commento nel codice ora porta il numero invece dell'aggettivo.
+
+### Il numero che giustifica tutta la feature
+
+| giorno | campioni | cadenza dedotta | completezza |
+|---|---|---|---|
+| 27/08 | 354 | 60 s | **24,6 %** |
+| 28/08 | 1437 | 60 s | 99,8 % |
+| **31/08** | **1086** | **60 s** | **75,4 %** |
+| 02/09 | 289 | 300 s | 100,3 % |
+
+Il 31/08 mancava **un quarto dei dati**, e il 27/08 tre quarti (è il giorno
+della migrazione all'hub). Senza quella colonna il minimo di quei giorni
+avrebbe avuto lo stesso identico aspetto di quello di una giornata piena — che
+è esattamente ciò che la voce 28 del backlog chiamava *«prerequisito di tutte
+le statistiche»*.
+
+**Sopra il 100 % ci si va, e non si tappa**: la cadenza è stimata, quindi un
+secondo di errore su 300 vale già un campione al giorno. Cappare a 100
+nasconderebbe proprio il caso in cui la stima si è spostata — e una completezza
+che non supera mai il 100 % non è più una misura, è una rassicurazione. Per lo
+stesso motivo la colonna **`cadenza_s` sta nel CSV**: senza, la completezza
+sarebbe un numero di cui non si può verificare la base.
+
+### La via di rientro, che serve più di quanto sembri
+
+`POST /api/nodi/riepilogo/rifai` cancella il riepilogo e lo fa ricostruire.
+Una riga di riepilogo **non viene mai riscritta**, quindi senza questo un
+giorno calcolato male — formato cambiato, difetto corretto dopo — resterebbe
+sbagliato per sempre e l'unico rimedio sarebbe smontare la card. È servito
+subito: le righe della `v50` avevano `attesi` a zero, e la `v51` le ha rifatte
+tutte in una ventina di secondi.
+
+Il lavoro **non** si fa nell'handler: si cancella e si lascia ricostruire dal
+`loop()`, un giorno per giro. Rifare nove giorni dentro una richiesta HTTP
+terrebbe fermo il server.
+
+### Costo misurato
+
+`loop_max_ms` **2125 ms**, fase `riep`: è il giorno a 60 s, 1440 righe e ~115 kB
+letti dalla card. Sta sotto il watchdog (60 s) e sotto un refresh completo del
+pannello (2630 ms), che è già accettato come normale — ma è **più di quanto
+stimato** (~500 ms), e vale la pena saperlo. A regime si chiude **un giorno al
+giorno** e con la cadenza attuale sono ~0,4 s. Se un domani desse fastidio, il
+punto da guardare è `leggiRiga()`, che legge un byte per volta dall'SPI.
+
+
 ## Aggiornamento del 2026-09-04 — `v18` del nodo: il trend che non poteva esistere
 
 Trovato durante un controllo di routine di hub e nodi, che era tutto verde:

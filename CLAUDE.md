@@ -61,6 +61,7 @@ toccare) vedi `docs/FILES.md`. Per il pinout/hardware della board AMOLED vedi
 | `projects/MeteoHub_S3/MeteoHub_S3.ino` | pagine del pannello, tasto BOOT a due gesti, hub ESP-NOW, logging dei nodi — qui va la logica applicativa |
 | `projects/MeteoHub_S3/pages.h/.cpp` | il modello delle pagine del pannello: elenco, rotazione, ore di silenzio, in NVS — non conosce il display |
 | `projects/MeteoHub_S3/messages.h/.cpp` | il messaggio sul pannello: attivo in NVS, archivio su SD |
+| `projects/MeteoHub_S3/daily.h` | aggregati di una giornata (min/max/media di T, RH, pressione, rugiada, piu' completezza e cadenza dedotta), header-only e puro |
 | `projects/MeteoHub_S3/remote_nodes.h/.cpp` | copia da `EnvNode_C3`: registro nodi, cadenza appresa, nodo muto, trend, NVS |
 | `projects/MeteoHub_S3/sd_logger.h/.cpp` | copia da `EnvNode_C3` adattata alla microSD **SPI della Sense** (CS 21, bus condiviso con l'e-ink) |
 | `projects/MeteoHub_S3/net_ota.h/.cpp` | WiFi + ArduinoOTA + `/update`, variante con `net_server()` condiviso |
@@ -1615,6 +1616,44 @@ senza di loro si somiglierebbero (schermo che non cambia).
       chiesti e il codice scriverebbe `FALLITA` sulla seriale **e nel diario**:
       il risultato negativo non è un silenzio.
 
+- **Il riepilogo giornaliero** (da `v50`-`v51`, 2026-09-04):
+  `/nodi/<NOME>/riepilogo.csv`, una riga per giorno **chiuso**, con
+  `GET /api/nodi/riepilogo?nodo=X` per leggerla e
+  `POST /api/nodi/riepilogo/rifai` per rifarla. Il calcolo sta in `daily.h`
+  (puro), la colla nel `.ino`, il file in `sd_logger`.
+  - **NON e' un timer a mezzanotte**, ed e' la scelta che lo rende affidabile:
+    una riga prodotta da un timer sparisce per sempre se in quel minuto la
+    scheda e' spenta, sta aggiornandosi o e' appena ripartita — e l'assenza di
+    una riga non somiglia a un guasto. Il giorno si chiude **quando ci si
+    accorge che ne e' cominciato uno nuovo**, recuperando quelli rimasti
+    indietro: idempotente, e si rimette in pari da solo dopo ogni assenza.
+  - **UN GIORNO PER GIRO**, a turno fra i nodi: un CSV sono ~23 kB dalla card,
+    e farne diciotto di fila (il backfill iniziale) terrebbe fermo il `loop()`
+    e con lui il prelievo dei DATA, di cui il driver tiene **uno solo** per
+    nodo. Stessa regola del WELCOME uno per giro della `v44`.
+  - **La cadenza si deduce DAL GIORNO STESSO** (mediana dei delta fra campioni
+    consecutivi), mai da quella appresa dall'hub: quella e' la cadenza di
+    adesso. Misurato qui — il nodo a muro stava a **60 s fino al 26/08** e a
+    300 s dopo, quindi usare i 299 s di oggi per il 28/08 scriverebbe una
+    completezza del **497 %**. Mediana e non media perche' un delta che
+    scavalca un buco e' un multiplo del periodo (stessa ragione della `v44`).
+  - **La completezza (`campioni/attesi`) e' la colonna che rende leggibili le
+    altre**, e ha ripagato subito: il 31/08 sta al **75,4 %** e il 27/08 al
+    24,6 %, giorni il cui minimo sembrava affidabile quanto tutti gli altri.
+    **Sopra il 100 % ci si va e non si tappa** (la cadenza e' stimata: un
+    secondo su 300 vale un campione al giorno), e `cadenza_s` sta nel CSV
+    perche' altrimenti la completezza sarebbe un numero non verificabile.
+  - **La rugiada si media campione per campione**, non si calcola dalle medie:
+    e' non lineare. La differenza misurata e' pero' solo `+0,02..0,03 C` — la
+    si fa giusta perche' non costa niente, non perche' cambi una decisione.
+  - **`POST /api/nodi/riepilogo/rifai` e' la via di rientro**: una riga non
+    viene mai riscritta, quindi senza di essa un giorno calcolato male
+    resterebbe sbagliato per sempre e si dovrebbe smontare la card. Il lavoro
+    non si fa nell'handler — si cancella e si lascia ricostruire dal `loop()`.
+  - **Costo misurato**: `loop_max_ms` **2125 ms** in fase `riep` sul giorno a
+    60 s (1440 righe). Sotto il watchdog e sotto un refresh completo (2630 ms),
+    ma piu' del previsto: se desse fastidio, guardare `leggiRiga()`, che legge
+    un byte per volta dall'SPI.
 - **Il diario degli eventi** (da `v45`): `/eventi/AAAA-MM.csv` sulla card,
   `GET /api/eventi`. Esiste perché tre indagini raccontate in
   `docs/Stazione-Meteo.md` sono state la ricostruzione a mano di un diario che
