@@ -168,7 +168,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v55";
+static const char FW_VERSION[] = "v56";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1776,6 +1776,9 @@ static void seedForecastDaSD()
 // il prelievo dei DATA dal driver ESP-NOW, che ne tiene UNO solo per nodo. E'
 // la stessa regola del WELCOME uno per giro della v44: il lavoro lungo si
 // spalma, e spalmarlo non ritarda niente perche' i giorni chiusi non scappano.
+// Ogni quanto si guarda l orologio quando non c e' niente da chiudere.
+static const uint32_t RIEP_SGUARDO_MS = 10000;
+static uint32_t s_riepSguardo = 0;
 static int      s_riepNodo    = 0;      // da quale nodo riprendere il giro
 static bool     s_riepFatto   = false;  // niente piu' da recuperare, per ora
 static uint32_t s_riepScritti = 0;
@@ -1858,9 +1861,53 @@ static bool riepProssimoGiorno(const RemoteNode* n, const char* oggi,
   return strcmp(out, oggi) < 0;
 }
 
+// Quanti giri fa il loop in un secondo. Non e' un vezzo: e' il denominatore
+// di ogni ragionamento sul costo di una cosa fatta "ad ogni giro". Con questo
+// contatore si e' scoperto che il controllo del cambio giorno costava il
+// 12,8 % della CPU del loop (132 us x 972 giri/s) prima di guardarlo solo
+// ogni dieci secondi. Serve anche da sintomo: se cala di colpo, qualcosa nel
+// giro ha cominciato a bloccare.
+static uint32_t s_giri = 0, s_giriS = 0, s_giriT0 = 0;
+
+uint32_t app_loop_giri_s()      { return s_giriS; }
+
+static void riepilogoContaGiro()
+{
+  s_giri++;
+  const uint32_t ora = millis();
+  if (s_giriT0 == 0) { s_giriT0 = ora; return; }
+  if (ora - s_giriT0 >= 1000) {
+    s_giriS = s_giri;
+    s_giri = 0;
+    s_giriT0 = ora;
+  }
+}
+
 static void riepilogoTick()
 {
-  if (!rtctime_isSynced() || !sd_mounted() || remote_count() == 0) return;
+  riepilogoContaGiro();
+  // QUANDO NON C'E' NIENTE DA FARE SI GUARDA L'OROLOGIO OGNI TANTO, non ad
+  // ogni giro. La data cambia una volta ogni 86400 s, ma `rtctime_format()`
+  // fa localtime_r + strftime, ed e' costato — MISURATO sull'hardware, non
+  // stimato — 132 us per chiamata a 972 giri/s: il **12,8 % del tempo di CPU
+  // del loop** speso a rispondere a una domanda che cambia risposta una volta
+  // al giorno.
+  //
+  // Dieci secondi: nel caso peggiore la giornata si chiude 10 s dopo
+  // mezzanotte invece di subito, su 86400 che ha per farlo. E la guardia vale
+  // SOLO quando non c'e' lavoro: appena c'e' un giorno da chiudere si torna a
+  // passare ad ogni giro, cosi' gli arretrati si smaltiscono senza attese.
+  if (s_riepFatto) {
+    const uint32_t ms = millis();
+    if (s_riepSguardo && (uint32_t)(ms - s_riepSguardo) < RIEP_SGUARDO_MS) {
+      return;
+    }
+    s_riepSguardo = ms;
+  }
+
+  if (!rtctime_isSynced() || !sd_mounted() || remote_count() == 0) {
+    return;
+  }
 
   char oggi[11];
   rtctime_format(rtctime_now(), "%Y-%m-%d", oggi, sizeof(oggi));

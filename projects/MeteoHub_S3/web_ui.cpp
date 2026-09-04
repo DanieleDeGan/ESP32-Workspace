@@ -996,6 +996,7 @@ static void handleApiStato() {
     }
   }
   j += "\"loop_lenti\":"    + String(app_loop_lenti()) + ",";
+  j += "\"loop_giri_s\":"   + String(app_loop_giri_s()) + ",";
   j += "\"wdt_armato\":";   j += (app_wdt_armato() ? "true" : "false"); j += ',';
   j += "\"wdt_timeout_s\":" + String(app_wdt_timeout_s()) + ",";
 

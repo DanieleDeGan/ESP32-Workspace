@@ -1,5 +1,50 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-04 (6) — `v55`-`v56`: il controllo costava piu' del lavoro
+
+Due cose trovate **spiegando** il riepilogo giornaliero, non usandolo.
+
+### `"riepilogo"` compariva fra i giorni scaricabili (`v55`)
+
+`sd_list_remote_days()` consegnava qualunque `.csv` nella cartella del nodo, e
+da `v50` lì dentro vive anche `riepilogo.csv`: finiva nell'elenco delle date
+come se fosse il giorno *"riepilogo"* — un pulsante che promette una giornata e
+scarica un'altra cosa. Ora passa solo ciò che è davvero una data
+(`sd_name_is_safe`, la stessa guardia usata quando una data arriva dalla rete).
+
+### Il controllo del cambio giorno costava il 12,8 % della CPU (`v56`)
+
+Domanda dell'utente: *«non è tanto fare il controllo ad ogni giro di loop?»*.
+Era una buona domanda, e la risposta era **sì**.
+
+`riepilogoTick()` girava ad ogni giro e chiamava `rtctime_format()` —
+`localtime_r` + `strftime` — **prima** di guardare se ci fosse qualcosa da
+fare. Misurato sull'hardware aggiungendo un contatore di giri:
+
+| | prima | dopo |
+|---|---|---|
+| µs per chiamata | **132** | **2** |
+| % di CPU del loop | **12,83 %** | **0,20 %** |
+| giri di loop al secondo | 972 | **1000** |
+
+Il 12,8 % della CPU per rispondere a una domanda che cambia risposta **una
+volta al giorno**. Ora l'orologio si guarda ogni **10 s** quando non c'è niente
+da chiudere; la guardia vale **solo** in quel caso, quindi appena c'è un giorno
+da fare si torna a passare ad ogni giro e gli arretrati non aspettano. Nel caso
+peggiore una giornata si chiude 10 s dopo mezzanotte, su 86400 che ha per farlo.
+
+**I giri/s saliti da 972 a 1000 sono la conferma indipendente**: il loop gira
+più veloce perché non spreca più quel tempo. E `loop_giri_s` resta esposto,
+perché è il **denominatore** di ogni ragionamento sul costo di una cosa fatta
+"ad ogni giro" — senza, non si sarebbe potuto dire *quanto* costava, solo che
+"sembrava tanto".
+
+**La lezione, che vale oltre questo caso**: in un `loop()` cooperativo, il costo
+di una funzione non è quello che fa quando lavora, ma quello che fa **quando
+non ha niente da fare** — moltiplicato per mille volte al secondo. E il modo di
+saperlo è misurare, non guardare il codice.
+
+
 ## Aggiornamento del 2026-09-04 (5) — `v54`: i selettori vuoti, e un controllo che si autoassolveva
 
 Sintomo riferito: *«i selettori del range delle date non mostrano i giorni

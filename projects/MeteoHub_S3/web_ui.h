@@ -82,6 +82,7 @@ void app_chiedi_pagina(uint8_t indice);
 
 // Quanti giorni di riepilogo sono stati chiusi da quando la scheda e' accesa.
 uint32_t app_riepiloghi_scritti();
+uint32_t app_loop_giri_s();
 
 // Cancella il riepilogo (di un nodo, o di tutti con nodo vuoto) e lo fa
 // ricostruire dal loop(), un giorno per giro. Stessa regola del refresh: la

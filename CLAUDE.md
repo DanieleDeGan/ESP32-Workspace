@@ -1730,10 +1730,23 @@ senza di loro si somiglierebbero (schermo che non cambia).
     viene mai riscritta, quindi senza di essa un giorno calcolato male
     resterebbe sbagliato per sempre e si dovrebbe smontare la card. Il lavoro
     non si fa nell'handler — si cancella e si lascia ricostruire dal `loop()`.
-  - **Costo misurato**: `loop_max_ms` **2125 ms** in fase `riep` sul giorno a
-    60 s (1440 righe). Sotto il watchdog e sotto un refresh completo (2630 ms),
-    ma piu' del previsto: se desse fastidio, guardare `leggiRiga()`, che legge
-    un byte per volta dall'SPI.
+  - **Costo misurato**: `loop_max_ms` **367 ms** in fase `riep` sul giorno a
+    60 s (1440 righe), sceso da 2125 con la lettura a blocchi della `v53`.
+  - **E il CONTROLLO del cambio giorno costava piu' del calcolo.** Girava ad
+    ogni giro di `loop()` e chiamava `rtctime_format()` (localtime_r +
+    strftime) **prima** di guardare se c'era qualcosa da fare: **132 us a
+    972 giri/s = il 12,8 % della CPU del loop**, misurato sull'hardware, per
+    rispondere a una domanda che cambia risposta **una volta al giorno**. Da
+    `v56` l'orologio si guarda ogni **10 s** quando non c'e' niente da
+    chiudere: **2 us, lo 0,2 %**, e i giri/s sono saliti da 972 a 1000.
+    - **La guardia vale SOLO quando non c'e' lavoro**: appena c'e' un giorno
+      da chiudere si torna a passare ad ogni giro, cosi' gli arretrati si
+      smaltiscono senza attese. Nel caso peggiore una giornata si chiude 10 s
+      dopo mezzanotte, su 86400 che ha per farlo.
+    - **`loop_giri_s` in `/api/stato` resta**: e' il denominatore di ogni
+      ragionamento sul costo di una cosa fatta "ad ogni giro", e senza non si
+      sarebbe potuto dire *quanto* costava. Serve anche da sintomo — se cala
+      di colpo, qualcosa nel giro ha cominciato a bloccare.
 - **Il diario degli eventi** (da `v45`): `/eventi/AAAA-MM.csv` sulla card,
   `GET /api/eventi`. Esiste perché tre indagini raccontate in
   `docs/Stazione-Meteo.md` sono state la ricostruzione a mano di un diario che
