@@ -472,9 +472,16 @@ int sd_list_remote_days(const char* nodeName, sd_date_cb_t cb, void* arg, int ma
       const int slash = name.lastIndexOf('/');
       if (slash >= 0) name = name.substring(slash + 1);
       if (name.endsWith(".csv")) {
-        cb(name.substring(0, name.length() - 4).c_str(), f.size(), arg);
-        count++;
-        if (maxItems > 0 && count >= maxItems) { f.close(); break; }
+        const String base = name.substring(0, name.length() - 4);
+        // SOLO i file che sono davvero un giorno. Nella cartella del nodo
+        // vive anche riepilogo.csv (da v50), e senza questo filtro finiva
+        // nell'elenco delle date come se fosse il giorno "riepilogo": un
+        // pulsante che promette una giornata e scarica un'altra cosa.
+        if (sd_name_is_safe(base.c_str())) {
+          cb(base.c_str(), f.size(), arg);
+          count++;
+          if (maxItems > 0 && count >= maxItems) { f.close(); break; }
+        }
       }
     }
     f.close();
