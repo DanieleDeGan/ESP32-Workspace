@@ -61,6 +61,8 @@ toccare) vedi `docs/FILES.md`. Per il pinout/hardware della board AMOLED vedi
 | `projects/MeteoHub_S3/MeteoHub_S3.ino` | pagine del pannello, tasto BOOT a due gesti, hub ESP-NOW, logging dei nodi — qui va la logica applicativa |
 | `projects/MeteoHub_S3/pages.h/.cpp` | il modello delle pagine del pannello: elenco, rotazione, ore di silenzio, in NVS — non conosce il display |
 | `projects/MeteoHub_S3/messages.h/.cpp` | il messaggio sul pannello: attivo in NVS, archivio su SD |
+| `projects/MeteoHub_S3/www/analisi.html` | pagina di analisi dei riepiloghi: grafici SVG disegnati a mano, nessuna libreria. **Sorgente unica**, da cui `analisi_page.h` si rigenera con `python www/gen_page.py analisi` |
+| `projects/MeteoHub_S3/analisi_page.h` | generato dalla precedente, servito su `/analisi` — non si modifica a mano |
 | `projects/MeteoHub_S3/daily.h` | aggregati di una giornata (min/max/media di T, RH, pressione, rugiada, piu' completezza e cadenza dedotta), header-only e puro |
 | `projects/MeteoHub_S3/remote_nodes.h/.cpp` | copia da `EnvNode_C3`: registro nodi, cadenza appresa, nodo muto, trend, NVS |
 | `projects/MeteoHub_S3/sd_logger.h/.cpp` | copia da `EnvNode_C3` adattata alla microSD **SPI della Sense** (CS 21, bus condiviso con l'e-ink) |
@@ -1472,8 +1474,9 @@ senza di loro si somiglierebbero (schermo che non cambia).
     registrano a mano subito sotto.
 
 - **Tutte le pagine portano lo STESSO piede di navigazione**: `/` &middot;
-  `/pannello` &middot; `/immagini` &middot; `/pagine` &middot; `/api` &middot;
-  `/update` (aggiornato in `v19`; prima c'era `/dashboard-upload`, che resta
+  `/pannello` &middot; `/analisi` &middot; `/immagini` &middot; `/pagine` &middot;
+  `/api` &middot;
+  `/update` (`/analisi` aggiunta in `v52`; aggiornato in `v19`; prima c'era `/dashboard-upload`, che resta
   funzionante ma non è più la via consigliata — `/pagine` fa la stessa cosa per
   tutte le pagine). Vale anche per la dashboard sulla card e per la pagina
   `/update`, che sta in `net_ota.cpp`: sono **sette** posti da toccare insieme,
@@ -1616,6 +1619,26 @@ senza di loro si somiglierebbero (schermo che non cambia).
       chiesti e il codice scriverebbe `FALLITA` sulla seriale **e nel diario**:
       il risultato negativo non è un silenzio.
 
+- **La pagina `/analisi`** (da `v52`, 2026-09-04) legge i riepiloghi e li
+  disegna: banda min/max con la media per temperatura, pressione e umidita',
+  barre della completezza, record del periodo e tabella. **Una richiesta per
+  nodo** invece di una per giorno — e' tutto il punto del riepilogo.
+  - **I giorni incompleti restano visibili e SEGNATI** (cerchio nel grafico,
+    riga arancione in tabella, avviso in testa), con soglia scegliibile. E'
+    la regola che tiene in piedi la feature: toglierli farebbe sparire anche
+    l'informazione che sono mancati, cioe' rifarebbe con la grafica l'errore
+    che la colonna `completezza_pct` serve a evitare.
+  - **Grafici SVG scritti a mano, nessuna libreria**: la scheda non ha
+    internet e la pagina dev'essere un file solo. Stessa scelta dei grafici
+    di `MeteoNode_C3`.
+  - **Sostituibile dalla card** come le altre (`/www/analisi.html` via
+    `/pagine`), ed e' il caso d'uso per cui quel meccanismo esiste: una
+    pagina di grafici si itera molte volte, e ogni giro non deve costare un
+    OTA con il riavvio che si porta dietro.
+  - **La sorgente e' UNA**, `www/analisi.html`; `analisi_page.h` si rigenera
+    con `python www/gen_page.py analisi` — parametrico da `v52`, prima
+    serviva solo dither. **Un hook di Claude Code lo fa da solo** quando il
+    file viene modificato; a mano va rilanciato prima di ricompilare.
 - **Il riepilogo giornaliero** (da `v50`-`v51`, 2026-09-04):
   `/nodi/<NOME>/riepilogo.csv`, una riga per giorno **chiuso**, con
   `GET /api/nodi/riepilogo?nodo=X` per leggerla e

@@ -1,5 +1,63 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-04 (3) — `v52`: la pagina di analisi
+
+I riepiloghi esistevano da un'ora e si leggevano come CSV. `/analisi` li
+disegna: banda min/max con la media per temperatura, pressione e umidità,
+barre della completezza, i record del periodo e la tabella completa, con
+selettore del nodo e del periodo. **Una richiesta per nodo** invece di una per
+giorno — che è tutto il motivo per cui il riepilogo esiste.
+
+### La regola che tiene in piedi la pagina
+
+**I giorni incompleti restano visibili e segnati**: cerchio nel grafico, riga
+arancione in tabella, avviso in testa con l'elenco. Nasconderli o "aggiustarli"
+sarebbe rifare con la grafica esattamente l'errore che la colonna
+`completezza_pct` serve a evitare — e sarebbe la strada comoda, perché un
+grafico senza buchi è più bello. Toglierli farebbe sparire anche l'informazione
+che sono mancati.
+
+Sui dati veri se ne vedono subito due: il **27/08 al 24,6 %** (giorno della
+migrazione all'hub) e il **31/08 al 75,4 %**.
+
+### Scelte tecniche
+
+- **Grafici SVG scritti a mano, nessuna libreria**: la scheda non ha internet e
+  la pagina dev'essere un file solo. Stessa scelta dei grafici di `MeteoNode_C3`.
+- **Sostituibile dalla card** (`/www/analisi.html` via `/pagine`), ed è il caso
+  d'uso per cui quel meccanismo è nato: una pagina di grafici si itera molte
+  volte, e ogni giro non deve costare un OTA — che si porta dietro il riavvio,
+  il pannello che torna alla pagina dei nodi e i contatori azzerati.
+- **La sorgente è una sola.** `www/gen_page.py` è diventato **parametrico**
+  (prima serviva solo `dither`) e l'hook di Claude Code rigenera l'header da
+  sé: due copie a mano divergerebbero al primo ritocco, e la differenza si
+  vedrebbe solo confrontando la pagina della scheda con quella sul PC.
+
+### Provata senza browser, sui dati veri
+
+La pagina **scaricata dalla scheda** (non il sorgente locale) è stata eseguita
+in node contro il CSV vero dell'hub:
+
+- 8 giorni interpretati correttamente;
+- **zero campi vuoti letti come zero** — restano `null`, quindi buchi e non
+  misure che nessuno ha fatto;
+- SVG **senza NaN né `undefined`**;
+- **due cerchi**, cioè esattamente i due giorni parziali;
+- record corretti: più caldo 28,1 °C il 03/09 alle 20:42, più freddo 24,8 °C il
+  31/08 alle 07:18.
+
+È la verifica che conta più di un'occhiata nel browser: prova il parsing e la
+generazione dei path, che è ciò che può rompersi in silenzio.
+
+### Il piede di navigazione ha una voce in più
+
+`/analisi` va aggiunta in **tutti** i posti che portano il piede — `web_ui.cpp`
+(tre `<nav>`), `net_ota.cpp`, `www/dashboard.html` e `www/dither.html` (che
+rigenera `dither_page.h`). È il prezzo, già documentato, di non avere un
+template condiviso: se una pagina resta indietro, da lì non si raggiungono più
+le altre se non digitando l'URL a memoria.
+
+
 ## Aggiornamento del 2026-09-04 (2) — `v50`-`v51`: il riepilogo giornaliero
 
 La voce 3 del backlog, chiesta perché «di notte il pannello non si aggiorna e

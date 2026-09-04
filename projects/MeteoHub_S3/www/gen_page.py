@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Genera dither_page.h da dither.html.
+Genera <nome>_page.h da <nome>.html.
 
-La pagina di composizione delle immagini vive in UN posto solo, `dither.html`,
-che si apre anche da disco per lavorarci comodi. Il firmware pero' la serve
-su /immagini, e per farlo le serve dentro un array PROGMEM: invece di tenere
-due copie — che divergerebbero al primo ritocco, e nessuno se ne accorgerebbe
-finche' la pagina servita dalla scheda non e' diversa da quella che si sta
-guardando sul PC — l'header si RIGENERA da qui.
+Le pagine grosse dell'hub vivono in UN posto solo, il loro .html, che si apre
+anche da disco per lavorarci comodi. Il firmware pero' le serve, e per farlo
+gli servono dentro un array PROGMEM: invece di tenere due copie — che
+divergerebbero al primo ritocco, e nessuno se ne accorgerebbe finche' la
+pagina servita dalla scheda non e' diversa da quella che si sta guardando sul
+PC — l'header si RIGENERA da qui.
 
-    python www/gen_page.py
+    python www/gen_page.py            # dither  (il default storico)
+    python www/gen_page.py analisi
 
-Da rilanciare dopo ogni modifica a dither.html, prima di ricompilare. Il file
-generato e' versionato apposta: chi clona il repo compila senza dover eseguire
+Da rilanciare dopo ogni modifica alla pagina, prima di ricompilare. I file
+generati sono versionati apposta: chi clona il repo compila senza eseguire
 niente.
+
+Il default senza argomenti resta `dither` perche' l'hook di Claude Code in
+.claude/settings.json lo invoca cosi'.
 """
 
 import io
@@ -22,40 +26,52 @@ import os
 import sys
 
 QUI = os.path.dirname(os.path.abspath(__file__))
-SORGENTE = os.path.join(QUI, 'dither.html')
-USCITA = os.path.join(os.path.dirname(QUI), 'dither_page.h')
 
-# Delimitatore del raw string C++: deve essere una sequenza che nella pagina
-# non compare mai, o chiuderebbe la stringa a meta' file.
-DELIM = 'DITHERPAGE'
+# nome -> (simbolo PROGMEM, rotta su cui viene servita)
+PAGINE = {
+    'dither':  ('DITHER_PAGE',  '/immagini'),
+    'analisi': ('ANALISI_PAGE', '/analisi'),
+}
 
 
-def main():
-    html = io.open(SORGENTE, encoding='utf-8').read()
+def genera(nome):
+    if nome not in PAGINE:
+        sys.exit('ERRORE: pagina %r sconosciuta. Note: %s'
+                 % (nome, ', '.join(sorted(PAGINE))))
 
-    fine = ')' + DELIM + '"'
+    simbolo, rotta = PAGINE[nome]
+    sorgente = os.path.join(QUI, nome + '.html')
+    uscita = os.path.join(os.path.dirname(QUI), nome + '_page.h')
+
+    # Delimitatore del raw string C++: deve essere una sequenza che nella
+    # pagina non compare mai, o chiuderebbe la stringa a meta' file.
+    delim = nome.upper() + 'PAGE'
+
+    html = io.open(sorgente, encoding='utf-8').read()
+
+    fine = ')' + delim + '"'
     if fine in html:
-        sys.exit('ERRORE: dither.html contiene %r, che chiuderebbe il raw '
-                 'string. Cambiare DELIM in questo script.' % fine)
+        sys.exit('ERRORE: %s.html contiene %r, che chiuderebbe il raw '
+                 'string. Cambiare il delimitatore.' % (nome, fine))
 
     testata = (
         '#pragma once\n'
         '\n'
         '// ============================================================\n'
         '//  GENERATO DA www/gen_page.py - NON MODIFICARE A MANO.\n'
-        '//  La sorgente e\' www/dither.html: si modifica quella e si\n'
-        '//  rilancia  python www/gen_page.py  prima di ricompilare.\n'
-        '//  (%d byte di pagina, serviti su /immagini)\n'
+        '//  La sorgente e\' www/%s.html: si modifica quella e si\n'
+        '//  rilancia  python www/gen_page.py %s  prima di ricompilare.\n'
+        '//  (%d byte di pagina, serviti su %s)\n'
         '// ============================================================\n'
         '\n'
-        'static const char DITHER_PAGE[] PROGMEM = R"%s(\n'
-    ) % (len(html.encode('utf-8')), DELIM)
+        'static const char %s[] PROGMEM = R"%s(\n'
+    ) % (nome, nome, len(html.encode('utf-8')), rotta, simbolo, delim)
 
-    coda = '\n)%s";\n' % DELIM
+    coda = '\n)%s";\n' % delim
 
-    io.open(USCITA, 'w', encoding='utf-8', newline='\n').write(testata + html + coda)
-    print('dither_page.h generato: %d byte di HTML' % len(html.encode('utf-8')))
+    io.open(uscita, 'w', encoding='utf-8', newline='\n').write(testata + html + coda)
+    print('%s_page.h generato: %d byte di HTML' % (nome, len(html.encode('utf-8'))))
 
 
 if __name__ == '__main__':
-    main()
+    genera(sys.argv[1] if len(sys.argv) > 1 else 'dither')

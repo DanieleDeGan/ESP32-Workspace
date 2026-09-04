@@ -24,7 +24,8 @@
 #include "rtc_time.h"
 #include "pages.h"
 #include "messages.h"
-#include "dither_page.h"   // GENERATO da www/gen_page.py, servito su /immagini
+#include "dither_page.h"
+#include "analisi_page.h"   // GENERATO da www/gen_page.py, servito su /immagini
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -419,6 +420,8 @@ static void handleApiNodiRiepilogoRicalcola() {
   // ESP-NOW, che ne tiene uno solo per nodo.
   srv.send(200, "text/plain", "riepilogo azzerato: si ricostruisce da solo, un giorno per giro");
 }
+
+static void handleAnalisi() { servePagina("analisi", ANALISI_PAGE); }
 
 static void handleApiNodiAltitudine() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
@@ -1498,8 +1501,9 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
 </div>
 
 <nav>
- <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/immagini">Componi immagine</a>
- <a href="/pagine">Pagine</a><a href="/api">API</a><a href="/update">Aggiorna firmware</a>
+ <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/analisi">Analisi</a>
+ <a href="/immagini">Componi immagine</a><a href="/pagine">Pagine</a>
+ <a href="/api">API</a><a href="/update">Aggiorna firmware</a>
 </nav>
 <script>
 const E=document.getElementById.bind(document);
@@ -2382,6 +2386,7 @@ static const Rotta ROTTE[] = {
   { HTTP_GET,  "/api/immagini/scarica", handleApiImmaginiScarica,    "i 15.000 byte di un'immagine (per l'anteprima)", "nome=NOME" },
 
   { HTTP_GET,  "/api",                  nullptr,                     "questo elenco, impaginato (sostituibile)", "" },
+  { HTTP_GET,  "/analisi",             handleAnalisi,               "pagina di analisi dei riepiloghi giornalieri (sostituibile dalla card)", "" },
   { HTTP_GET,  "/pagine",               nullptr,                     "gestione delle pagine sostituibili (sempre nel firmware)", "" },
   { HTTP_POST, "/api/pagine/carica",    nullptr,                     "carica una pagina sulla card (multipart, campo 'pagina')", "nome=dashboard|pannello|immagini|api" },
   { HTTP_POST, "/api/pagine/ripristina",nullptr,                     "toglie la pagina dalla card: torna quella del firmware", "nome=..." },
@@ -2448,8 +2453,9 @@ scriverla. Serve a chi si costruisce le proprie pagine &mdash; vedi
 del resto dell&rsquo;interfaccia.</p>
 <div id="l">lettura&hellip;</div>
 <nav>
- <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/immagini">Componi immagine</a>
- <a href="/pagine">Pagine</a><a href="/api">API</a><a href="/update">Aggiorna firmware</a>
+ <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/analisi">Analisi</a>
+ <a href="/immagini">Componi immagine</a><a href="/pagine">Pagine</a>
+ <a href="/api">API</a><a href="/update">Aggiorna firmware</a>
 </nav>
 <script>
 const esc=x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -2485,6 +2491,7 @@ static const PaginaSost PAGINE_SOST[] = {
   { "pannello",  "/pannello", "Pannello e messaggi",    PANNELLO_PAGE },
   { "immagini",  "/immagini", "Composizione immagini",  DITHER_PAGE   },
   { "api",       "/api",      "Elenco delle API",       API_PAGE      },
+  { "analisi",   "/analisi",  "Analisi dei riepiloghi", ANALISI_PAGE  },
 };
 static const int PAGINE_SOST_N = sizeof(PAGINE_SOST) / sizeof(PAGINE_SOST[0]);
 
@@ -2656,8 +2663,9 @@ la tua pagina &egrave; rotta, l&rsquo;interfaccia continua a funzionare.<br>
 Le rotte disponibili sono elencate in <a href="/api">API</a>.</p>
 <div id="l">lettura&hellip;</div>
 <nav>
- <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/immagini">Componi immagine</a>
- <a href="/pagine">Pagine</a><a href="/api">API</a><a href="/update">Aggiorna firmware</a>
+ <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/analisi">Analisi</a>
+ <a href="/immagini">Componi immagine</a><a href="/pagine">Pagine</a>
+ <a href="/api">API</a><a href="/update">Aggiorna firmware</a>
 </nav>
 <script>
 const E=document.getElementById.bind(document);
