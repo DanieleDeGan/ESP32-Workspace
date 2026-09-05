@@ -9,19 +9,31 @@ CDC, deep sleep, OTA, scritture su SD, default NVS) `docs/Trappole-Hardware.md`.
 
 | File | Ruolo |
 |---|---|
-| `MeteoHub_S3.ino` | pagine del pannello, tasto BOOT a due gesti, hub ESP-NOW, logging dei nodi — qui va la logica applicativa |
+| `MeteoHub_S3.ino` | pagine del pannello, tasto BOOT a due gesti, hub ESP-NOW, logging dei nodi, riepiloghi — qui va la logica applicativa |
 | `pages.h/.cpp` | il modello delle pagine del pannello: elenco, rotazione, ore di silenzio, in NVS — non conosce il display |
 | `messages.h/.cpp` | il messaggio sul pannello: attivo in NVS, archivio su SD |
-| `www/analisi.html` | pagina di analisi dei riepiloghi: grafici SVG disegnati a mano, nessuna libreria. **Sorgente unica**, da cui `analisi_page.h` si rigenera con `python www/gen_page.py analisi` |
-| `analisi_page.h` | generato dalla precedente, servito su `/analisi` — non si modifica a mano |
-| `daily.h` | aggregati di una giornata (min/max/media di T, RH, pressione, rugiada, piu' completezza e cadenza dedotta), header-only e puro |
 | `remote_nodes.h/.cpp` | copia da `EnvNode_C3`: registro nodi, cadenza appresa, nodo muto, trend, NVS |
-| `sd_logger.h/.cpp` | copia da `EnvNode_C3` adattata alla microSD **SPI della Sense** (CS 21, bus condiviso con l'e-ink) |
+| `sd_logger.h/.cpp` | copia da `EnvNode_C3` adattata alla microSD **SPI della Sense** (CS 21, bus condiviso con l'e-ink); più immagini, riepiloghi, diario e registro dei refresh |
+| `rtc_time.h/.cpp` | copia da `EnvNode_C3`: stima da build-time, poi NTP |
+| `forecast.h` | copia dal nodo: trend barometrico a 3 h con isteresi, header-only e puro. Il calcolo autorevole sta **qui**, non sul nodo |
+| `daily.h` | aggregati di una giornata (min/max/media di T, RH, pressione, rugiada, più completezza e cadenza dedotta), header-only e puro |
+| `meteo_calc.h` | quello che si ricava da T e RH: rugiada, umidità assoluta, humidex. Header-only e puro come `forecast.h` — sta **sull'hub** perché sono grandezze derivate, e un errore di formula spedito dal nodo finirebbe nello storico per sempre |
+| `icone.h` | le icone 1 bit del pannello, **generate** da `tools/icone.py` — non si modificano a mano |
 | `net_ota.h/.cpp` | WiFi + ArduinoOTA + `/update`, variante con `net_server()` condiviso |
-| `web_ui.h/.cpp` | pagina di stato dell'hub + API dei nodi, gli stessi endpoint di `EnvNode_C3` |
+| `web_ui.h/.cpp` | pagine servite dalla scheda, tabella delle rotte e API — gli stessi endpoint di `EnvNode_C3`, più quelli del pannello |
 | `secrets.h.example` | credenziali: si copia in `secrets.h`, **gitignorato** |
-| `www/dashboard.html` | dashboard personalizzata dell'hub: confronto fra nodi, storico dai CSV, pressione/trend, salute della rete. **Non compilata**: si carica sulla card da `/dashboard-upload` |
-| `www/dither.html` | ritaglio + dithering nel browser: produce i `.bin` da 15.000 byte e li manda all'hub. Da `v8` e' anche **servita dalla scheda** su `/immagini`, via `dither_page.h` generato con `www/gen_page.py` |
+| `www/dashboard.html` | dashboard personalizzata dell'hub: confronto fra nodi, storico dai CSV, pressione/trend, salute della rete. **Non compilata**: si carica sulla card da `/pagine` (o dal vecchio `/dashboard-upload`) |
+| `www/analisi.html` | pagina di analisi dei riepiloghi: sei viste, grafici **ECharts** dal CDN con la riserva SVG scritta a mano. **Sorgente unica**, da cui `analisi_page.h` si rigenera con `python www/gen_page.py analisi` |
+| `analisi_page.h` | generato dalla precedente, servito su `/analisi` — non si modifica a mano |
+| `www/dither.html` | ritaglio + dithering nel browser: produce i `.bin` da 15.000 byte e li manda all'hub. Da `v8` è anche **servita dalla scheda** su `/immagini` |
+| `dither_page.h` | generato dalla precedente, servito su `/immagini` — non si modifica a mano |
+| `www/gen_page.py` | rigenera `analisi_page.h`/`dither_page.h` dal loro `.html`: `python www/gen_page.py analisi\|dither`. Un hook di Claude Code lo lancia da solo quando quei due file cambiano; a mano va rilanciato **prima** di ricompilare |
+| `tools/controlla_piedi.py` | verifica che ogni pagina porti il piede di navigazione completo. Con `--host <ip>` controlla quelle che la **scheda** serve davvero e confronta `fw_caricata` col firmware che gira |
+| `tools/larghezza_testo.py` | quanto è largo un testo sul pannello **prima** di disegnarlo: somma gli `xAdvance` dei glifi nei `.h` veri dei font |
+| `tools/pannello_png.py` | scarica `/api/pannello/anteprima` e ne fa un PNG, senza dipendenze: il pannello si guarda da riga di comando |
+| `tools/icone.py` | disegna le icone e le mostra a schermo per giudicarle; con `--c` genera `icone.h` |
+| `tools/refresh_simula.py` | quanti refresh farebbe il pannello, rigiocando i CSV veri dei nodi |
+| `tools/analisi.py` | cosa dicono davvero i CSV dei nodi: le analisi che a bordo non si possono fare |
 
 
 Cresciuto dal bring-up del pannello e-ink, oggi è l'hub vero della stazione:
@@ -30,9 +42,13 @@ Cresciuto dal bring-up del pannello e-ink, oggi è l'hub vero della stazione:
 nodi ESP-NOW -> hub S3 -> pannello e-ink 4.2" + CSV su microSD + web UI/OTA
 ```
 
-Le cinque pagine di prova del bring-up sono ancora in coda a quella dei nodi:
-servono a distinguere un guasto del pannello da un guasto della radio, che
-senza di loro si somiglierebbero (schermo che non cambia).
+Il pannello ha **sei tipi di pagina** (`pages.h`): `PT_NODI` — quella per cui
+l'hub esiste —, `PT_MESSAGGIO`, `PT_BIANCA` (pannello a riposo), `PT_IMMAGINE`
+(un `.bin` da `/images`), `PT_GRAFICO` (24 ore di temperatura) e
+`PT_DETTAGLIO` (tutto su un nodo solo). Le cinque pagine di prova del bring-up
+sono state tolte in `v4`: servivano a distinguere un guasto del pannello da uno
+della radio, e quel compito lo fa ora la pagina messaggio, che si vede o non si
+vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
 
 **Vincoli e scelte da conoscere**:
 
@@ -237,8 +253,17 @@ senza di loro si somiglierebbero (schermo che non cambia).
     scarica gli **stessi** 15.000 byte da `/api/immagini/scarica` e li
     ridisegna su canvas con lo stesso `unpack()` di `dither.html`. Non è una
     simulazione del pannello, è il suo contenuto. (L'anteprima di quello che
-    l'hub sta disegnando *adesso* è un'altra cosa e non si può fare: vedi la
-    nota su `getBuffer()` più sopra.)
+    l'hub sta disegnando *adesso* è un'altra cosa, e da `v22` si fa: è
+    `GET /api/pannello/anteprima`, più sotto.)
+  - **Nella galleria le anteprime sono miniature da 600 byte**
+    (`GET /api/immagini/mini`, 80×60, la stessa immagine sottocampionata 5×):
+    dodici anteprime piene sarebbero 180 kB su un web server **sincrono**, cioè
+    altrettanto tempo in cui l'hub non preleva i DATA dei nodi dal driver, che
+    ne tiene uno solo. Con le miniature sono 7,2 kB.
+    - **Si calcolano ad ogni richiesta invece di tenerle sulla card**: sono
+      pochi ms di lettura, mentre una miniatura salvata sarebbe un secondo file
+      da creare, cancellare e tenere allineato all'originale — tre modi in più
+      di andare fuori sincrono per risparmiare una cosa che non costa.
 - **`www/dither.html` manda direttamente alla scheda** (pulsante "Manda
   all'hub"): POST su `/api/immagini`. La pagina gira come **file locale**, quindi
   quel POST è cross-origin e l'hub monta il `CorsMiddleware` come `EnvNode_C3`
@@ -267,10 +292,13 @@ senza di loro si somiglierebbero (schermo che non cambia).
     `*` il browser non manda le credenziali salvate. E' `SERVITA_DA_SCHEDA`,
     una riga di JavaScript.
 - **Le pagine dell'interfaccia si sostituiscono dalla card** (da `v18`): `/`,
-  `/pannello`, `/immagini` e `/api` servono il file `/www/<nome>.html` se c'è,
-  altrimenti quello nel firmware. Si gestisce da **`/pagine`**.
+  `/pannello`, `/immagini`, `/api` e — da `v52` — `/analisi` servono il file
+  `/www/<nome>.html` se c'è, altrimenti quello nel firmware. Sono le cinque voci
+  di `PAGINE_SOST` in `web_ui.cpp`. Si gestisce da **`/pagine`**.
   - **Il motivo non è lo spazio**: le cinque pagine pesano 74 kB su una
-    partizione piena al 41 %, e toglierle porterebbe al 39 %. Il motivo è
+    partizione che alla `v18` era piena al 41 %, e toglierle l'avrebbe portata
+    al 39 % (alla `v57` si sta al **44 %**: 1.498.226 byte su 3.342.336, RAM
+    globale 23 %). Il motivo è
     **iterare senza OTA** — il 2026-08-30 sono serviti *cinque* aggiornamenti
     per dettagli grafici, e ogni riavvio si porta dietro il suo corredo (il
     pannello torna alla pagina dei nodi, i contatori si azzerano).
@@ -309,8 +337,10 @@ senza di loro si somiglierebbero (schermo che non cambia).
   `/update` (`/analisi` aggiunta in `v52`; aggiornato in `v19`; prima c'era `/dashboard-upload`, che resta
   funzionante ma non è più la via consigliata — `/pagine` fa la stessa cosa per
   tutte le pagine). Vale anche per la dashboard sulla card e per la pagina
-  `/update`, che sta in `net_ota.cpp`: sono **sette** posti da toccare insieme,
-  ed è il prezzo di non avere un template condiviso. Non e' pignoleria
+  `/update`, che sta in `net_ota.cpp`: sono **nove** pagine da toccare insieme —
+  cinque in PROGMEM dentro `web_ui.cpp`, una in `net_ota.cpp` e le tre in
+  `www/` — ed è il prezzo di non avere un template condiviso. Il conto lo fa
+  `python tools/controlla_piedi.py`, che le elenca una per una. Non e' pignoleria
   estetica: `/` puo' essere sostituita da una dashboard personalizzata sulla
   card, e se quella non mette i link — o e' rotta — le altre pagine
   resterebbero raggiungibili solo digitando l'URL a memoria. Con il piede
@@ -352,6 +382,45 @@ senza di loro si somiglierebbero (schermo che non cambia).
     campione. Senza, "la pagina e' comparsa" e "la pagina mostra qualcosa"
     sarebbero indistinguibili da remoto: il pannello non si puo' guardare da
     fuori.
+
+- **La pagina DETTAGLIO** (`PT_DETTAGLIO`, da `v23`): tutto quello che si sa di
+  **un** nodo, una riga per valore, etichetta a sinistra e numero incolonnato a
+  destra. Si aggiunge con `POST /api/pannello/aggiungi?tipo=dettaglio&param=NODO`.
+  - **Nasce da un difetto della pagina nodi**: i valori derivati (rugiada,
+    min/max, percepiti, acqua nell'aria) erano finiti tutti nel blocco comodo,
+    e **otto numeri in 116 px non si leggono da tre metri** — si decifrano da
+    vicino, uno per volta. In `v24` quella riga è stata tolta e i valori sono passati qui,
+    dove ci sono 300 px per incolonnarli. È la regola già scritta per la fascia
+    del messaggio e per il grafico: su e-ink il tempo è la dimensione in più.
+  - **Il nodo si indica per NOME, non per indice**: gli indici si spostano
+    quando un nodo viene dimenticato, e la pagina mostrerebbe un altro nodo
+    senza dirlo. Stessa ragione per cui i timer del ritardo si tengono per MAC.
+  - **Le grandezze derivate stanno in `meteo_calc.h`** — rugiada
+    (Magnus-Tetens), umidità assoluta in g/m³, humidex — header-only e puro come
+    `forecast.h`. **Si calcolano sull'hub e non sul nodo** perché si ricavano da
+    T e RH, che il nodo trasmette già: calcolarle a bordo vorrebbe dire spedire
+    numeri derivati al posto delle misure, e un errore di formula finirebbe
+    dentro lo storico su card **per sempre**, mentre così bastano i CSV di ieri
+    per rifare i conti. È la stessa ragione per cui la pressione viaggia grezza.
+  - **Una riga che non c'è dice qualcosa**: sotto i 20 gradi l'humidex non
+    esiste e la riga **non compare affatto**, invece di mostrare un numero senza
+    significato. Un valore non finito si disegna `--`, mai zero.
+  - **L'unità viaggia separata dal valore**: va in corpo più piccolo e, quando
+    sono gradi, con il cerchietto disegnato (`drawGrado()`) al posto della
+    lettera — i font Adafruit GFX sono ASCII puro e il grado non ce l'hanno.
+    Scriverlo come `" C"` era l'unico punto in cui un'unità non somigliava a sé
+    stessa.
+  - **`drawFila()` mette in fila i pezzi che ci stanno e si ferma al primo che
+    non entra**, e **l'ordine dell'array È la priorità**: quello che si perde è
+    l'ultimo, mai il contrario. Serve perché il numero di voci cambia da solo —
+    l'humidex sparisce sotto i 20 gradi, il delta a 3 ore manca finché lo
+    storico non è pieno, un nodo senza pressione non ne ha affatto. Una riga
+    scritta a lunghezza fissa era destinata a sovrapporsi in qualche
+    combinazione, ed è successo davvero: `3h +1,percepiti 32`.
+  - **Le icone** (`icone.h`, da `v24`) sono generate da `tools/icone.py`, che le
+    **mostra a schermo prima di generarle**: a 14-20 px e 1 bit si vede la
+    silhouette, non il dettaglio, quindi quelle che funzionano sono pochissime e
+    l'unico modo di accorgersene è guardarle — non immaginarsele.
 
 - **`GET /api/salute` fa i controlli incrociati da sola** (da `v13`). Il
   controllo che vale e' **`pacchetti ricevuti == righe scritte + scartati per
@@ -699,6 +768,16 @@ senza di loro si somiglierebbero (schermo che non cambia).
   **Tempi misurati su hardware**: completo **~2,2 s** (4,8 s il primo dopo
   l'accensione, che include il power-on del controller), parziale su tutta la
   pagina **~980 ms**, parziale sul solo orologio **~810 ms**.
+
+  **Ogni refresh lascia una riga sulla card**, in `/epd/AAAA-MM.csv`
+  (`ts_iso,motivo,tipo,ms`; motivo: `stato`/`valori`/`ghosting`/`pagina`/
+  `silenzio`), e `GET /api/epd/registro?m=AAAA-MM` la restituisce.
+  `GET /api/epd/totale` conta quanti ne ha fatti **davvero**, leggendo le righe
+  di quei file — non un totale in NVS aggiornato ad ogni refresh: la flash
+  interna ha cicli di erase finiti e lì dentro vivono le pagine e il registro
+  dei nodi, mentre la card no. Il costo si sposta dal consumo continuo di una
+  memoria che si logora al conteggio occasionale di un file, e quella rotta la
+  chiama una persona ogni tanto, non il firmware ogni cinque minuti.
 
   **Quel 810 contro 980 e' il numero da ricordare**: ridurre l'area a un decimo
   fa risparmiare il 17% del tempo, non il 90%. Il costo di un refresh e-ink e'

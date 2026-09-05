@@ -198,10 +198,12 @@ obbligatoria per la camera) ma **vuole** `--libraries libraries`, perché usa
 arduino-cli compile --fqbn "esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=default_8MB" --libraries libraries starters/XIAO_S3_Camera
 ```
 
-`projects/Timelapse_XIAO/` gira sulla stessa scheda ma **non** vuole
-`--libraries libraries`: non usa ESP-NOW, quindi è self-contained.
+`projects/MeteoHub_S3/` gira sulla stessa scheda e **vuole**
+`--libraries libraries` (usa `EspNowLink`); `projects/Timelapse_XIAO/` no, non
+usa ESP-NOW ed è self-contained:
 
 ```
+arduino-cli compile --fqbn "esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=default_8MB" --libraries libraries projects/MeteoHub_S3
 arduino-cli compile --fqbn "esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=default_8MB" projects/Timelapse_XIAO
 ```
 
@@ -269,6 +271,12 @@ Dipendenze esterne (Library Manager):
   apposta.
 - **Adafruit SSD1306** (tira dentro **Adafruit GFX** e **Adafruit BusIO**) —
   per `starters/C3_OLED_OTA/` e `projects/EnvNode_C3/`.
+- **GxEPD2** + **U8g2_for_Adafruit_GFX** — per `projects/MeteoHub_S3/`: la
+  prima pilota il pannello e-ink, la seconda ci disegna sopra testo **UTF-8**,
+  perché i font Adafruit GFX sono ASCII puro e in italiano "perché" diventerebbe
+  "perch?". Le due strade convivono sullo stesso canvas.
+- **Adafruit AHTX0** + **Adafruit BMP280 Library** — per
+  `projects/MeteoNode_C3/`, i due sensori del nodo meteo.
 - **Niente** per `starters/XIAO_S3_Camera/`: il driver della camera
   (`esp_camera.h`) è bundled nel core ESP32
   (`tools/esp32s3-libs/<versione>/…/espressif__esp32-camera`), non è una

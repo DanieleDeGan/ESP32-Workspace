@@ -6,6 +6,39 @@ Per i comandi di build e le regole valide su tutte le schede vedi `CLAUDE.md`
 alla radice; per le trappole hardware gia' pagate `docs/Trappole-Hardware.md`.
 
 
+## I file di questa cartella
+
+| File | Ruolo |
+|---|---|
+| `src/EspNowLink.h` | l'**unica** intestazione pubblica: protocollo (`link_message_t`), tipi di nodo, e tutte le funzioni qui sotto |
+| `src/link_peer.h/.cpp` | `LinkPeer`, il peer sopra `ESP_NOW_Peer` del core: invio affidabile con conferma e ritentativi, coda del WELCOME |
+| `src/link_hub.cpp` | il lato hub: registro dei peer, adozione, WELCOME uno per giro, anello dei MAC sconosciuti |
+| `src/link_node.cpp` | il lato nodo: HELLO, `seq`, ripresa dell'hub dopo il sonno, rinvio dell'ultimo DATA |
+| `library.properties` | metadati Arduino, **senza** campo `depends`: con `--libraries` conta solo l'`#include` letterale |
+
+## L'API pubblica
+
+| Funzione | A cosa serve |
+|---|---|
+| `Link_Init(tipo, nome)` | avvio sul canale fisso `ESPNOW_LINK_CHANNEL` (6): per chi **non** sta su un AP |
+| `Link_InitEx(tipo, nome, canale)` | avvio su un canale scelto; con `ESPNOW_LINK_CHANNEL_CURRENT` (0) non tocca la radio ed è l'unica forma lecita su una STA connessa |
+| `Link_SetChannel(ch)` / `Link_GetChannel()` | sposta la radio **e riallinea i peer**; vietata a chi è connesso a un access point |
+| `Link_SyncPeersToRadio()` | il rovescio della precedente: riallinea i peer al canale su cui la radio si trova **già**, senza toccarla |
+| `Link_TestMisalignPeers(ch)` | fabbrica il guasto del canale disallineato, per provare la riparazione |
+| `Link_OnMessage(cb)` | callback di ricezione: **accoda e basta**, il lavoro si fa dal `loop()` |
+| `Link_Node_Poll()` / `Link_Hub_Poll()` | da chiamare ad ogni giro: HELLO periodici da un lato, WELCOME in coda dall'altro |
+| `Link_Node_IsPaired()` / `Link_Node_ResumeWithHub(mac)` | stato dell'associazione, e la ripresa dopo un deep sleep senza rifare il pairing |
+| `Link_Node_SetSeq()` / `Link_Node_GetSeq()` | il `seq` attraverso il sonno — senza, l'hub scarta tutto come doppioni |
+| `Link_Node_SendData(msg)` | invio affidabile del DATA (incrementa il `seq`) |
+| `Link_Node_ResendLast(tent, timeout)` | rimanda l'ultimo DATA **senza** incrementare il `seq`: è ciò che rende innocua la ricerca del canale |
+| `Link_Hub_SetPairingMode(on)` | apre o chiude la finestra di associazione |
+| `Link_Hub_AddPeer(mac, tipo, nome)` | rimette un peer conosciuto (il ripristino da NVS all'avvio dell'hub) |
+| `Link_Hub_ForgetPeer(mac)` | lo toglie: serve quando si sostituisce una scheda, o resterebbe in elenco come nodo muto per sempre |
+| `Link_Hub_GetPeerCount()` / `Link_Hub_GetPeerInfo(i, …)` | il registro, **pollato** dal `loop()` invece di una callback: così la concorrenza col task del driver WiFi resta tutta dentro la libreria |
+| `Link_Hub_SendCommand(mac, msg)` | COMMAND unicast verso un nodo, con la stessa consegna affidabile |
+| `Link_Hub_Unknown(i, …)` / `Link_Hub_UnknownClear()` / `Link_Hub_UnknownEsito(e)` | chi bussa e non entra: MAC sconosciuti con RSSI e **motivo** dello scarto, annotati anche a finestra chiusa |
+
+
 Libreria per reti di sensori/attuatori: una board fa da **hub** e riceve dati da
 moduli indipendenti ("nodi") via **ESP-NOW** (scelto invece di MQTT/WiFi perché
 alcuni nodi sono a batteria e non serve infrastruttura broker/AP). Costruita

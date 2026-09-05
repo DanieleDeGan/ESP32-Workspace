@@ -116,6 +116,11 @@ retroattivamente perché su quel nodo l'OTA non era mai riuscito). Corretto in
 `starters/XIAO_S3_Camera/`; `projects/Timelapse_XIAO/` ce l'aveva già —
 era la correzione fatta nella copia più recente e mai riportata indietro.
 
+**Oggi ce l'hanno tutti e sei i `net_ota.cpp`** (riverificato il 2026-09-05), e
+su `projects/MeteoHub_S3/` la stessa disciplina vale anche fuori dall'OTA: gli
+upload della dashboard, delle pagine e delle immagini chiudono allo stesso modo
+il trasferimento caduto a metà, invece di lasciare a mezzo un file sulla card.
+
 ## `streamFile()` e le risposte grosse — un client morto ferma la scheda
 
 `WebServer::streamFile()` finisce in `NetworkClient::write(Stream&)`, che nel
@@ -169,8 +174,10 @@ con meno dati, cioe' un grafico sbagliato che sembra giusto; cosi' invece il
 parse fallisce e si vede un errore, che e' la verita'.
 
 **Corretto ovunque dal 2026-08-30**: `projects/Timelapse_XIAO/web_ui.cpp`
-(foto e CSV) e `starters/XIAO_S3_Camera/web_ui.cpp` (foto) hanno ora lo stesso
-`streamFileLimitato()`. Li' il difetto era **peggio**, non uguale: una foto da
+(foto e CSV), `starters/XIAO_S3_Camera/web_ui.cpp` (foto) e
+`projects/MeteoHub_S3/web_ui.cpp` (CSV dei nodi, immagini, pagine servite dalla
+card) hanno lo stesso `streamFileLimitato()` — sono i quattro `web_ui.cpp` che
+mandano file, e li hanno tutti (riverificato il 2026-09-05). Li' il difetto era **peggio**, non uguale: una foto da
 300 kB sono 220 chunk, e la galleria ne carica decine per volta. Entrambi
 espongono `invii_interrotti` su `/api/stato` — senza quel contatore il taglio
 sarebbe invisibile, e il sintomo (scatti mancanti, PIR che sembra non

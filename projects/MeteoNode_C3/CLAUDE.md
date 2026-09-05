@@ -28,12 +28,21 @@ nodo e guardia della `Serial` si scelgono a compile-time dal tipo di chip.
   **commutato** su D3/GPIO5, SDA su D4/GPIO6; D1/GPIO3 lasciato libero per il
   partitore della batteria, **non ancora cablato**. Il BMP280 risponde a
   **0x77**, non a 0x76.
+- **La lettura della batteria è scritta ma spenta** (`BATTERY_ADC_ENABLED 0`):
+  il partitore previsto è 2×1 MΩ fra + cella e GND con la presa centrale su
+  D1/GPIO3 (sull'ESP32 classico è il **GPIO35**, perché lì il 3 è la RX di
+  UART0), più 100 nF verso massa. Finché quel partitore non c'è, `readBatteryV()`
+  torna NAN: **leggere un pin flottante darebbe una tensione inventata**, molto
+  peggio di un "non disponibile" onesto. Il giorno che si cabla, si mette quella
+  macro a 1 e basta — e da lì `battery_mv` smette di arrivare a zero, che oggi è
+  il motivo per cui il nodo muto si riconosce solo dal silenzio.
 - **Il VCC del sensore passa da un GPIO** apposta: permette un power-cycle vero
   del modulo quando smette di rispondere (`sensorPower()`), ed è la stessa
   sequenza che serve al deep sleep — si spegne il sensore prima di dormire.
 - **Niente microSD**: lo storico 24 h (720 slot da 2 min, ~4,3 kB) vive in RAM e
   si azzera ad ogni riavvio. I grafici storici veri stanno sull'hub, che riceve
-  i DATA e li scrive su card — vedi `projects/EnvNode_C3/`.
+  i DATA e li scrive su card — oggi è `projects/MeteoHub_S3/` (fino al
+  2026-08-27 era `EnvNode_C3`, da cui l'hub ha ereditato i moduli).
 - **Il trend del nodo legge una griglia che puo' essere sistematicamente
   disallineata**, e per una settimana lo e' stata: lo storico ha slot da
   **120 s**, il trend cerca quello a **tre ore**, e con l'intervallo a 300 s si
