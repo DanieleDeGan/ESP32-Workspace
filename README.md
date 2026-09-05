@@ -16,7 +16,7 @@ successivo, qualunque esso sia.
 | `starters/` | un template riutilizzabile per scheda — **si copiano** per iniziare |
 | `examples/` | sketch completi: si compilano e si caricano così come sono |
 | `projects/` | le applicazioni reali, quelle davvero installate |
-| `docs/` | reference file-per-file, guida hardware della board AMOLED, datasheet |
+| `docs/` | reference file-per-file, trappole hardware gia' pagate, guida hardware della board AMOLED, datasheet |
 
 L'organizzazione è **per ruolo**, e dentro ciascun ruolo **per scheda**. Il
 modello di chip non è una cartella: è un attributo documentato progetto per

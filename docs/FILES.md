@@ -1156,7 +1156,7 @@ fa — e comunque a fine budget (`INVIO_BUDGET_MS`). Senza, un client andato via
 a metà scaricamento tiene `loop()` dentro l'handler per minuti: misurati 456 s
 il 2026-08-24, e in quella finestra spariscono anche i pacchetti dei nodi
 ESP-NOW, perché `remote_loop()` non gira e il driver tiene solo l'ultimo DATA.
-Meccanismo completo in `CLAUDE.md`. Conseguenza voluta: una risposta interrotta
+Meccanismo completo in `docs/Trappole-Hardware.md`. Conseguenza voluta: una risposta interrotta
 resta **JSON tronco e non chiuso**, così il parse fallisce invece di consegnare
 un grafico con meno dati che sembra giusto.
 
@@ -1582,14 +1582,39 @@ tre starter, descrizione di tutti e sei gli esempi e dei progetti reali. È il
 documento rivolto a un umano che apre il repo per la prima volta, quindi resta a
 livello "cosa fa / come lo provo": il dettaglio per file è qui, non lì.
 
-### `CLAUDE.md`
+### `CLAUDE.md` (e i `CLAUDE.md` annidati)
 
-Guida operativa per lavorare sul repo con Claude Code: comandi di build/verifica
-(incluso `arduino-cli` con `--libraries`), architettura delle librerie
-condivise in `libraries/`, workflow SquareLine, vincoli hardware, convenzioni
-(dove scrivere la logica, gestione del lock). Non ripete il dettaglio
+Guida operativa per lavorare sul repo con Claude Code. Dal 2026-09-05 è
+**spezzata**, perché il file unico aveva superato il limite dei 150.000
+caratteri che Claude Code impone:
+
+- **`CLAUDE.md` alla radice** è l'**indice** e contiene solo ciò che vale
+  ovunque: com'è organizzato il repo, i comandi di build/verifica di ogni
+  scheda (`arduino-cli` con `--libraries`, un FQBN per board), l'architettura
+  delle librerie condivise, il pinout della board AMOLED, la procedura per
+  avviare un progetto nuovo, e il **riassunto delle regole valide su tutte le
+  schede**.
+- **un `CLAUDE.md` per cartella** — `libraries/EspNowLink/`, i tre
+  `starters/`, i quattro `projects/` — con la guida di quel codice: scelte,
+  vincoli, misure, cosa non toccare. Claude Code li carica **quando si lavora
+  sui file di quella cartella**, quindi il costo di contesto lo paga solo chi
+  li usa.
+- **`docs/Trappole-Hardware.md`** per le sei lezioni pagate su hardware, che
+  valgono per ogni sketch nuovo.
+
+Chi documenta una cosa nuova la scrive nella cartella a cui appartiene: alla
+radice va solo ciò che riguarda tutte le schede. Non ripete il dettaglio
 file-per-file (quello è qui, in `docs/FILES.md`) né il pinout completo (quello è in
 `docs/ESP32-S3-AMOLED-1.91-Guide.md`).
+
+### `docs/Trappole-Hardware.md`
+
+Le sei trappole trovate su hardware vero fra il 2026-08-22 e il 2026-08-31:
+`Serial.setTxTimeoutMs(0)` su C3/S3, `Update.abort()` nell'upload interrotto,
+`streamFile()` e il client morto, le scritture su microSD che nessuno controlla,
+i default NVS che scavalcano una chiave mai scritta, e le quattro trappole del
+deep sleep. Per ognuna: la regola, il sintomo, e **perché il sintomo non
+somiglia alla causa**. Il riassunto in tre righe l'una sta in `CLAUDE.md`.
 
 ### `docs/ESP32-S3-AMOLED-1.91-Guide.md`
 
