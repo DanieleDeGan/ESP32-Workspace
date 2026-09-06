@@ -283,6 +283,25 @@ int remote_temp_history(int index, int16_t* out, int maxOut, time_t* tsUltimo);
 // sarebbero indistinguibili.
 int remote_temp_campioni(int index);
 
+// Di quanto e' cambiata la temperatura fra l'ultimo campione e quello di
+// `slotIndietro` mezz'ore prima (2 = un'ora, 4 = due, 6 = tre). NAN se uno dei
+// due capi non c'e'.
+//
+// Sta QUI e non in chi disegna perche' lo chiedono in tre: la pagina nodi del
+// pannello, la pagina dettaglio e /api/nodi. Tre copie della stessa sottrazione
+// divergerebbero al primo ritocco, e due numeri diversi per la stessa domanda
+// -- sul vetro e nel browser -- sono peggio di nessun numero.
+//
+// Due regole dentro, che sono il motivo per cui non e' una sottrazione e basta:
+//  - il capo vecchio si prende a DISTANZA FISSA da quello nuovo, non "il piu'
+//    vecchio che c'e'": e' la distanza a dare il nome al delta, e un numero
+//    misurato su due ore chiamato "3h" e' un'etichetta sbagliata;
+//  - se una delle due celle e' vuota -- il nodo taceva -- torna NAN invece di
+//    saltare al campione buono piu' vicino, che allungherebbe la finestra in
+//    silenzio. E' la stessa regola gia' scritta per la cadenza appresa: un
+//    delta che attraversa un buco non e' un periodo.
+float remote_temp_delta(int index, int slotIndietro);
+
 // Etichetta e testo della previsione, per la UI. Incapsulati qui cosi' chi
 // disegna non deve includere forecast.h ne' sapere come e' fatto il trend.
 const char* remote_trend_label(uint8_t trend);

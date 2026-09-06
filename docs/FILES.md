@@ -1552,6 +1552,13 @@ pannello si vede o non si vede allo stesso modo.
   quando si cambia slot. Si legge con `remote_temp_history()`, e
   `remote_temp_campioni()` dice quanti slot sono pieni (l'unico modo di
   verificare da remoto che il grafico abbia dati).
+  - Dallo stesso anello, da `v58`, esce anche **`remote_temp_delta(i, slot)`**:
+    di quanto e' cambiata la temperatura fra l'ultimo campione e quello di
+    `slot` mezz'ore prima (2, 4, 6 → 1, 2 e 3 ore). Sta li' e non in chi
+    disegna perche' la stessa domanda la fanno la pagina nodi, la pagina
+    dettaglio e `/api/nodi` (`delta_t_1h/2h/3h`): tre sottrazioni copiate
+    divergerebbero. Torna NAN se uno dei due capi manca — un delta che
+    attraversa un buco non e' un periodo.
 - **`GET /api/salute`** (da `v13`) fa i controlli incrociati che prima si
   facevano a mano leggendo due endpoint: il principale e' **pacchetti ricevuti
   == righe scritte + scartati per orario + scritture fallite**. Sono contatori

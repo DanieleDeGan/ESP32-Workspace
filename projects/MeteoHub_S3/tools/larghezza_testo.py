@@ -4,6 +4,8 @@
 
     python tools/larghezza_testo.py FreeSans9pt7b "-10,5"
     python tools/larghezza_testo.py --riga3          (riga min/max del blocco nodo)
+    python tools/larghezza_testo.py --riga4          (riga delle variazioni, v58)
+    python tools/larghezza_testo.py --testata        (il nome del nodo, v58)
     python tools/larghezza_testo.py --piede          (le due meta del piede)
 
 Legge i .h veri dei font Adafruit GFX e somma gli xAdvance dei glifi, che e'
@@ -104,6 +106,59 @@ def riga3():
     return ko
 
 
+def riga4():
+    """La quarta riga del blocco comodo: le variazioni a 1, 2 e 3 ore (v58).
+
+    Le coordinate sono quelle scritte in drawNodoComodo(): prefisso "C" a 21
+    (col cerchietto del grado a 12..18), le tre voci da 42 con 14 px di stacco,
+    e il bordo destro del blocco a 388.
+    """
+    F = "FreeSans9pt7b"
+    ko = 0
+
+    w = larghezza(F, "C")
+    print('prefisso "C"    x= 21  w=%3d  fine=%3d  (le voci partono da 42)  %s'
+          % (w, 21 + w, "ok " if 21 + w <= 42 else "SFORA"))
+    if 21 + w > 42:
+        ko += 1
+
+    # Il caso peggiore non e' quello di oggi: "-10,5" e' l'inverno, ed e' la
+    # stessa trappola che in v38 aveva fatto finire il minimo sotto la barra.
+    for peggiore in ("+0,2", "-10,5"):
+        x = 42
+        for eti in ("1h", "2h", "3h"):
+            x += larghezza(F, eti + " " + peggiore) + 14
+        fine = x - 14
+        esito = "ok " if fine <= 388 else "SFORA"
+        print('tre voci "%-5s"  da 42  fine=%3d  (il blocco finisce a 388)  %s'
+              % (peggiore, fine, esito))
+        if fine > 388:
+            ko += 1
+    return ko
+
+
+def testata():
+    """Il nome del nodo in 9pt grassetto (v58), accanto al badge MUTO.
+
+    Il badge sta a x=336 (W-64) ed e' largo 54: il nome parte da 10 e non deve
+    arrivarci sotto. In 12pt -- com'era fino a v57 -- un nome lungo ci finiva.
+    """
+    ko = 0
+    nomi = ["MeteoEsp32", "Meteo-7EAE0C", "MeteoNodeLungo12", "NodoCantinaNord1"]
+    for font, limite in (("FreeSansBold12pt7b", 336), ("FreeSansBold9pt7b", 336)):
+        print("--- %s ---" % font)
+        for nome in nomi:
+            w = larghezza(font, nome)
+            fine = 10 + w
+            esito = "ok " if fine <= limite else "sotto il badge MUTO"
+            print('  %-18s w=%3d  fine=%3d  %s' % ('"' + nome + '"', w, fine, esito))
+            if fine > limite and font.endswith("9pt7b"):
+                ko += 1
+    print("")
+    print("Il 12pt e' li' come CONTROPROVA: e' quello che c'era fino a v57.")
+    return ko
+
+
 def piede():
     """Il piede della pagina nodi: sinistra + destra sulla stessa riga (v39).
 
@@ -154,6 +209,10 @@ def piede():
 if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--riga3":
         sys.exit(1 if riga3() else 0)
+    if len(sys.argv) == 2 and sys.argv[1] == "--riga4":
+        sys.exit(1 if riga4() else 0)
+    if len(sys.argv) == 2 and sys.argv[1] == "--testata":
+        sys.exit(1 if testata() else 0)
     if len(sys.argv) == 2 and sys.argv[1] == "--piede":
         sys.exit(1 if piede() else 0)
     if len(sys.argv) != 3:

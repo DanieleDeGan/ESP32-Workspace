@@ -669,6 +669,34 @@ function trendGlifo(d){
   return '→';
 }
 
+// Un delta col segno sempre davanti: "+1,2" e "1,2" si confondono, e qui il
+// segno E' l'informazione. Come fmtDelta() nel firmware, compresa la trappola
+// dello zero: -0,04 arrotondato a un decimale sarebbe "-0,0", cioe' "negativo
+// ma nullo", che non significa niente — si guarda il numero ARROTONDATO,
+// perche' e' quello che finisce sotto gli occhi.
+function dv(x){
+  if (x == null || !isFinite(x)) return '--';
+  const d = Math.round(x * 10);
+  if (d === 0) return nv(0, 1);
+  return (d > 0 ? '+' : '') + nv(x, 1);
+}
+
+// Di quanto e' cambiata la temperatura nelle ultime 1, 2 e 3 ore. Gli stessi
+// tre numeri che il pannello scrive nel blocco del nodo, dallo stesso anello
+// da mezz'ore a bordo (delta_t_*h in /api/nodi) — non ricalcolati qui dal CSV,
+// o direbbero un'altra cosa dal vetro appena i due storici divergono.
+//
+// Tre finestre e non una: una direbbe che sta salendo, tre dicono anche come.
+// +0,2 / +0,5 / +0,9 e' una salita che rallenta; +0,9 / +0,9 / +0,9 e' una
+// salita che si e' fermata un'ora fa.
+function variazioniTemp(n){
+  const d = [n.delta_t_1h, n.delta_t_2h, n.delta_t_3h];
+  if (d.every(v => v == null)) return '';        // niente riga invece di tre trattini
+  return '<div class="row2">' + d.map((v, i) =>
+    '<div>' + (i+1) + ' h <b class="num">' + dv(v) + '</b>' +
+    (i === d.length - 1 ? ' °C' : '') + '</div>').join('') + '</div>';
+}
+
 // Minimo e massimo del giorno mostrato, presi dal CSV gia' in memoria.
 // L'hub non li espone e non deve: sono una domanda sullo storico, e lo
 // storico e' sulla card — calcolarli qui non costa una richiesta in piu'.
@@ -704,6 +732,7 @@ function renderTiles(){
                                     : 'in attesa del primo pacchetto') +
         (n.online ? '' : ' · <span style="color:var(--bad)">MUTO</span>') + '</div>' +
       estremiDelGiorno(n.nome) +
+      variazioniTemp(n) +
       // Trend e previsione sono due cose diverse e vanno dette come tali:
       // la prima riga parla della PRESSIONE, la seconda del tempo che ne
       // segue. Scritte di fila senza soggetto si leggevano come una

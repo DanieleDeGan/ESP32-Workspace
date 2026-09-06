@@ -266,7 +266,7 @@ static void handleApiNodi() {
 
   const int n = remote_count();
   String json;
-  json.reserve(160 + 400 * n);   // cresciuta con intervallo_campioni e seq_assurdi
+  json.reserve(160 + 480 * n);   // cresciuta con intervallo_campioni, seq_assurdi e i tre delta_t
   json += '{';
   json += "\"attivo\":";  json += (remote_ready() ? "true" : "false"); json += ',';
   // Il canale non e' una proprieta' di ESP-NOW ma dell'AP a cui siamo
@@ -337,6 +337,22 @@ static void handleApiNodi() {
     json += "\"previsione\":"; appendJsonString(json, remote_forecast_text(&r));    json += ',';
     json += "\"storico_slot\":" + String(r.storicoSlot);
     json += ",\"temp_campioni\":" + String(remote_temp_campioni(i));
+
+    // Di quanto e' cambiata la TEMPERATURA nelle ultime 1, 2 e 3 ore. Sono le
+    // stesse tre finestre che il pannello scrive nel blocco del nodo, prese
+    // dalla stessa funzione (remote_temp_delta): se un giorno i numeri sul
+    // vetro e quelli qui non coincidessero, sarebbe un guasto vero e non una
+    // formula diversa nei due posti.
+    //
+    // null -- non zero -- quando un capo della finestra manca: subito dopo un
+    // riavvio senza CSV da cui ripartire, o dopo un buco nelle trasmissioni.
+    // Uno zero direbbe "non e' cambiata niente", che e' un'altra cosa.
+    // Gli slot dell'anello sono da mezz'ora: 2, 4 e 6 slot indietro.
+    static const int PASSI[3] = { 2, 4, 6 };
+    for (int k = 0; k < 3; k++) {
+      json += ",\"delta_t_" + String(k + 1) + "h\":";
+      appendJsonFloat(json, remote_temp_delta(i, PASSI[k]), 2);
+    }
     json += '}';
   }
 
@@ -2514,7 +2530,7 @@ static const Rotta ROTTE[] = {
   { HTTP_GET,  "/api/salute",           handleApiSalute,             "controlli incrociati: pacchetti == righe + scartati + fallite", "" },
   { HTTP_GET,  "/api/elenco",           nullptr,                     "QUESTO elenco, in JSON", "" },
 
-  { HTTP_GET,  "/api/nodi",             handleApiNodi,               "i nodi: valori, cadenza, trend, previsione, pacchetti persi", "" },
+  { HTTP_GET,  "/api/nodi",             handleApiNodi,               "i nodi: valori, cadenza, trend della pressione, previsione, variazioni della temperatura a 1/2/3 h, pacchetti persi", "" },
   { HTTP_POST, "/api/pairing",          handleApiPairing,            "apre o chiude la finestra di associazione", "on=0|1, s=secondi" },
   { HTTP_GET,  "/api/pairing/ascolto",  handleApiPairingAscolto,     "chi bussa e non entra: MAC sconosciuti con RSSI e motivo dello scarto, anche fuori dalla finestra", "" },
   { HTTP_POST, "/api/nodi/dimentica",   handleApiNodiDimentica,      "toglie un nodo dal registro (RAM e NVS)", "mac=AA:BB:..." },

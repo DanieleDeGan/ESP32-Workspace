@@ -770,6 +770,35 @@ int remote_temp_campioni(int index) {
   return n;
 }
 
+float remote_temp_delta(int index, int slotIndietro) {
+  if (index < 0 || index >= s_count) return NAN;
+  if (slotIndietro <= 0 || slotIndietro >= TH_SLOTS) return NAN;
+  const TempHist& h = s_thist[index];
+  if (!h.avviato) return NAN;
+
+  // L'ancora e' l'ultimo campione CHE C'E', non per forza lo slot di adesso:
+  // un nodo che ha appena saltato una trasmissione, o che trasmette piu' lento
+  // di una mezz'ora, non deve far sparire i numeri. La finestra resta
+  // esattamente slotIndietro mezz'ore, perche' e' la DISTANZA fra i due capi a
+  // dare il nome al delta -- l'ancora scivola indietro, la larghezza no.
+  int ancora = -1;
+  for (int k = 0; k < TH_SLOTS; k++) {
+    if (h.t[(h.slotUltimo - (uint32_t)k) % TH_SLOTS] != TH_VUOTO) { ancora = k; break; }
+  }
+  if (ancora < 0) return NAN;                       // anello vuoto
+  if (ancora + slotIndietro >= TH_SLOTS) return NAN;  // l'altro capo e' fuori finestra
+
+  const int16_t nuovo   = h.t[(h.slotUltimo - (uint32_t)ancora) % TH_SLOTS];
+  const int16_t vecchio = h.t[(h.slotUltimo - (uint32_t)(ancora + slotIndietro)) % TH_SLOTS];
+  if (vecchio == TH_VUOTO) return NAN;              // buco: non e' un periodo
+
+  // La sottrazione in DECIMI (interi), il diviso dieci solo alla fine: due
+  // float sottratti darebbero 0.19999999 dove i decimi danno 0,2 esatti, e
+  // quel numero finisce nella firma del pannello, dove un ultimo bit diverso
+  // vale un refresh completo da 2,2 s.
+  return (float)(nuovo - vecchio) / 10.0f;
+}
+
 void remote_seed_temp(const uint8_t mac[6], time_t ts, float tempC) {
   if (mac == nullptr) return;
   for (int i = 0; i < s_count; i++) {

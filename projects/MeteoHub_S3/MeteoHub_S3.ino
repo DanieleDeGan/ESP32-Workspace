@@ -168,7 +168,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v57";
+static const char FW_VERSION[] = "v58";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1049,28 +1049,49 @@ static void drawValori(const RemoteNode& n, int16_t yBase)
   drawRight(riga, 388, yBase);
 }
 
-// Minimo, massimo e variazione a 3 ore, dalle stesse 48 mezz'ore che disegna
+// Le tre finestre su cui si guarda la variazione della temperatura, in slot da
+// mezz'ora: un'ora, due, tre. Un array e non tre variabili sciolte perche' si
+// disegnano in fila e devono restare la stessa cosa a tre distanze -- se un
+// domani se ne aggiunge o toglie una, si tocca qui e la riga si ridisegna da
+// se'.
+//
+// Perche' tre e non una. Una sola direbbe "sta salendo"; tre dicono anche
+// COME: +0,2 / +0,5 / +0,9 e' una salita che rallenta, +0,9 / +0,9 / +0,9 e'
+// una salita che si e' fermata un'ora fa. E' l'informazione che finora stava
+// solo nella curva della pagina grafico, cioe' su un'altra pagina.
+static const int   TEMP_DELTA_N = 3;
+static const int   TEMP_DELTA_SLOT[TEMP_DELTA_N] = { 2, 4, 6 };        // 1 h, 2 h, 3 h
+static const char* TEMP_DELTA_ETI[TEMP_DELTA_N]  = { "1h", "2h", "3h" };
+
+// Minimo, massimo e le tre variazioni, dalle stesse 48 mezz'ore che disegna
 // la pagina grafico. Nessuna memoria in piu': l'anello c'e' gia', e finora
 // serviva a una pagina sola.
 //
 // Il minimo e il massimo sono quello che da' profondita' a un numero che da
 // solo non ne ha: 25 gradi adesso vuol dire una cosa se stanotte erano 12 e
-// un'altra se erano 24. La variazione a 3 ore e' invece l'unico modo di
-// vedere DOVE STA ANDANDO la temperatura senza guardare una curva.
+// un'altra se erano 24. Le variazioni sono invece l'unico modo di vedere DOVE
+// STA ANDANDO la temperatura senza guardare una curva.
 // Valori di uscita per puntatore e non una struct di ritorno: Arduino genera
 // da se' i prototipi e li mette in cima al file, PRIMA di qualunque tipo
 // dichiarato nello sketch -- una struct qui darebbe "does not name a type" in
 // una riga che non esiste nel sorgente. E' anche lo stile del resto del repo
-// (remote_get, rtctime_format). Torna quanti campioni ha trovato.
-static int statTemp(int index, float* minC, float* maxC, float* delta3h)
+// (remote_get, rtctime_format). `delta` vuole TEMP_DELTA_N celle. Torna quanti
+// campioni ha trovato.
+//
+// La sottrazione NON si fa qui: sta in remote_temp_delta(), perche' la stessa
+// domanda la fanno anche la pagina dettaglio e /api/nodi. Qui resta solo la
+// scansione di min e max, che serve a chi disegna e a nessun altro.
+static int statTemp(int index, float* minC, float* maxC, float* delta)
 {
-  *minC = *maxC = *delta3h = NAN;
+  *minC = *maxC = NAN;
+  for (int k = 0; k < TEMP_DELTA_N; k++) delta[k] = remote_temp_delta(index, TEMP_DELTA_SLOT[k]);
+
   static int16_t serie[REMOTE_TEMP_SLOTS];        // static: 96 byte, non stack
   time_t tsUlt = 0;
   const int n = remote_temp_history(index, serie, REMOTE_TEMP_SLOTS, &tsUlt);
   if (n <= 0) return 0;
 
-  int campioni = 0, ultimo = -1;
+  int campioni = 0;
   for (int i = 0; i < n; i++)
   {
     if (serie[i] == REMOTE_TEMP_VUOTO) continue;
@@ -1078,15 +1099,7 @@ static int statTemp(int index, float* minC, float* maxC, float* delta3h)
     if (campioni == 0 || v < *minC) *minC = v;
     if (campioni == 0 || v > *maxC) *maxC = v;
     campioni++;
-    ultimo = i;
   }
-
-  // Tre ore sono sei slot da mezz'ora. Si guarda QUELLO slot, non "il piu'
-  // vecchio disponibile": un delta misurato su una finestra diversa da tre ore
-  // sarebbe un numero con l'etichetta sbagliata.
-  if (ultimo >= 6 && serie[ultimo] != REMOTE_TEMP_VUOTO &&
-      serie[ultimo - 6] != REMOTE_TEMP_VUOTO)
-    *delta3h = (serie[ultimo] - serie[ultimo - 6]) / 10.0f;
 
   return campioni;
 }
@@ -1126,12 +1139,20 @@ static void drawTestataNodo(const RemoteNode& n, int16_t y, int16_t h)
 {
   const int16_t W = tela.width();
 
+  // Il nome in 9pt e non piu' in 12 (da v58). Non e' per farlo entrare -- ci
+  // entrava -- ma per fare spazio SOTTO: il nome e' l'unica riga della pagina
+  // che non porta un numero, e con la testata da 26 px a 21 il blocco del nodo
+  // guadagna la quarta riga, quella delle variazioni di temperatura. Un nome
+  // si legge una volta e poi si sa a memoria; i numeri si guardano ogni volta.
+  // "Meteo-7EAE0C", il piu' lungo dei nodi veri, passa da 172 px a 129
+  // (misurati con tools/larghezza_testo.py, non a occhio).
+  //
   // Il testo si CENTRA nell'altezza misurandolo, invece di appoggiarlo a un
   // offset fisso: cosi' la testata puo' cambiare altezza o font senza che
   // nessuno debba rifare i conti a mano. by e' l'offset del bordo alto
   // rispetto alla baseline, ed e' negativo: sottrarlo e' cio' che porta il
   // testo dentro.
-  tela.setFont(&FreeSansBold12pt7b);
+  tela.setFont(&FreeSansBold9pt7b);
   int16_t bx, by; uint16_t bw, bh;
   tela.getTextBounds(n.nome, 0, 0, &bx, &by, &bw, &bh);
   const int16_t base = y + (h - (int16_t)bh) / 2 - by;
@@ -1254,11 +1275,15 @@ static bool nodiLayoutComodo(int quanti, const Message* fascia)
 static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
 {
   const int16_t W = tela.width();
-  drawTestataNodo(n, y, 26);
+
+  // La testata da 21 px e non piu' 26 (v58): i 5 px, sommati ai 6 guadagnati
+  // risalendo le due righe qui sotto, sono la quarta riga. Vedi
+  // drawTestataNodo() per il nome piu' piccolo che li ha resi possibili.
+  drawTestataNodo(n, y, 21);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
-    tela.setCursor(14, y + 48);
+    tela.setCursor(14, y + 44);
     tela.print("in attesa del primo dato");
     return;
   }
@@ -1272,31 +1297,31 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
   if (isfinite(n.value[0])) {
     // Allineata al centro del numero, non alla sua base: un'icona appoggiata
     // sulla riga di scrittura sembra caduta.
-    tela.drawBitmap(10, y + 48, IC_TERMOMETRO, IC_TERMOMETRO_W, IC_TERMOMETRO_H,
+    tela.drawBitmap(10, y + 38, IC_TERMOMETRO, IC_TERMOMETRO_W, IC_TERMOMETRO_H,
                     GxEPD_BLACK);
     tela.setFont(&FreeSansBold24pt7b);
-    tela.setCursor(36, y + 76);
+    tela.setCursor(36, y + 66);
     tela.print(fmtNum(n.value[0], 1));
     int16_t bx, by; uint16_t bw, bh;
-    tela.getTextBounds(fmtNum(n.value[0], 1), 36, y + 76, &bx, &by, &bw, &bh);
+    tela.getTextBounds(fmtNum(n.value[0], 1), 36, y + 66, &bx, &by, &bw, &bh);
     const int16_t xu = 36 + (int16_t)bw + 7;
-    drawGrado(xu + 3, y + 52, 4);
+    drawGrado(xu + 3, y + 42, 4);
     tela.setFont(&FreeSansBold12pt7b);
-    tela.setCursor(xu + 10, y + 76);
+    tela.setCursor(xu + 10, y + 66);
     tela.print("C");
   }
 
   tela.setFont(&FreeSansBold12pt7b);
   if (isfinite(n.value[1])) {
-    tela.drawBitmap(184, y + 50, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
-    tela.setCursor(210, y + 67);
+    tela.drawBitmap(184, y + 40, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
+    tela.setCursor(210, y + 57);
     tela.print(fmtNum(n.value[1], 0) + "%");
   }
   if (isfinite(n.value[2])) {
     tela.setFont(&FreeSansBold12pt7b);
-    drawRight(fmtNum(n.value[2], 1), W - 46, y + 67);
+    drawRight(fmtNum(n.value[2], 1), W - 46, y + 57);
     tela.setFont(&FreeSans9pt7b);
-    tela.setCursor(W - 42, y + 67);
+    tela.setCursor(W - 42, y + 57);
     tela.print("hPa");
   }
 
@@ -1310,8 +1335,8 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
   // dettaglio del nodo e nella web UI, dove c'e' spazio per leggerla.
   //
   // Lo spazio liberato prende la barra del giorno, che e' il pezzo nuovo.
-  float tMin, tMax, tDelta;
-  const int campioni = statTemp(indice, &tMin, &tMax, &tDelta);
+  float tMin, tMax, tDelta[TEMP_DELTA_N];
+  const int campioni = statTemp(indice, &tMin, &tMax, tDelta);
 
   // Le coordinate qui sotto NON sono a occhio: sono state verificate con le
   // metriche vere dei font (somma degli xAdvance in FreeSans9pt7b.h, cioe' lo
@@ -1320,16 +1345,25 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
   // stimate a occhio il minimo finiva sotto la barra. Un testo troppo largo su
   // questo pannello non da' errore -- si sovrappone e basta, e lo si scopre
   // guardando il vetro tre mesi dopo.
+  // Le y sono salite di 13 in v58 (da 113 a 100) per fare posto alla riga
+  // delle variazioni: le x, che sono quelle verificate, non si toccano.
+  //
+  // Le due righe di temperatura -- questa e quella sotto -- stanno vicine fra
+  // loro (6 px di bianco) e piu' staccate da cio' che le circonda (13 sopra,
+  // 10 sotto fino al nodo seguente): sono un gruppo solo, "dov'e' stata e dove
+  // sta andando", e il bianco lo deve dire. La prima stesura le aveva a 5 px
+  // con 14 sopra -- il raggruppamento al contrario -- e sul vetro le due righe
+  // si leggevano come una sola andata a capo.
   tela.setFont(&FreeSans9pt7b);
-  tela.setCursor(12, y + 113);
+  tela.setCursor(12, y + 100);
   tela.print("24h");                       // 30 px: arriva a 42
 
   if (campioni >= 2 && isfinite(tMin) && isfinite(tMax))
   {
-    tela.setCursor(46, y + 113);           // fino a 87 con un minimo negativo
+    tela.setCursor(46, y + 100);           // fino a 87 con un minimo negativo
     tela.print(fmtNum(tMin, 1));
-    drawRangeGiorno(92, y + 108, 124, tMin, tMax, n.value[0]);
-    tela.setCursor(224, y + 113);          // fino a 265, la freccia parte a 274
+    drawRangeGiorno(92, y + 95, 124, tMin, tMax, n.value[0]);
+    tela.setCursor(224, y + 100);          // fino a 265, la freccia parte a 274
     tela.print(fmtNum(tMax, 1));
   }
   else
@@ -1337,21 +1371,58 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
     // "Non lo so ancora" non deve somigliare a "escursione nulla": una barra
     // con il cursore in mezzo direbbe una cosa falsa. Meglio dirlo a parole,
     // che tanto e' una condizione che dura una mezz'ora dopo il riavvio.
-    tela.setCursor(46, y + 113);
+    tela.setCursor(46, y + 100);
     tela.print("in raccolta");
   }
 
   // Il barometro: freccia piu' variazione a 3 ore. Il delta e' quello della
   // PRESSIONE (n.delta3h), coerente con la freccia che gli sta accanto -- non
-  // quello della temperatura, che vive nella barra qui a sinistra.
+  // quello della temperatura, che da v58 ha la sua riga qui sotto.
   //
   // "/3h" e non " hPa/3h": con l'unita' per esteso il caso peggiore
   // ("+12,3 hPa/3h") e' 108 px e finisce SOTTO la freccia. L'unita' e' gia'
   // scritta sopra, nella stessa colonna, accanto alla pressione.
-  drawFrecciaTrend(285, y + 108, n.trend);
+  drawFrecciaTrend(285, y + 95, n.trend);
   if (isfinite(n.delta3h)) {
     tela.setFont(&FreeSans9pt7b);
-    drawRight(fmtDelta(n.delta3h, 1) + "/3h", 388, y + 113);   // max 71 px
+    drawRight(fmtDelta(n.delta3h, 1) + "/3h", 388, y + 100);   // max 71 px
+  }
+
+  // --- quarta riga (v58): di quanto e' cambiata la TEMPERATURA -------------
+  //
+  // Perche' serviva. La riga sopra dice fra quali estremi si e' mossa la
+  // giornata e dove sta adesso, ma non da che parte sta andando; l'unico
+  // "+1,3/3h" della pagina era quello della PRESSIONE, e letto di sfuggita
+  // sembrava proprio la temperatura -- il numero giusto per la domanda
+  // sbagliata. Ora la temperatura ha il suo, a tre distanze.
+  //
+  // Il prefisso e' l'unita', "°C", e non un simbolo inventato ne' l'icona del
+  // termometro: le icone sulla pagina nodi stanno SOLO nella riga grande (vedi
+  // il commento li' sopra), e un "delta" non si puo' scrivere -- i font
+  // Adafruit GFX sono ASCII puro, la lettera greca non c'e'. L'unita' scritta
+  // e' anche cio' che distingue questa riga da quella del barometro, che e'
+  // l'equivoco da cui e' nata.
+  //
+  // Se nessuna delle tre finestre e' disponibile la riga non si disegna
+  // affatto: sarebbe "-- -- --", tre trattini che occupano una riga per dire
+  // che non si sa niente -- e la riga sopra lo dice gia', con "in raccolta".
+  bool qualcuno = false;
+  for (int k = 0; k < TEMP_DELTA_N; k++) if (isfinite(tDelta[k])) qualcuno = true;
+  if (qualcuno)
+  {
+    tela.setFont(&FreeSans9pt7b);
+    drawGrado(15, y + 112, 3);              // il cerchietto: 12..18
+    tela.setCursor(21, y + 122);
+    tela.print("C");                        // 13 px: arriva a 34
+
+    // Le tre voci passano da drawFila(), che si ferma alla prima che non entra:
+    // qui non succede mai -- il caso peggiore ("1h -10,5" tre volte) e' 218 px
+    // su 346 disponibili -- ma la riga resta corretta anche se un domani si
+    // aggiungesse una quarta finestra.
+    String voci[TEMP_DELTA_N];
+    for (int k = 0; k < TEMP_DELTA_N; k++)
+      voci[k] = String(TEMP_DELTA_ETI[k]) + " " + fmtDelta(tDelta[k], 1);
+    drawFila(voci, TEMP_DELTA_N, 42, y + 122, 388, 14);
   }
 }
 
@@ -2560,13 +2631,34 @@ static void screenDettaglio(const char* nomeNodo)
   if (isfinite(hx)) { drawRigaDett("temperatura percepita", fmtNum(hx, 0), "C", y); y += 26; }
   if (isfinite(ah)) { drawRigaDett("acqua nell'aria", fmtNum(ah, 1), "g/m3", y); y += 26; }
 
-  float tMin, tMax, tD3;
-  const int nCamp = statTemp(indice, &tMin, &tMax, &tD3);
+  float tMin, tMax, tD[TEMP_DELTA_N];
+  const int nCamp = statTemp(indice, &tMin, &tMax, tD);
   if (nCamp > 0) {
     drawRigaDett("ultime 24 ore", fmtNum(tMin, 1) + " / " + fmtNum(tMax, 1), "C", y);
     y += 26;
   }
-  if (isfinite(tD3)) { drawRigaDett("ultime 3 ore", fmtDelta(tD3, 1), "C", y); y += 26; }
+
+  // Le tre variazioni su UNA riga, non tre (v58): qui le righe finiscono a
+  // y=246, dove comincia il piede con la pressione, e da 116 con passo 26 ce
+  // ne stanno cinque in tutto -- rugiada, percepiti, acqua, 24 ore e questa.
+  // Tre righe separate avrebbero scritto sopra il filetto, che e' il modo in
+  // cui questo pannello sbaglia: senza dare errore.
+  //
+  // L'etichetta e' corta apposta: "ultime 1-2-3 h" e' 110 px e il valore nel
+  // caso peggiore ("-10,5 / -10,5 / -10,5" in 12pt grassetto) e' 204, cioe'
+  // 314 dei 331 disponibili. Con "variazione 1h / 2h / 3h" (177 px) si
+  // sovrapponevano. Misurati con tools/larghezza_testo.py.
+  bool qualcuno = false;
+  for (int k = 0; k < TEMP_DELTA_N; k++) if (isfinite(tD[k])) qualcuno = true;
+  if (qualcuno) {
+    String v;
+    for (int k = 0; k < TEMP_DELTA_N; k++) {
+      if (k) v += " / ";
+      v += fmtDelta(tD[k], 1);
+    }
+    drawRigaDett("ultime 1-2-3 h", v, "C", y);
+    y += 26;
+  }
 
   // La pressione in fondo, con il trend accanto: sono la stessa informazione
   // letta in due modi, e separarle vorrebbe dire farle cercare due volte.
@@ -2977,15 +3069,23 @@ static uint32_t firmaValori()
     // proprio nel caso che conta -- il massimo di ieri che esce dalla finestra
     // mentre il nodo trasmette lo stesso identico valore -- e mostrerebbe
     // un'escursione vecchia accanto a un numero giusto.
-    // Min, max e variazione a 3 ore li disegna solo il blocco comodo, con un
-    // decimale. Nel compatto non ci sono: stessa regola della rugiada, al
-    // contrario.
+    // Min, max e variazioni li disegna solo il blocco comodo, con un decimale.
+    // Nel compatto non ci sono: stessa regola della rugiada, al contrario.
+    //
+    // Le tre variazioni della TEMPERATURA entrano da v58, per la stessa
+    // ragione: sono disegnate. Il conto e' stato fatto prima di scriverle,
+    // rigiocando i CSV veri del 4-6 settembre con tools/refresh_simula.py:
+    // 277 refresh al giorno diventano 279, su un tetto di 288 che e' la
+    // cadenza dei nodi. Due al giorno, non uno in piu' per pacchetto: il capo
+    // nuovo del delta e' la temperatura di adesso, che era gia' in firma, e la
+    // firma cambiava comunque quasi sempre per la pressione.
     if (comodo) {
-      float mn, mx, dl;
-      statTemp(i, &mn, &mx, &dl);
+      float mn, mx, dl[TEMP_DELTA_N];
+      statTemp(i, &mn, &mx, dl);
       firmaMescola(f, firmaComeScritto(mn, 1));
       firmaMescola(f, firmaComeScritto(mx, 1));
       firmaMescola(f, firmaComeScritto(n.delta3h, 1));
+      for (int k = 0; k < TEMP_DELTA_N; k++) firmaMescola(f, firmaComeScritto(dl[k], 1));
     }
   }
   if (m) for (const char* c = m->testo; *c; c++) firmaMescola(f, (int32_t)(uint8_t)*c);

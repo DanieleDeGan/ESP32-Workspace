@@ -297,7 +297,7 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
   di `PAGINE_SOST` in `web_ui.cpp`. Si gestisce da **`/pagine`**.
   - **Il motivo non è lo spazio**: le cinque pagine pesano 74 kB su una
     partizione che alla `v18` era piena al 41 %, e toglierle l'avrebbe portata
-    al 39 % (alla `v57` si sta al **44 %**: 1.498.226 byte su 3.342.336, RAM
+    al 39 % (alla `v58` si sta al **44 %**: 1.499.550 byte su 3.342.336, RAM
     globale 23 %). Il motivo è
     **iterare senza OTA** — il 2026-08-30 sono serviti *cinque* aggiornamenti
     per dettagli grafici, e ogni riavvio si porta dietro il suo corredo (il
@@ -382,6 +382,13 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     campione. Senza, "la pagina e' comparsa" e "la pagina mostra qualcosa"
     sarebbero indistinguibili da remoto: il pannello non si puo' guardare da
     fuori.
+  - **`delta_t_1h`, `delta_t_2h`, `delta_t_3h`** (da `v58`): le variazioni della
+    temperatura che il pannello scrive nel blocco del nodo, dalla stessa
+    `remote_temp_delta()` — se un giorno i numeri sul vetro e quelli nel browser
+    non coincidessero, sarebbe un guasto vero e non una formula diversa nei due
+    posti. Sono **`null` e non zero** quando un capo della finestra manca: uno
+    zero direbbe "non e' cambiata", che e' un'altra cosa. La dashboard li mostra
+    nella card del nodo (`variazioniTemp()` in `www/dashboard.html`).
 
 - **La pagina DETTAGLIO** (`PT_DETTAGLIO`, da `v23`): tutto quello che si sa di
   **un** nodo, una riga per valore, etichetta a sinistra e numero incolonnato a
@@ -392,6 +399,15 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     vicino, uno per volta. In `v24` quella riga è stata tolta e i valori sono passati qui,
     dove ci sono 300 px per incolonnarli. È la regola già scritta per la fascia
     del messaggio e per il grafico: su e-ink il tempo è la dimensione in più.
+  - **La riga `ultime 1-2-3 h`** (da `v58`) porta le tre variazioni della
+    temperatura, le stesse della pagina nodi, in una riga sola: `+0,2 / +0,5 /
+    +0,9`. Una riga e non tre perché qui le righe finiscono a `y=246`, dove
+    comincia il piede con la pressione, e da 116 con passo 26 ce ne stanno
+    **cinque in tutto** — rugiada, percepiti, acqua nell'aria, 24 ore e questa.
+    Tre righe separate avrebbero scritto sopra il filetto, che è il modo in cui
+    questo pannello sbaglia: senza dare errore. L'etichetta è corta apposta
+    (110 px): con `variazione 1h / 2h / 3h` (177 px) il valore nel caso
+    peggiore ci si sovrapponeva.
   - **Il nodo si indica per NOME, non per indice**: gli indici si spostano
     quando un nodo viene dimenticato, e la pagina mostrerebbe un altro nodo
     senza dirlo. Stessa ragione per cui i timer del ritardo si tengono per MAC.
@@ -858,6 +874,43 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     mezzo direbbe "escursione nulla", che e' falso. Stessa regola dei due
     trattini del trend.
 
+- **Le variazioni della temperatura** (`drawNodoComodo()`, riga 4, da `v58`,
+  2026-09-06): `°C  1h +0,2  2h +0,5  3h +0,9`, cioè di quanto è cambiata la
+  temperatura rispetto a un'ora, due e tre ore fa.
+  - **Nasce da un equivoco vero**: sul pannello l'unico numero col segno era
+    `+1,3/3h` accanto alla freccia, ed è quello della **pressione** — ma sta
+    sulla stessa riga della barra delle 24 h, che parla di temperatura, e letto
+    di sfuggita sembrava proprio la variazione dei gradi. Il numero giusto per
+    la domanda sbagliata. Ora la temperatura ha il suo, e l'unità scritta
+    davanti (`°C`) è ciò che distingue le due righe.
+  - **Tre finestre e non una**: una direbbe che sta salendo, tre dicono anche
+    *come*. `+0,2 / +0,5 / +0,9` è una salita che rallenta; `+0,9 / +0,9 / +0,9`
+    è una salita che si è fermata un'ora fa. Sono `TEMP_DELTA_SLOT` nel `.ino`
+    — 2, 4 e 6 slot da mezz'ora — e per aggiungerne o toglierne una si tocca
+    solo quell'array: la riga si ridisegna da sé, perché passa da `drawFila()`.
+  - **Nessuna memoria nuova**: è lo stesso anello da 48 mezz'ore della pagina
+    grafico e della barra del giorno.
+  - **La sottrazione sta in `remote_temp_delta()`** (`remote_nodes.cpp`), non
+    in chi disegna, perché la chiedono in tre: questa riga, la pagina dettaglio
+    e `/api/nodi`. Tre copie divergerebbero al primo ritocco, e due numeri
+    diversi per la stessa domanda — sul vetro e nel browser — sono peggio di
+    nessun numero. Dentro ci sono le due regole che contano: il capo vecchio si
+    prende a **distanza fissa**, e se una delle due celle è vuota il risultato è
+    NAN — **un delta che attraversa un buco non è un periodo**, la stessa regola
+    della cadenza appresa.
+  - **Il nome del nodo è sceso da 12pt a 9pt** per fare posto: da 26 px di
+    testata a 21, che sommati ai 6 guadagnati risalendo le righe sopra fanno la
+    quarta riga. Un nome si legge una volta e poi si sa a memoria; i numeri si
+    guardano ogni volta. `Meteo-7EAE0C` passa da 172 px a 129.
+  - **Costo in refresh: due al giorno.** Le tre voci entrano in `firmaValori()`
+    perché sono disegnate, e il conto è stato fatto **prima**, rigiocando i CSV
+    veri del 4-6 settembre con `tools/refresh_simula.py`: 277 → 279, su un
+    tetto di 288 che è la cadenza dei nodi. Le voci cambiano spesso (161-174
+    volte su 576 pacchetti) ma non spostano niente, perché la pressione da sola
+    ne muoveva già 265.
+  - **Solo nel blocco comodo**, come min/max: nel compatto (tre o più nodi, o
+    con la fascia del messaggio) non c'è la riga, e infatti non è in firma.
+
 - **La testata del nodo e' nome + filetto, non piu' una barra nera piena**
   (da `v38`). Il nero pieno e' cio' che si vede da piu' lontano, ma e' anche
   cio' che **imprime il vetro**: le due barre da sole facevano meta'
@@ -866,7 +919,9 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
   `MUTO` in negativo, che essendo rimasto il solo nero pieno si vede molto piu'
   di prima.
 
-- **Un testo si MISURA prima di disegnarlo**, e da `v38` c'e' lo strumento:
+- **Un testo si MISURA prima di disegnarlo**, e da `v38` c'e' lo strumento
+  (`--riga4` e `--testata` da `v58`, per la riga delle variazioni e per il nome
+  del nodo accanto al badge `MUTO`):
   `python tools/larghezza_testo.py --riga3` somma gli `xAdvance` dei glifi nei
   `.h` veri dei font — lo stesso conto di `getTextBounds()` — e dice se una
   stringa invade quella accanto. **Il caso che sfugge non e' quello di oggi ma

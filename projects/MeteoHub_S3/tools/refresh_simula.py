@@ -25,6 +25,13 @@ nodi, non la firma.** A 299 s il massimo consentito e' 288 refresh al giorno e
 se ne fanno 287: il confronto dei valori ne evita uno. Chi vuole ridurli deve
 alzare la cadenza minima, non affinare la firma.
 
+Rifatto il 2026-09-06 per la v58, che aggiunge alla firma le tre variazioni
+della temperatura (1, 2 e 3 h): **277 refresh al giorno diventano 279**, sui
+CSV del 4-6 settembre. Le tre voci cambiano spesso -- 174, 165 e 161 volte su
+576 pacchetti -- ma non cambiano NIENTE del conto, perche' la pressione da sola
+ne muoveva gia' 265: la firma era gia' diversa quasi ad ogni pacchetto, e a
+fermare i refresh era (di nuovo) la cadenza.
+
 Il modello e' validato: prevede ~12 refresh/h e l'hub ne ha misurati 12,2.
 """
 import csv
@@ -65,7 +72,46 @@ def q(v, dec):
     return int(round(v * (1.0 if dec == 0 else 10.0)))
 
 
-def simula(nodi, ore=24, hum_dec=0, con_minmax=True):
+# L'anello della temperatura com'e' a bordo (remote_nodes.cpp): 48 slot da
+# mezz'ora, una cella per slot, l'ultimo campione dello slot vince. Qui e' un
+# dizionario di slot ASSOLUTI, che e' la stessa cosa senza il modulo: gli slot
+# saltati semplicemente non esistono, ed e' proprio cio' che thPush() ottiene
+# svuotando le celle scavalcate.
+#
+# Serve perche' le variazioni NON si misurano fra due campioni qualsiasi ma fra
+# due celle: rifarle sul flusso grezzo dei pacchetti darebbe numeri diversi da
+# quelli del pannello, e questo file esiste per prevedere il pannello.
+TH_SLOT_S = 1800
+TH_SLOTS = 48
+
+
+def anello_push(anello, ts, t):
+    if t is None:
+        return
+    anello[ts // TH_SLOT_S] = int(round(t * 10))
+
+
+def anello_delta(anello, ts, slot_indietro):
+    """Come remote_temp_delta(): ancora sull'ultimo campione che c'e'."""
+    if not anello:
+        return None
+    ultimo = ts // TH_SLOT_S
+    ancora = None
+    for k in range(TH_SLOTS):
+        if (ultimo - k) in anello:
+            ancora = ultimo - k
+            break
+    if ancora is None:
+        return None
+    if (ultimo - (ancora - slot_indietro)) >= TH_SLOTS:
+        return None                       # l'altro capo e' fuori finestra
+    vecchio = anello.get(ancora - slot_indietro)
+    if vecchio is None:
+        return None                       # buco: non e' un periodo
+    return anello[ancora] - vecchio       # in decimi, come firmaComeScritto(v,1)
+
+
+def simula(nodi, ore=24, hum_dec=0, con_minmax=True, con_delta_t=True):
     """(refresh, eventi, cambi per componente) nelle ultime `ore`."""
     eventi = sorted((r[0], nome, r) for nome, righe in nodi.items() for r in righe)
     if not eventi:
@@ -74,6 +120,7 @@ def simula(nodi, ore=24, hum_dec=0, con_minmax=True):
     eventi = [e for e in eventi if e[0] >= limite]
 
     storia = defaultdict(list)
+    anelli = defaultdict(dict)
     stato_nodo = {}
     disegnata = None
     ultimo_refresh = None
@@ -92,13 +139,19 @@ def simula(nodi, ore=24, hum_dec=0, con_minmax=True):
             if vecchi:
                 d3 = q(r[3] - vecchi[-1][3], 1)
 
+        anello_push(anelli[nome], ts, r[1])
+        dT = tuple(anello_delta(anelli[nome], ts, k) for k in (2, 4, 6))
+
         stato = (q(r[1], 1), q(r[2], hum_dec), q(r[3], 1))
         if con_minmax:
             stato += (mn, mx, d3)
+        if con_delta_t:
+            stato += dT
 
         prec = stato_nodo.get(nome)
         if prec is not None:
-            for i, nome_comp in enumerate(("temp", "umid", "press", "min24", "max24", "delta3h")):
+            for i, nome_comp in enumerate(("temp", "umid", "press", "min24", "max24",
+                                           "delta3h", "dT1h", "dT2h", "dT3h")):
                 if i < len(stato) and stato[i] != prec[i]:
                     cambi[nome_comp] += 1
         stato_nodo[nome] = stato
@@ -126,9 +179,10 @@ def main(cartella):
 
     print("\n=== refresh in 24 h ===")
     varianti = (
-        ("v37   umidita' a 0,1, senza min/max",  dict(hum_dec=1, con_minmax=False)),
-        ("v40   umidita' a 0,1, con min/max",    dict(hum_dec=1, con_minmax=True)),
-        ("v41   umidita' com'e' SCRITTA (0 dec)", dict(hum_dec=0, con_minmax=True)),
+        ("v37   umidita' a 0,1, senza min/max",  dict(hum_dec=1, con_minmax=False, con_delta_t=False)),
+        ("v40   umidita' a 0,1, con min/max",    dict(hum_dec=1, con_minmax=True,  con_delta_t=False)),
+        ("v41   umidita' com'e' SCRITTA (0 dec)", dict(hum_dec=0, con_minmax=True,  con_delta_t=False)),
+        ("v58   piu' le variazioni di T a 1-2-3 h", dict(hum_dec=0, con_minmax=True, con_delta_t=True)),
     )
     for etichetta, kw in varianti:
         r, ev, _ = simula(nodi, **kw)
@@ -142,7 +196,8 @@ def main(cartella):
 
     print("\n=== chi fa cambiare la firma ===")
     _, ev, cambi = simula(nodi)
-    for k in ("temp", "umid", "press", "min24", "max24", "delta3h"):
+    for k in ("temp", "umid", "press", "min24", "max24", "delta3h",
+              "dT1h", "dT2h", "dT3h"):
         print("  %-8s %4d volte su %d pacchetti" % (k, cambi[k], ev))
 
 
