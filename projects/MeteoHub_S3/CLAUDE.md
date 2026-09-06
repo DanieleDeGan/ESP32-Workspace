@@ -31,6 +31,7 @@ CDC, deep sleep, OTA, scritture su SD, default NVS) `docs/Trappole-Hardware.md`.
 | `tools/controlla_piedi.py` | verifica che ogni pagina porti il piede di navigazione completo. Con `--host <ip>` controlla quelle che la **scheda** serve davvero e confronta `fw_caricata` col firmware che gira |
 | `tools/larghezza_testo.py` | quanto è largo un testo sul pannello **prima** di disegnarlo: somma gli `xAdvance` dei glifi nei `.h` veri dei font |
 | `tools/pannello_png.py` | scarica `/api/pannello/anteprima` e ne fa un PNG, senza dipendenze: il pannello si guarda da riga di comando |
+| `tools/pannello_mock.py` | **Adafruit_GFX rifatto in Python**: disegna una pagina del pannello senza la scheda, con i font e le icone veri. `--valida <ip>` lo confronta col vetro pixel per pixel |
 | `tools/icone.py` | disegna le icone e le mostra a schermo per giudicarle; con `--c` genera `icone.h` |
 | `tools/refresh_simula.py` | quanti refresh farebbe il pannello, rigiocando i CSV veri dei nodi |
 | `tools/analisi.py` | cosa dicono davvero i CSV dei nodi: le analisi che a bordo non si possono fare |
@@ -348,11 +349,18 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
 - **La pagina GRAFICO** (da `v14`): la temperatura dei nodi nelle ultime 24 h,
   a piena pagina. E' un tipo di pagina come gli altri — si aggiunge, si toglie,
   entra nella rotazione.
-  - **A piena pagina e non una sparkline dentro la pagina nodi**, ed e' la
-    stessa regola gia' scritta per la fascia del messaggio: su e-ink il tempo e'
-    la dimensione in piu', e per vedere tutto c'e' la rotazione, che alterna
-    pagine intere e leggibili invece di comprimerne tre in 400x300. Un
-    grafichino da 180x18 accanto ai numeri sarebbe stato un ornamento.
+  - **A piena pagina, e da `v59` ANCHE dentro il blocco del nodo.** Fino alla
+    `v58` qui c'era un divieto: «una sparkline da 180x18 accanto ai numeri
+    sarebbe un ornamento». Il divieto e' caduto, e vale la pena sapere perche',
+    perche' non e' un cambio di gusto: **tolti il piede e la barra del giorno,
+    alla curva del blocco restano 340x40 px** — 7 px per ogni mezz'ora, cioe'
+    la stessa risoluzione orizzontale della pagina intera, che di px ne ha 344.
+    A 180x18 il divieto era giusto; a 340x40 la stessa regola dice il
+    contrario.
+  - **Le due pagine non sono doppioni**: quella intera sovrappone fino a tre
+    nodi sulla STESSA scala (per confrontarli fra loro), quella del blocco da a
+    ogni nodo la SUA (per vedere la sua giornata). Una giornata di mezzo grado,
+    sulla scala condivisa con un nodo che ne fa dieci, e' una riga piatta.
   - **Anello separato da quello del trend**: 48 slot da 30 minuti (24 h) contro
     20 slot da 10 minuti (3 h). Tenere la risoluzione fine per un giorno intero
     costerebbe dodici volte la memoria per una curva che a 344 px non potrebbe
@@ -822,6 +830,16 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     alla pagina si vede come refresh mancati, che nessun contatore segnala.**
   - **Quanto vale**: poco, ed e' misurato — 287 -> 282 refresh al giorno. Il
     motivo per farlo e' la coerenza, non il risparmio.
+  - **Da `v59` in firma c'e' anche il GRAFICO**, e non basta il suo min/max: la
+    curva cambia anche quando i due estremi restano gli stessi — una gobba che
+    si sposta e' un disegno diverso — quindi entrano tutte e 48 le celle. Ci
+    entra anche **l'ora dell'ultimo slot**, perche' ogni mezz'ora la finestra
+    scorre e con lei le tacche dell'asse: senza, il pannello mostrerebbe un asse
+    fermo sotto una curva che scorre. Il prezzo e' che la firma cambia due volte
+    l'ora anche a valori identici — **misurato prima di scriverlo**, rigiocando
+    i CSV veri con `tools/refresh_simula.py` (che ora modella anche l'anello):
+    277 refresh al giorno diventano **279**, su un tetto di 288 che resta la
+    cadenza dei nodi. Due al giorno, come le variazioni della `v58`.
 
 - **Il vero limite ai refresh e' la CADENZA, non la firma** (misurato il
   2026-09-01 rigiocando i CSV veri). Con due nodi a 299 s il massimo consentito
@@ -840,10 +858,18 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     esce diviso per dieci. Il 2026-09-01 sembrava 1,5/h contro 12,2/h; erano
     15,7/h contro 12,2/h, cioe' nessun peggioramento.
 
-- **Layout adattivo**: fino a due nodi si usa il blocco comodo (temperatura a
-  24pt, trend scritto per esteso), da tre in su quello compatto (18pt). Il
-  pannello si legge da lontano, quindi il corpo del carattere non e' un vezzo
-  grafico: e' la distanza a cui la pagina funziona.
+- **Layout adattivo, e da `v59` decide l'ALTEZZA, non il conteggio.** Fino a
+  due nodi si usa il blocco comodo — temperatura a 18pt e il grafico delle 24 h
+  —, da tre in su quello compatto, che il grafico non ce l'ha. La condizione
+  non e' piu' «quanti nodi» ma `nodiAltezzaBlocco() >= NODI_H_GRAFICO` (130 px):
+  a togliere spazio alla curva sono in **tre** — un nodo in piu', la fascia del
+  messaggio, la pillola d'allarme — e due condizioni scritte a mano si sarebbero
+  dimenticate la terza. Sotto i 130 px l'area utile della curva scende sotto i
+  30, e una curva alta 20 px e' un ghirigoro che da tre metri non si legge, in
+  cambio dello spazio dei numeri.
+  - `nodiAltezzaBlocco()` e `nodiLayoutComodo()` sono usate **sia da chi
+    disegna sia da chi firma**: due conti copiati divergerebbero, e una firma
+    che non corrisponde alla pagina si vede come refresh mancati.
 
 - **Si mostra l'ORA dell'ultimo pacchetto, non da quanto tempo e' arrivato.** Un
   istante non invecchia: resta vero anche quando il pannello non si ridisegna
@@ -860,19 +886,27 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     ancora nella pagina dettaglio e nella web UI, dove c'e' spazio per
     leggerla.
 
-- **La barra del giorno** (`drawRangeGiorno()`, da `v38`): minimo e massimo
-  delle 24 h con un cursore dove sta la temperatura di adesso. E' l'unica
-  informazione che alla pagina mancava davvero — **26,5 gradi con minimo 12 e
-  con minimo 24 sono due giornate diverse, e il pannello le mostrava
-  identiche**. Nessuna memoria nuova: legge l'anello dei 48 slot che la pagina
-  grafico usa gia' (`statTemp()`).
-  - **Non contraddice la regola contro le sparkline**: li' si vieta di
-    comprimere una *curva* in un francobollo, e resta valido. Qui non si
-    disegna un andamento ma **una posizione dentro un intervallo** — due tacche
-    e un cursore, che a tre metri si leggono. Una curva a quella dimensione no.
-  - Se lo storico non basta si scrive "in raccolta": una barra col cursore in
-    mezzo direbbe "escursione nulla", che e' falso. Stessa regola dei due
-    trattini del trend.
+- **Il grafico delle 24 ore dentro il blocco** (`drawGrafico24h()`, da `v59`,
+  2026-09-06). Ha preso il posto della **barra del giorno** (`v38`-`v58`), che
+  di quelle 24 ore mostrava solo min, max e un cursore: la curva dice le stesse
+  tre cose **e** come ci si e' arrivati, nello stesso spazio piu' i 28 px del
+  piede.
+  - **Le due etichette (min e max) stanno all'ALTEZZA a cui stanno i valori**,
+    quindi sono anche l'asse verticale e non costano una riga.
+  - **La scala verticale e' propria del nodo**, con almeno 2 gradi di respiro
+    piu' un margine: senza il minimo, una giornata ferma diventerebbe una linea
+    che ondeggia di dieci pixel per due decimi di grado.
+  - **L'asse dei tempi porta le ore TONDE** (18, 00, 06, 12), calcolate
+    dall'orologio **locale** dell'ultimo campione e non dall'epoch diviso 21600:
+    il fuso e l'ora legale sposterebbero le tacche di un'ora o due, e un asse
+    che sbaglia l'ora e' peggio di un asse assente. Senza le ore, il minimo
+    della notte sembra «a meta' pagina» invece che alle sei.
+  - **Un buco non si attraversa**, come nella pagina intera: la linea si
+    interrompe. E se i campioni sono meno di due si scrive "in raccolta" — una
+    linea orizzontale direbbe «giornata piatta», che e' falso.
+  - **La curva e' a due linee** (una sotto l'altra), come il filetto e la
+    freccia: su e-ink un tratto da un pixel, a tre metri, non c'e'.
+  - Nessuna memoria nuova: e' lo stesso anello da 48 mezz'ore.
 
 - **Le variazioni della temperatura** (`drawNodoComodo()`, riga 4, da `v58`,
   2026-09-06): `°C  1h +0,2  2h +0,5  3h +0,9`, cioè di quanto è cambiata la
@@ -908,8 +942,37 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     tetto di 288 che è la cadenza dei nodi. Le voci cambiano spesso (161-174
     volte su 576 pacchetti) ma non spostano niente, perché la pressione da sola
     ne muoveva già 265.
-  - **Solo nel blocco comodo**, come min/max: nel compatto (tre o più nodi, o
-    con la fascia del messaggio) non c'è la riga, e infatti non è in firma.
+  - **Da `v59` la riga c'è in ENTRAMBI i layout** (`drawDeltaTemp()`, una
+    funzione sola): nel compatto ha preso il posto della rugiada, che era il
+    derivato meno urgente e vive nella pagina dettaglio. Quindi ora sta sempre
+    in firma — e la rugiada ne è uscita, perché una voce in firma che nessuno
+    disegna è l'errore speculare a una disegnata che manca: refresh completi da
+    2,2 s per un numero che non si vede.
+
+- **Il piede non c'e' piu', gli allarmi si' (`v59`).** IP, ora dell'ultimo
+  aggiornamento e spazio libero sulla card occupavano 28 px **sempre**, per dire
+  cose che non cambiano mai. Ora quello spazio e' del grafico, e di quel piede
+  resta solo cio' che era un avviso: `allarmeCorrente()` produce una stringa
+  vuota quando va tutto bene, e allora **la pillola non esiste**; quando c'e'
+  qualcosa da dire compare in negativo in basso a sinistra e i blocchi si
+  stringono di 24 px.
+  - **L'ordine e' quello dell'urgenza**, lo stesso del vecchio piede:
+    associazione aperta, ESP-NOW non attivo, card non montata, WiFi assente,
+    nodi non mostrati.
+  - **`SD NON MONTATA` e' il motivo per cui la pillola esiste**: e' il guasto
+    piu' silenzioso di questa scheda, perche' tutto continua a funzionare
+    mentre nessuno registra i dati.
+  - **L'allarme entra in `firmaStato()`, non fra i valori**: e' «quello che deve
+    comparire subito». Aspettare la cadenza dei valori vorrebbe dire annunciare
+    quel guasto con cinque minuti di ritardo.
+  - **Cosa si e' perso davvero: l'IP.** Era l'unico modo di sapere dove sta la
+    scheda senza interrogare il router — il log di boot via USB non e'
+    leggibile. Resta `WIFI ASSENTE`, che e' il caso in cui l'IP non servirebbe
+    comunque. Se un domani servisse di nuovo, il posto giusto e' una pagina
+    dedicata, non 28 px tolti a tutte le altre.
+  - La pillola **si dimensiona sul testo misurato** invece di prendere tutta la
+    riga: un avviso a piena larghezza sarebbe il 5% della pagina di nero fisso,
+    e il nero fisso e' cio' che imprime il vetro.
 
 - **La testata del nodo e' nome + filetto, non piu' una barra nera piena**
   (da `v38`). Il nero pieno e' cio' che si vede da piu' lontano, ma e' anche
@@ -918,6 +981,14 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
   8,7%). Il nero risparmiato va all'unica cosa che deve gridare — il badge
   `MUTO` in negativo, che essendo rimasto il solo nero pieno si vede molto piu'
   di prima.
+  - **E quel badge era rotto da `v38` a `v58`, senza che nessuno lo vedesse**:
+    il riquadro era largo 54 px e la scritta 55, quindi la O finiva **fuori dal
+    nero**, disegnata in bianco su bianco. Sul pannello si leggeva `MUT`. Non e'
+    stato trovato guardando il vetro — il badge compare solo quando un nodo
+    tace, e il caso raro e' anche quello che nessuno guarda mentre disegna — ma
+    **rendendo la pagina con `tools/pannello_mock.py`, che il caso raro lo sa
+    fabbricare**. Da `v59` il riquadro e' 71, e la prova sta in
+    `larghezza_testo.py --testata`.
 
 - **Un testo si MISURA prima di disegnarlo**, e da `v38` c'e' lo strumento
   (`--riga4` e `--testata` da `v58`, per la riga delle variazioni e per il nome

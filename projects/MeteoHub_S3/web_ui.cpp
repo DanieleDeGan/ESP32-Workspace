@@ -353,11 +353,63 @@ static void handleApiNodi() {
       json += ",\"delta_t_" + String(k + 1) + "h\":";
       appendJsonFloat(json, remote_temp_delta(i, PASSI[k]), 2);
     }
+
+    // Minimo e massimo delle 24 h, gli stessi che il pannello disegna. Servono
+    // anche a tools/pannello_mock.py, che confronta il suo disegno con
+    // l'anteprima della scheda: senza questi due numeri il confronto non puo'
+    // essere esatto, perche' ricalcolarli dai CSV da' un altro risultato (il
+    // CSV ha tutti i campioni, l'anello uno per mezz'ora).
+    float tmn = NAN, tmx = NAN;
+    remote_temp_minmax(i, &tmn, &tmx);
+    json += ",\"temp_min_24h\":"; appendJsonFloat(json, tmn, 2);
+    json += ",\"temp_max_24h\":"; appendJsonFloat(json, tmx, 2);
     json += '}';
   }
 
   json += "]}";
   net_server().send(200, "application/json", json);
+}
+
+// GET /api/nodi/anello?nodo=NOME — le 48 mezz'ore che il pannello disegna.
+//
+// Non e' un duplicato di /api/nodi/serie, che legge i CSV dalla card e li
+// decima: questo e' l'ANELLO IN RAM, cioe' esattamente i numeri da cui esce
+// la curva sul vetro. Serve a tools/pannello_mock.py, che confronta il proprio
+// disegno con l'anteprima della scheda pixel per pixel: senza gli stessi
+// campioni il confronto direbbe "diversi" ad ogni buco e ad ogni
+// arrotondamento, e non varrebbe piu' come prova.
+static void handleApiNodiAnello() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+  if (!srv.hasArg("nodo")) { srv.send(400, "text/plain", "manca il parametro nodo"); return; }
+
+  const String nome = srv.arg("nodo");
+  int idx = -1;
+  for (int i = 0; i < remote_count(); i++) {
+    RemoteNode r;
+    if (remote_get(i, &r) && nome.equals(r.nome)) { idx = i; break; }
+  }
+  if (idx < 0) { srv.send(404, "text/plain", "nodo sconosciuto"); return; }
+
+  static int16_t serie[REMOTE_TEMP_SLOTS];
+  time_t ts = 0;
+  const int n = remote_temp_history(idx, serie, REMOTE_TEMP_SLOTS, &ts);
+
+  String json;
+  json.reserve(64 + 8 * REMOTE_TEMP_SLOTS);
+  json += "{\"nodo\":"; appendJsonString(json, nome.c_str());
+  json += ",\"slot_s\":" + String(REMOTE_TEMP_SLOT_S);
+  json += ",\"ts_ultimo\":" + String((long)ts);
+  json += ",\"t\":[";
+  for (int i = 0; i < n; i++) {
+    if (i) json += ',';
+    // Una cella vuota e' null, mai zero: uno zero e' una temperatura
+    // plausibile, e d'inverno sarebbe una bugia credibile.
+    if (serie[i] == REMOTE_TEMP_VUOTO) json += "null";
+    else                               json += String(serie[i] / 10.0f, 1);
+  }
+  json += "]}";
+  srv.send(200, "application/json", json);
 }
 
 static void handleApiNodiGiorni() {
@@ -2536,6 +2588,7 @@ static const Rotta ROTTE[] = {
   { HTTP_POST, "/api/nodi/dimentica",   handleApiNodiDimentica,      "toglie un nodo dal registro (RAM e NVS)", "mac=AA:BB:..." },
   { HTTP_POST, "/api/nodi/altitudine",  handleApiNodiAltitudine,     "quota per riportare la pressione al livello del mare", "m=metri" },
   { HTTP_GET,  "/api/nodi/giorni",      handleApiNodiGiorni,         "i giorni di CSV presenti sulla card per un nodo", "nodo=NOME" },
+  { HTTP_GET,  "/api/nodi/anello",      handleApiNodiAnello,         "le 48 mezz'ore in RAM da cui il pannello disegna la curva del nodo (null dove manca il campione)", "nodo=NOME" },
   { HTTP_GET,  "/api/nodi/scarica",     handleApiNodiScarica,        "il CSV di un giorno (ts_iso,ts_unix,fonte_ora,mac,seq,temp_c,hum_pct,press_hpa,batt_mv)", "nodo=NOME, d=AAAA-MM-GG" },
   { HTTP_GET,  "/api/nodi/riepilogo",   handleApiNodiRiepilogo,      "una riga per giorno CHIUSO: min/max/media di T, RH, pressione e rugiada, con campioni/attesi e buchi. La rugiada e' mediata campione per campione, non calcolata dalle medie", "nodo=NOME" },
   { HTTP_GET,  "/api/nodi/serie",       handleApiNodiSerie,          "serie oraria concatenata su piu' giorni, DECIMATA a bordo in cesti con media/min/max: e' cio' che rende possibile un grafico multi-giorno senza far uscire 160 kB da un server sincrono", "nodo=NOME, da=AAAA-MM-GG, a=AAAA-MM-GG (max 14 giorni), punti=1..1000, v=0|1|2 (T|RH|P)" },

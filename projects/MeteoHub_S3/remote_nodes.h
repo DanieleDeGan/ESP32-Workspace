@@ -302,6 +302,16 @@ int remote_temp_campioni(int index);
 //    delta che attraversa un buco non e' un periodo.
 float remote_temp_delta(int index, int slotIndietro);
 
+// Minimo e massimo della temperatura nelle 24 h dell'anello. Torna quanti
+// campioni ci sono (0 = niente, e min/max restano NAN).
+//
+// Sta qui per la stessa ragione del delta: li disegna il pannello, li legge
+// /api/nodi e con quelli si verifica il mock (tools/pannello_mock.py) contro
+// il vetro. Il confronto pixel per pixel vuole ESATTAMENTE i numeri che ha
+// usato il pannello: quelli ricalcolati dai CSV sono un'altra cosa -- l'anello
+// tiene un campione per mezz'ora, il CSV tutti.
+int remote_temp_minmax(int index, float* minC, float* maxC);
+
 // Etichetta e testo della previsione, per la UI. Incapsulati qui cosi' chi
 // disegna non deve includere forecast.h ne' sapere come e' fatto il trend.
 const char* remote_trend_label(uint8_t trend);

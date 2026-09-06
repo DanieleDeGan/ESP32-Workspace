@@ -770,6 +770,29 @@ int remote_temp_campioni(int index) {
   return n;
 }
 
+int remote_temp_minmax(int index, float* minC, float* maxC) {
+  if (minC) *minC = NAN;
+  if (maxC) *maxC = NAN;
+  if (index < 0 || index >= s_count) return 0;
+  const TempHist& h = s_thist[index];
+  if (!h.avviato) return 0;
+
+  float mn = 0.0f, mx = 0.0f;
+  int n = 0;
+  for (int i = 0; i < TH_SLOTS; i++) {
+    if (h.t[i] == TH_VUOTO) continue;
+    const float v = h.t[i] / 10.0f;
+    if (n == 0 || v < mn) mn = v;
+    if (n == 0 || v > mx) mx = v;
+    n++;
+  }
+  if (n > 0) {
+    if (minC) *minC = mn;
+    if (maxC) *maxC = mx;
+  }
+  return n;
+}
+
 float remote_temp_delta(int index, int slotIndietro) {
   if (index < 0 || index >= s_count) return NAN;
   if (slotIndietro <= 0 || slotIndietro >= TH_SLOTS) return NAN;

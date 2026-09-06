@@ -168,7 +168,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v58";
+static const char FW_VERSION[] = "v59";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -914,7 +914,22 @@ static uint8_t bootEvent()
 // altrimenti il ghosting si accumula.
 
 static const int16_t NODI_TOP       = 2;    // da v36 non c'e' piu' intestazione
-static const int16_t NODI_BOT       = 266;  // sopra il piede
+
+// 294 e non 300 (v59): la cornice di plastica del pannello copre gli ultimi
+// pixel dell'area disegnabile -- e' la stessa ragione per cui a destra ci si
+// ferma a 388, imparata sul vetro il 2026-08-30 leggendo "19:3" al posto di
+// "19:30". Fino alla v58 qui c'era 266, perche' sotto stava il piede con IP e
+// spazio sulla card: quei 28 px ora sono del grafico.
+static const int16_t NODI_BOT       = 294;
+
+// La pillola d'allarme, quando c'e': 20 px piu' 4 di stacco. Quando non c'e'
+// non occupa niente, ed e' tutto il punto -- vedi allarmeCorrente().
+static const int16_t ALLARME_H      = 24;
+
+// Sotto questa altezza di blocco il grafico non ci sta: gli restano meno di
+// 30 px utili, e una curva alta 20 px e' un ghirigoro che da tre metri non si
+// legge, in cambio dello spazio dei numeri. Meglio non disegnarla affatto.
+static const int16_t NODI_H_GRAFICO = 130;
 
 // Con la fascia del messaggio accesa il corpo si ferma piu' in alto e i nodi
 // cedono 70 px. Non e' gratis: con due nodi si passa dal blocco comodo (24pt)
@@ -1024,29 +1039,20 @@ static void drawFrecciaTrend(int16_t x, int16_t y, uint8_t trend)
 // Il riquadro in negativo del nodo muto. E' l'unica diagnostica che questa
 // rete ha finche' i nodi non misurano la batteria: va vista prima dei valori,
 // non dopo, e su bianco e nero il negativo e' l'unico "colore" disponibile.
+// 71 px e non 54, corretto in v59: "MUTO" in FreeSansBold9pt7b ne misura 55,
+// e con il riquadro da 54 la O finiva FUORI dal nero -- bianco su bianco,
+// cioe' invisibile. Sul pannello si leggeva "MUT", e nessuno se n'era accorto
+// perche' il badge compare solo quando un nodo tace: il caso raro e' anche
+// quello che nessuno guarda mentre disegna. Trovato rendendo la pagina con
+// tools/pannello_mock.py, che il caso raro lo sa fabbricare.
 static void drawBadgeMuto(int16_t x, int16_t y)
 {
-  tela.fillRoundRect(x, y, 54, 18, 4, GxEPD_BLACK);
+  tela.fillRoundRect(x, y, 71, 18, 4, GxEPD_BLACK);
   tela.setFont(&FreeSansBold9pt7b);
   tela.setTextColor(GxEPD_WHITE);
   tela.setCursor(x + 8, y + 14);
   tela.print("MUTO");
   tela.setTextColor(GxEPD_BLACK);
-}
-
-// Riga di dettaglio comune ai due formati: umidita' e pressione, allineate a
-// destra sotto la temperatura.
-static void drawValori(const RemoteNode& n, int16_t yBase)
-{
-  String riga;
-  if (isfinite(n.value[1])) riga += fmtNum(n.value[1], 0) + "%";
-  if (isfinite(n.value[2])) {
-    if (riga.length()) riga += "   ";
-    riga += fmtNum(n.value[2], 1) + " hPa";
-  }
-  if (!riga.length()) return;
-  tela.setFont(&FreeSansBold9pt7b);
-  drawRight(riga, 388, yBase);
 }
 
 // Le tre finestre su cui si guarda la variazione della temperatura, in slot da
@@ -1057,8 +1063,7 @@ static void drawValori(const RemoteNode& n, int16_t yBase)
 //
 // Perche' tre e non una. Una sola direbbe "sta salendo"; tre dicono anche
 // COME: +0,2 / +0,5 / +0,9 e' una salita che rallenta, +0,9 / +0,9 / +0,9 e'
-// una salita che si e' fermata un'ora fa. E' l'informazione che finora stava
-// solo nella curva della pagina grafico, cioe' su un'altra pagina.
+// una salita che si e' fermata un'ora fa.
 static const int   TEMP_DELTA_N = 3;
 static const int   TEMP_DELTA_SLOT[TEMP_DELTA_N] = { 2, 4, 6 };        // 1 h, 2 h, 3 h
 static const char* TEMP_DELTA_ETI[TEMP_DELTA_N]  = { "1h", "2h", "3h" };
@@ -1083,25 +1088,8 @@ static const char* TEMP_DELTA_ETI[TEMP_DELTA_N]  = { "1h", "2h", "3h" };
 // scansione di min e max, che serve a chi disegna e a nessun altro.
 static int statTemp(int index, float* minC, float* maxC, float* delta)
 {
-  *minC = *maxC = NAN;
   for (int k = 0; k < TEMP_DELTA_N; k++) delta[k] = remote_temp_delta(index, TEMP_DELTA_SLOT[k]);
-
-  static int16_t serie[REMOTE_TEMP_SLOTS];        // static: 96 byte, non stack
-  time_t tsUlt = 0;
-  const int n = remote_temp_history(index, serie, REMOTE_TEMP_SLOTS, &tsUlt);
-  if (n <= 0) return 0;
-
-  int campioni = 0;
-  for (int i = 0; i < n; i++)
-  {
-    if (serie[i] == REMOTE_TEMP_VUOTO) continue;
-    const float v = serie[i] / 10.0f;
-    if (campioni == 0 || v < *minC) *minC = v;
-    if (campioni == 0 || v > *maxC) *maxC = v;
-    campioni++;
-  }
-
-  return campioni;
+  return remote_temp_minmax(index, minC, maxC);
 }
 
 // Numero col segno sempre davanti: un "+1,2" e un "1,2" si confondono, e qui
@@ -1183,52 +1171,13 @@ static void drawTestataNodo(const RemoteNode& n, int16_t y, int16_t h)
   // che e' il suo mestiere. Il "!" del ritardo resta un carattere nero -- e'
   // un avviso minore, e non deve somigliare a un guasto.
   if (n.hasData && !n.online) {
-    drawBadgeMuto(W - 64, y + (h - 18) / 2);
+    drawBadgeMuto(W - 83, y + (h - 18) / 2);
   }
   else if (n.hasData && nodoInRitardo(n)) {
     tela.setFont(&FreeSansBold12pt7b);
     tela.getTextBounds("!", 0, 0, &bx, &by, &bw, &bh);
     drawRight("!", W - 12, y + (h - (int16_t)bh) / 2 - by);
   }
-}
-
-// --- la barra del giorno ---------------------------------------------------
-// Dove sta la temperatura di ADESSO fra il minimo e il massimo delle ultime
-// 24 ore. E' l'informazione che al pannello mancava: un numero da solo non
-// dice se e' alto -- 26,5 gradi con minimo 12 e con minimo 24 sono due
-// giornate diverse, e finora il pannello le mostrava identiche.
-//
-// Non e' una sparkline, ed e' voluto: la regola scritta in CLAUDE.md (il
-// grafico sta a piena pagina, non compresso in un francobollo) resta valida,
-// perche' una curva da 140x16 sarebbe un ornamento. Qui non si disegna
-// l'andamento ma UNA posizione dentro un intervallo -- due tacche e un
-// cursore, che a tre metri si legge, mentre una curva no.
-//
-// Quattro rettangoli in tutto: nessuna memoria nuova, l'anello dei 48 slot
-// esiste gia' per la pagina grafico.
-static void drawRangeGiorno(int16_t x, int16_t y, int16_t w,
-                            float minC, float maxC, float ora)
-{
-  // Asta doppia, come il filetto e la freccia: un pixel solo non si vede.
-  tela.drawFastHLine(x, y,     w, GxEPD_BLACK);
-  tela.drawFastHLine(x, y + 1, w, GxEPD_BLACK);
-
-  // Tacche agli estremi: dicono dove finisce la giornata, altrimenti l'asta
-  // sembrerebbe continuare oltre.
-  tela.fillRect(x,         y - 5, 2, 12, GxEPD_BLACK);
-  tela.fillRect(x + w - 2, y - 5, 2, 12, GxEPD_BLACK);
-
-  // Il cursore. Se l'escursione e' nulla (o quasi: un nodo appena acceso ha
-  // un campione solo) si mette in mezzo, che e' la verita' -- non a un
-  // estremo, che direbbe "minimo del giorno" senza che nessuno lo sappia.
-  float frazione = 0.5f;
-  if (isfinite(ora) && maxC - minC > 0.05f) {
-    frazione = (ora - minC) / (maxC - minC);
-    if (frazione < 0) frazione = 0;
-    if (frazione > 1) frazione = 1;
-  }
-  const int16_t px = x + (int16_t)(frazione * (float)(w - 7));
-  tela.fillRect(px, y - 7, 7, 16, GxEPD_BLACK);
 }
 
 // Mette in fila i pezzi che ci stanno e si ferma al primo che non entra.
@@ -1256,29 +1205,234 @@ static void drawFila(const String* voci, int quante, int16_t x, int16_t y,
   }
 }
 
-// Quale dei due blocchi si usa. Sta in una funzione perche' la decisione
-// serve in DUE posti: screenNodi() per disegnare, firmaValori() per sapere
-// che cosa e' stato disegnato -- la rugiada c'e' solo nel compatto, min/max
-// solo nel comodo. Due condizioni copiate divergerebbero al primo ritocco, e
-// una firma che non corrisponde alla pagina si vede come refresh mancati:
-// il pannello resta indietro e nessun contatore lo dice. E' la stessa regola
-// per cui l'ora la disegna una funzione sola.
+// La riga delle variazioni: "gradi 1h +0,1  2h +0,5  3h +0,6", col cerchietto
+// del grado davanti. La disegnano ENTRAMBI i layout, quindi sta in una
+// funzione sola: due copie divergerebbero al primo ritocco, e il pannello
+// mostrerebbe due cose diverse per la stessa informazione a seconda di quanti
+// nodi ci sono.
 //
-// Il blocco comodo vuole ~110 px: con la fascia del messaggio non ce ne sono,
-// e disegnarlo lo stesso vorrebbe dire numeri sopra il separatore.
-static bool nodiLayoutComodo(int quanti, const Message* fascia)
+// Il prefisso e' l'unita' e non un simbolo inventato: distingue questa riga da
+// quella del barometro, che sta sulla stessa altezza a destra ed e' l'equivoco
+// da cui la riga e' nata (v58). Un "delta" non si puo' scrivere: i font
+// Adafruit GFX sono ASCII puro.
+static void drawDeltaTemp(const float* d, int16_t yBase, int16_t xMax)
 {
-  return (quanti <= NODI_COMODI_FINO_A) && (fascia == nullptr);
+  bool qualcuno = false;
+  for (int k = 0; k < TEMP_DELTA_N; k++) if (isfinite(d[k])) qualcuno = true;
+  if (!qualcuno) return;                 // tre trattini non dicono niente
+
+  tela.setFont(&FreeSans9pt7b);
+  drawGrado(15, yBase - 10, 3);
+  tela.setCursor(21, yBase);
+  tela.print("C");
+
+  String voci[TEMP_DELTA_N];
+  for (int k = 0; k < TEMP_DELTA_N; k++)
+    voci[k] = String(TEMP_DELTA_ETI[k]) + " " + fmtDelta(d[k], 1);
+  drawFila(voci, TEMP_DELTA_N, 42, yBase, xMax, 14);
 }
 
-// --- blocco COMODO: fino a due nodi ---------------------------------------
-static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
+// ---------------------------------------------------------------------------
+// Le 24 ore di UN nodo, dentro il suo blocco (v59)
+// ---------------------------------------------------------------------------
+// Fino alla v58 questa curva esisteva solo a piena pagina (`PT_GRAFICO`), e la
+// pagina nodi ne mostrava una sintesi: minimo, massimo e un cursore in mezzo
+// (`drawRangeGiorno`). La regola scritta diceva che una curva compressa in un
+// francobollo e' un ornamento, e per 180x18 px era vero.
+//
+// Qui non lo e' piu', e il motivo e' aritmetico: tolti il piede e la barra,
+// alla curva restano 340x40 px, cioe' 7 px per ogni mezz'ora -- la stessa
+// risoluzione orizzontale della pagina intera, che di px ne ha 344. Quello che
+// cambia rispetto alla pagina grafico e' che qui la scala verticale e' PROPRIA
+// del nodo: una giornata di mezzo grado si vede come una giornata di mezzo
+// grado, invece di schiacciarsi sotto l'escursione del nodo piu' mosso.
+//
+// Tre cose la rendono leggibile, e nessuna e' il numero di pixel:
+//  - le due etichette (min e max) stanno all'ALTEZZA a cui stanno i valori,
+//    quindi sono anche l'asse verticale e non costano una riga;
+//  - l'asse dei tempi porta le ore TONDE (18, 00, 06, 12) e non "-24h/-12h":
+//    senza, il minimo della notte sembra "a meta' pagina" invece che alle sei.
+//    E' la stessa regola gia' scritta per la pagina grafico -- un istante resta
+//    vero anche quando il pannello non si ridisegna da un pezzo, una distanza
+//    no;
+//  - un buco NON si attraversa con una retta: la linea si interrompe, o
+//    direbbe che la temperatura e' passata di li' mentre nessuno la misurava.
+static void drawGrafico24h(int indice, int16_t x0, int16_t y0, int16_t x1, int16_t y1,
+                           int16_t yEtichette)
 {
-  const int16_t W = tela.width();
+  static int16_t serie[REMOTE_TEMP_SLOTS];      // static: 96 byte, non stack
+  time_t tsUltimo = 0;
+  const int n = remote_temp_history(indice, serie, REMOTE_TEMP_SLOTS, &tsUltimo);
 
-  // La testata da 21 px e non piu' 26 (v58): i 5 px, sommati ai 6 guadagnati
-  // risalendo le due righe qui sotto, sono la quarta riga. Vedi
-  // drawTestataNodo() per il nome piu' piccolo che li ha resi possibili.
+  int16_t vMin = 32767, vMax = -32768;
+  int campioni = 0;
+  for (int i = 0; i < n; i++) {
+    const int16_t v = serie[i];
+    if (v == REMOTE_TEMP_VUOTO) continue;
+    if (v < vMin) vMin = v;
+    if (v > vMax) vMax = v;
+    campioni++;
+  }
+
+  tela.setFont(&FreeSans9pt7b);
+  if (campioni < 2) {
+    // "Non lo so ancora" non deve somigliare a una giornata piatta: una linea
+    // orizzontale direbbe una cosa falsa. Dura una mezz'ora dopo un riavvio, e
+    // solo se non c'e' un CSV da cui ripartire.
+    tela.setCursor(x0, y1 - 8);
+    tela.print("in raccolta");
+    return;
+  }
+
+  // Almeno due gradi di respiro, piu' un margine: senza, una giornata ferma
+  // diventa una linea che ondeggia di dieci pixel per due decimi di grado.
+  const int16_t vMinVero = vMin, vMaxVero = vMax;
+  if (vMax - vMin < 20) {
+    const int16_t centro = (int16_t)((vMax + vMin) / 2);
+    vMin = centro - 10;
+    vMax = centro + 10;
+  }
+  const int16_t margine = (int16_t)((vMax - vMin) / 12 + 1);
+  vMin -= margine;
+  vMax += margine;
+
+  // --- asse dei tempi: tacche alle ore tonde, ogni sei --------------------
+  // Le ore si prendono dall'orologio LOCALE dell'ultimo campione, non
+  // dall'epoch diviso 21600: il fuso e l'ora legale sposterebbero le tacche di
+  // un'ora o due, e un asse che sbaglia l'ora e' peggio di un asse assente.
+  tela.drawFastHLine(x0, y1, x1 - x0, GxEPD_BLACK);
+  char buf[8];
+  int oraLoc = 0, minLoc = 0;
+  if (rtctime_format(tsUltimo, "%H", buf, sizeof(buf))) oraLoc = atoi(buf);
+  if (rtctime_format(tsUltimo, "%M", buf, sizeof(buf))) minLoc = atoi(buf);
+  const int32_t dt0 = (int32_t)(oraLoc % 6) * 3600 + (int32_t)minLoc * 60;
+
+  for (int k = 0; k < 5; k++) {
+    const int32_t dt = dt0 + (int32_t)k * 6 * 3600;
+    if (dt > 24L * 3600) break;
+    const int16_t x = x1 - (int16_t)(((int32_t)(x1 - x0) * dt) / (24L * 3600));
+    if (x < x0) break;
+    tela.drawFastVLine(x, y1 + 1, 3, GxEPD_BLACK);
+
+    const int ora = ((oraLoc - (oraLoc % 6)) - 6 * k + 24) % 24;
+    snprintf(buf, sizeof(buf), "%02d", ora);
+    int16_t bx, by; uint16_t bw, bh;
+    tela.getTextBounds(buf, 0, 0, &bx, &by, &bw, &bh);
+    int16_t cx = x - (int16_t)bw / 2;
+    if (cx < x0)                cx = x0;
+    if (cx + (int16_t)bw > 388) cx = 388 - (int16_t)bw;
+    tela.setCursor(cx, yEtichette);
+    tela.print(buf);
+  }
+
+  // --- minimo e massimo, all'altezza a cui stanno -------------------------
+  const int16_t span = (vMax - vMin) ? (vMax - vMin) : 1;
+  const int16_t yMax = y1 - (int16_t)(((int32_t)(vMaxVero - vMin) * (y1 - y0)) / span);
+  const int16_t yMin = y1 - (int16_t)(((int32_t)(vMinVero - vMin) * (y1 - y0)) / span);
+  drawRight(fmtNum(vMaxVero / 10.0f, 1), x0 - 5, yMax + 5);
+  drawRight(fmtNum(vMinVero / 10.0f, 1), x0 - 5, yMin + 5);
+
+  // --- la curva -----------------------------------------------------------
+  int16_t xPrec = 0, yPrec = 0;
+  bool hoPrec = false;
+  for (int i = 0; i < n; i++) {
+    const int16_t v = serie[i];
+    if (v == REMOTE_TEMP_VUOTO) { hoPrec = false; continue; }
+    const int16_t x = x0 + (int16_t)(((int32_t)(x1 - x0) * i) / (n > 1 ? n - 1 : 1));
+    const int16_t y = y1 - (int16_t)(((int32_t)(v - vMin) * (y1 - y0)) / span);
+    if (hoPrec) {
+      // Due linee e non una: su e-ink un tratto da un pixel, visto da tre
+      // metri, non c'e'. E' la stessa scelta del filetto e della freccia.
+      tela.drawLine(xPrec, yPrec, x, y, GxEPD_BLACK);
+      tela.drawLine(xPrec, yPrec + 1, x, y + 1, GxEPD_BLACK);
+    }
+    xPrec = x; yPrec = y; hoPrec = true;
+  }
+  if (hoPrec) tela.fillCircle(xPrec, yPrec, 2, GxEPD_BLACK);   // dove siamo adesso
+}
+
+// ---------------------------------------------------------------------------
+// Allarmi: quello che restava nel piede e non era un ornamento
+// ---------------------------------------------------------------------------
+// Il piede con IP e spazio libero sulla card non c'e' piu' (v59): erano 28 px
+// occupati SEMPRE per dire cose che non cambiano mai. Ma dentro c'erano anche
+// gli avvisi, e quelli non sono un ornamento -- `SD NON MONTATA` e' il guasto
+// piu' silenzioso di questa scheda, perche' tutto continua a funzionare mentre
+// nessuno registra i dati.
+//
+// La regola nuova: lo spazio NON ESISTE quando va tutto bene. Se c'e' da dire
+// qualcosa compare una pillola in negativo e i blocchi si stringono di 24 px;
+// altrimenti quei pixel sono del grafico. L'ordine e' quello dell'urgenza, lo
+// stesso del vecchio piede: cosa sta succedendo adesso batte tutto il resto.
+//
+// L'IP non c'e' piu' da nessuna parte sul pannello, ed e' una perdita vera che
+// vale la pena conoscere: era l'unico modo di sapere dove sta la scheda senza
+// interrogare il router (il log di boot via USB non e' leggibile). Resta
+// `WIFI ASSENTE`, che e' il caso in cui l'IP non servirebbe comunque.
+static String allarmeCorrente()
+{
+  if (remote_pairing_active()) {
+    const uint32_t r = remote_pairing_remaining_s();
+    char buf[24];
+    snprintf(buf, sizeof(buf), "ASSOCIAZIONE %lu:%02lu",
+             (unsigned long)(r / 60), (unsigned long)(r % 60));
+    return String(buf);
+  }
+  if (!remote_ready())    return String("ESP-NOW NON ATTIVO");
+  if (!sd_mounted())      return String("SD NON MONTATA");
+  if (!net_isConnected()) return String("WIFI ASSENTE");
+
+  const int n = remote_count();
+  if (n > NODI_VISIBILI)
+    return String("+") + (n - NODI_VISIBILI) + " NODI NON MOSTRATI";
+
+  return String();
+}
+
+// La pillola: nero pieno, testo in bianco, in basso a sinistra. E' lo stesso
+// linguaggio del badge MUTO -- su 1 bit il negativo e' l'unico "colore" che
+// grida -- e si dimensiona sul testo misurato invece di prendere tutta la
+// riga: un avviso a piena larghezza sarebbe il 5% della pagina di nero fisso,
+// e il nero fisso e' cio' che imprime il vetro.
+static void drawAllarme(const String& testo)
+{
+  tela.setFont(&FreeSansBold9pt7b);
+  int16_t bx, by; uint16_t bw, bh;
+  tela.getTextBounds(testo, 0, 0, &bx, &by, &bw, &bh);
+  tela.fillRoundRect(12, NODI_BOT - 20, (int16_t)bw + 20, 20, 5, GxEPD_BLACK);
+  tela.setTextColor(GxEPD_WHITE);
+  tela.setCursor(22, NODI_BOT - 5);
+  tela.print(testo);
+  tela.setTextColor(GxEPD_BLACK);
+}
+
+// Quanto e' alto un blocco. Una funzione sola perche' il conto serve in DUE
+// posti -- screenNodi() per disegnare, firmaValori() per sapere che cosa e'
+// stato disegnato -- e due conti copiati divergerebbero al primo ritocco. Una
+// firma che non corrisponde alla pagina si vede come refresh mancati: il
+// pannello resta indietro e nessun contatore lo dice.
+static int16_t nodiAltezzaBlocco(int quanti, const Message* fascia, bool allarme)
+{
+  int16_t bot = fascia ? NODI_BOT_FASCIA : NODI_BOT;
+  if (allarme) bot -= ALLARME_H;
+  if (quanti < 1) quanti = 1;
+  return (bot - NODI_TOP) / (int16_t)quanti;
+}
+
+// Quale dei due blocchi si usa. Da v59 la decisione e' sull'ALTEZZA e non piu'
+// sul solo numero di nodi: il grafico vuole i suoi pixel, e a togliergliene
+// sono in tre -- un nodo in piu', la fascia del messaggio, la pillola
+// d'allarme. Prima erano due condizioni scritte a mano che si sarebbero
+// dimenticate la terza.
+static bool nodiLayoutComodo(int quanti, const Message* fascia, bool allarme)
+{
+  return (quanti <= NODI_COMODI_FINO_A) &&
+         (nodiAltezzaBlocco(quanti, fascia, allarme) >= NODI_H_GRAFICO);
+}
+
+// --- blocco COMODO: fino a due nodi, con il grafico ------------------------
+static void drawNodoComodo(const RemoteNode& n, int16_t y, int16_t h, int indice)
+{
   drawTestataNodo(n, y, 21);
 
   if (!n.hasData) {
@@ -1288,191 +1442,113 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y, int indice)
     return;
   }
 
-  // --- riga grande: le tre grandezze misurate, ognuna con la sua icona -----
-  // Icone SOLO qui. Sono tre simboli che si riconoscono a colpo d'occhio da
-  // tre metri; metterne altri per i valori derivati vorrebbe dire inventare
-  // simboli che nessuno conosce, e a 14 px in bianco e nero si somigliano
-  // tutti. Per la pressione non c'e' icona apposta: "hPa" e' gia' la sua
-  // etichetta, e un simbolo ambiguo e' peggio di nessun simbolo.
+  // --- riga A: le tre grandezze misurate, ognuna con la sua icona ---------
+  // La temperatura scende da 24pt a 18pt (v59). Resta il numero piu' grande
+  // della pagina -- il doppio di tutto il resto -- ma i pixel che restituisce
+  // sono la meta' dell'altezza del grafico. Icone SOLO qui, come prima: a
+  // 20 px e 1 bit si riconoscono tre simboli, non sei.
   if (isfinite(n.value[0])) {
-    // Allineata al centro del numero, non alla sua base: un'icona appoggiata
-    // sulla riga di scrittura sembra caduta.
-    tela.drawBitmap(10, y + 38, IC_TERMOMETRO, IC_TERMOMETRO_W, IC_TERMOMETRO_H,
+    tela.drawBitmap(10, y + 27, IC_TERMOMETRO, IC_TERMOMETRO_W, IC_TERMOMETRO_H,
                     GxEPD_BLACK);
-    tela.setFont(&FreeSansBold24pt7b);
-    tela.setCursor(36, y + 66);
+    tela.setFont(&FreeSansBold18pt7b);
+    tela.setCursor(36, y + 50);
     tela.print(fmtNum(n.value[0], 1));
     int16_t bx, by; uint16_t bw, bh;
-    tela.getTextBounds(fmtNum(n.value[0], 1), 36, y + 66, &bx, &by, &bw, &bh);
-    const int16_t xu = 36 + (int16_t)bw + 7;
-    drawGrado(xu + 3, y + 42, 4);
+    tela.getTextBounds(fmtNum(n.value[0], 1), 36, y + 50, &bx, &by, &bw, &bh);
+    const int16_t xu = 36 + (int16_t)bw + 6;
+    drawGrado(xu + 3, y + 33, 3);
     tela.setFont(&FreeSansBold12pt7b);
-    tela.setCursor(xu + 10, y + 66);
+    tela.setCursor(xu + 9, y + 50);
     tela.print("C");
   }
-
-  tela.setFont(&FreeSansBold12pt7b);
   if (isfinite(n.value[1])) {
-    tela.drawBitmap(184, y + 40, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
-    tela.setCursor(210, y + 57);
+    tela.drawBitmap(150, y + 30, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
+    tela.setFont(&FreeSansBold12pt7b);
+    tela.setCursor(176, y + 50);
     tela.print(fmtNum(n.value[1], 0) + "%");
   }
   if (isfinite(n.value[2])) {
-    tela.setFont(&FreeSansBold12pt7b);
-    drawRight(fmtNum(n.value[2], 1), W - 46, y + 57);
+    // 36 px di riserva per "hPa" e non 30: l'unita' ne misura 32, e con 30 il
+    // nove di "1016,9" toccava l'acca. Misurato, non stimato.
     tela.setFont(&FreeSans9pt7b);
-    tela.setCursor(W - 42, y + 57);
-    tela.print("hPa");
+    drawRight("hPa", 388, y + 50);
+    tela.setFont(&FreeSansBold12pt7b);
+    drawRight(fmtNum(n.value[2], 1), 388 - 36, y + 50);
   }
 
-  // --- terza riga: la giornata a sinistra, il barometro a destra -----------
-  //
-  // Fino a v37 qui c'era la freccia del trend seguita dalla sua parola ("in
-  // lieve salita"). Le due cose dicono lo stesso, e la parola costava una riga
-  // intera su un pannello che di righe ne ha otto: ora resta la freccia --
-  // l'inclinazione si vede da tre metri, una parola va letta -- e accanto va
-  // il NUMERO, che dice anche quanto. La parola non e' persa: sta nella pagina
-  // dettaglio del nodo e nella web UI, dove c'e' spazio per leggerla.
-  //
-  // Lo spazio liberato prende la barra del giorno, che e' il pezzo nuovo.
+  // --- riga B: variazioni della temperatura, barometro a destra -----------
   float tMin, tMax, tDelta[TEMP_DELTA_N];
-  const int campioni = statTemp(indice, &tMin, &tMax, tDelta);
-
-  // Le coordinate qui sotto NON sono a occhio: sono state verificate con le
-  // metriche vere dei font (somma degli xAdvance in FreeSans9pt7b.h, cioe' lo
-  // stesso conto che fa getTextBounds). Il caso peggiore non e' quello di oggi
-  // ma l'INVERNO: "-10,5" sono 41 px contro i 28 di "21,4", e con le posizioni
-  // stimate a occhio il minimo finiva sotto la barra. Un testo troppo largo su
-  // questo pannello non da' errore -- si sovrappone e basta, e lo si scopre
-  // guardando il vetro tre mesi dopo.
-  // Le y sono salite di 13 in v58 (da 113 a 100) per fare posto alla riga
-  // delle variazioni: le x, che sono quelle verificate, non si toccano.
-  //
-  // Le due righe di temperatura -- questa e quella sotto -- stanno vicine fra
-  // loro (6 px di bianco) e piu' staccate da cio' che le circonda (13 sopra,
-  // 10 sotto fino al nodo seguente): sono un gruppo solo, "dov'e' stata e dove
-  // sta andando", e il bianco lo deve dire. La prima stesura le aveva a 5 px
-  // con 14 sopra -- il raggruppamento al contrario -- e sul vetro le due righe
-  // si leggevano come una sola andata a capo.
-  tela.setFont(&FreeSans9pt7b);
-  tela.setCursor(12, y + 100);
-  tela.print("24h");                       // 30 px: arriva a 42
-
-  if (campioni >= 2 && isfinite(tMin) && isfinite(tMax))
-  {
-    tela.setCursor(46, y + 100);           // fino a 87 con un minimo negativo
-    tela.print(fmtNum(tMin, 1));
-    drawRangeGiorno(92, y + 95, 124, tMin, tMax, n.value[0]);
-    tela.setCursor(224, y + 100);          // fino a 265, la freccia parte a 274
-    tela.print(fmtNum(tMax, 1));
-  }
-  else
-  {
-    // "Non lo so ancora" non deve somigliare a "escursione nulla": una barra
-    // con il cursore in mezzo direbbe una cosa falsa. Meglio dirlo a parole,
-    // che tanto e' una condizione che dura una mezz'ora dopo il riavvio.
-    tela.setCursor(46, y + 100);
-    tela.print("in raccolta");
-  }
-
-  // Il barometro: freccia piu' variazione a 3 ore. Il delta e' quello della
-  // PRESSIONE (n.delta3h), coerente con la freccia che gli sta accanto -- non
-  // quello della temperatura, che da v58 ha la sua riga qui sotto.
-  //
-  // "/3h" e non " hPa/3h": con l'unita' per esteso il caso peggiore
-  // ("+12,3 hPa/3h") e' 108 px e finisce SOTTO la freccia. L'unita' e' gia'
-  // scritta sopra, nella stessa colonna, accanto alla pressione.
-  drawFrecciaTrend(285, y + 95, n.trend);
+  statTemp(indice, &tMin, &tMax, tDelta);
+  drawDeltaTemp(tDelta, y + 72, 300);          // 300: oltre c'e' la freccia
   if (isfinite(n.delta3h)) {
     tela.setFont(&FreeSans9pt7b);
-    drawRight(fmtDelta(n.delta3h, 1) + "/3h", 388, y + 100);   // max 71 px
+    drawRight(fmtDelta(n.delta3h, 1) + "/3h", 388, y + 72);
+    drawFrecciaTrend(300, y + 67, n.trend);
   }
 
-  // --- quarta riga (v58): di quanto e' cambiata la TEMPERATURA -------------
-  //
-  // Perche' serviva. La riga sopra dice fra quali estremi si e' mossa la
-  // giornata e dove sta adesso, ma non da che parte sta andando; l'unico
-  // "+1,3/3h" della pagina era quello della PRESSIONE, e letto di sfuggita
-  // sembrava proprio la temperatura -- il numero giusto per la domanda
-  // sbagliata. Ora la temperatura ha il suo, a tre distanze.
-  //
-  // Il prefisso e' l'unita', "°C", e non un simbolo inventato ne' l'icona del
-  // termometro: le icone sulla pagina nodi stanno SOLO nella riga grande (vedi
-  // il commento li' sopra), e un "delta" non si puo' scrivere -- i font
-  // Adafruit GFX sono ASCII puro, la lettera greca non c'e'. L'unita' scritta
-  // e' anche cio' che distingue questa riga da quella del barometro, che e'
-  // l'equivoco da cui e' nata.
-  //
-  // Se nessuna delle tre finestre e' disponibile la riga non si disegna
-  // affatto: sarebbe "-- -- --", tre trattini che occupano una riga per dire
-  // che non si sa niente -- e la riga sopra lo dice gia', con "in raccolta".
-  bool qualcuno = false;
-  for (int k = 0; k < TEMP_DELTA_N; k++) if (isfinite(tDelta[k])) qualcuno = true;
-  if (qualcuno)
-  {
-    tela.setFont(&FreeSans9pt7b);
-    drawGrado(15, y + 112, 3);              // il cerchietto: 12..18
-    tela.setCursor(21, y + 122);
-    tela.print("C");                        // 13 px: arriva a 34
-
-    // Le tre voci passano da drawFila(), che si ferma alla prima che non entra:
-    // qui non succede mai -- il caso peggiore ("1h -10,5" tre volte) e' 218 px
-    // su 346 disponibili -- ma la riga resta corretta anche se un domani si
-    // aggiungesse una quarta finestra.
-    String voci[TEMP_DELTA_N];
-    for (int k = 0; k < TEMP_DELTA_N; k++)
-      voci[k] = String(TEMP_DELTA_ETI[k]) + " " + fmtDelta(tDelta[k], 1);
-    drawFila(voci, TEMP_DELTA_N, 42, y + 122, 388, 14);
-  }
+  // --- il grafico ---------------------------------------------------------
+  // Le y si prendono dall'ALTEZZA del blocco e non da offset fissi: con la
+  // pillola d'allarme il blocco si stringe di 24 px, e un offset fisso
+  // scriverebbe l'asse sopra la testata del nodo seguente. Le x invece sono
+  // fisse e verificate: 48 lascia posto alle etichette, 388 e' il limite oltre
+  // il quale c'e' la cornice di plastica.
+  drawGrafico24h(indice, 48, y + 82, 388, y + h - 22, y + h - 6);
 }
 
-// Qui finiva, fino a v24, una riga con rugiada, min/max, delta a 3 ore,
-// umidita' assoluta e percepiti. Era troppa roba: otto numeri per nodo in 116
-// px si leggono uno per volta, cioe' non si leggono. Ora quei valori stanno
-// nella pagina DETTAGLIO, che ne ha 300 di px e li puo' incolonnare.
-//
-// E' la regola gia' scritta per la fascia del messaggio e per il grafico: su
-// e-ink il tempo e' la dimensione in piu', e per vedere tutto c'e' la
-// rotazione -- pagine intere e leggibili invece di una compressa.
-
-// --- blocco COMPATTO: da tre nodi in su -----------------------------------
-static void drawNodoCompatto(const RemoteNode& n, int16_t y)
+// --- blocco COMPATTO: da tre nodi in su, o quando il grafico non ci sta ----
+// Niente curva: sotto NODI_H_GRAFICO l'area utile scende sotto i 30 px, e una
+// curva alta cosi' non si legge da tre metri. Restano i numeri e la riga delle
+// variazioni, che e' l'unica cosa che dice DOVE STA ANDANDO la temperatura
+// senza guardare un andamento. E' la regola gia' scritta per la rugiada e per
+// min/max: il pannello SCEGLIE cosa mostrare, non comprime tutto.
+static void drawNodoCompatto(const RemoteNode& n, int16_t y, int16_t h, int indice)
 {
-  const int16_t W = tela.width();
-  drawTestataNodo(n, y, 23);
+  drawTestataNodo(n, y, 20);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
-    tela.setCursor(14, y + 38);
+    tela.setCursor(14, y + 40);
     tela.print("in attesa del primo dato");
     return;
   }
 
   if (isfinite(n.value[0])) {
+    tela.drawBitmap(10, y + 25, IC_TERMOMETRO, IC_TERMOMETRO_W, IC_TERMOMETRO_H,
+                    GxEPD_BLACK);
     tela.setFont(&FreeSansBold18pt7b);
-    tela.setCursor(14, y + 45);
+    tela.setCursor(36, y + 46);
     tela.print(fmtNum(n.value[0], 1));
     int16_t bx, by; uint16_t bw, bh;
-    tela.getTextBounds(fmtNum(n.value[0], 1), 14, y + 45, &bx, &by, &bw, &bh);
-    const int16_t xu = 14 + (int16_t)bw + 6;
-    drawGrado(xu + 2, y + 27, 3);
-    tela.setFont(&FreeSansBold9pt7b);
-    tela.setCursor(xu + 8, y + 45);
+    tela.getTextBounds(fmtNum(n.value[0], 1), 36, y + 46, &bx, &by, &bw, &bh);
+    const int16_t xu = 36 + (int16_t)bw + 6;
+    drawGrado(xu + 3, y + 29, 3);
+    tela.setFont(&FreeSansBold12pt7b);
+    tela.setCursor(xu + 9, y + 46);
     tela.print("C");
   }
-
-  drawFrecciaTrend(150, y + 39, n.trend);
-  if (isfinite(n.value[1]))
-    tela.drawBitmap(190, y + 22, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
-  drawValori(n, y + 34);
-
-  // Con tre o quattro nodi resta una riga sola per nodo: ci va la rugiada, che
-  // fra tutti i derivati e' quello che si legge da solo. Il resto sta nella
-  // pagina web -- il pannello sceglie, non riassume.
-  const float td = meteo_dewpoint_c(n.value[0], n.value[1]);
-  if (isfinite(td)) {
+  if (isfinite(n.value[1])) {
+    tela.drawBitmap(150, y + 26, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
+    tela.setFont(&FreeSansBold12pt7b);
+    tela.setCursor(176, y + 46);
+    tela.print(fmtNum(n.value[1], 0) + "%");
+  }
+  if (isfinite(n.value[2])) {
     tela.setFont(&FreeSans9pt7b);
-    drawRight("rugiada " + fmtNum(td, 1), W - 12, y + 50);
+    drawRight("hPa", 388, y + 46);
+    tela.setFont(&FreeSansBold12pt7b);
+    drawRight(fmtNum(n.value[2], 1), 388 - 36, y + 46);
+  }
+
+  // La riga delle variazioni si appoggia al FONDO del blocco: cosi' il bianco
+  // che resta sta in mezzo, dove separa, e non sotto, dove si sommerebbe a
+  // quello del nodo seguente.
+  float tMin, tMax, tDelta[TEMP_DELTA_N];
+  statTemp(indice, &tMin, &tMax, tDelta);
+  drawDeltaTemp(tDelta, y + h - 6, 300);
+  if (isfinite(n.delta3h)) {
+    tela.setFont(&FreeSans9pt7b);
+    drawRight(fmtDelta(n.delta3h, 1) + "/3h", 388, y + h - 6);
+    drawFrecciaTrend(300, y + h - 11, n.trend);
   }
 }
 
@@ -1504,7 +1580,14 @@ static void screenNodi(bool full)
     //     resto: e' l'unica cosa che cambia il layout, e deve deciderla una
     //     riga sola, non ogni blocco per conto suo.
     const Message* msgFascia = pages_fascia() ? msg_active(time(nullptr)) : nullptr;
-    const int16_t  yBot      = msgFascia ? NODI_BOT_FASCIA : NODI_BOT;
+
+    // L'allarme si decide QUI, prima di tutto il resto, perche' quando c'e' si
+    // prende 24 px e cambia l'altezza dei blocchi -- e quindi anche quale
+    // layout si usa. Deciderlo in fondo, dopo aver disegnato, vorrebbe dire
+    // scrivere la pillola sopra il grafico dell'ultimo nodo.
+    const String  allarme = allarmeCorrente();
+    const int16_t yBot    = (msgFascia ? NODI_BOT_FASCIA : NODI_BOT)
+                            - (allarme.length() ? ALLARME_H : 0);
 
     // --- corpo ---
     const int n = remote_count();
@@ -1524,8 +1607,8 @@ static void screenNodi(bool full)
     else
     {
       const int quanti  = (n < NODI_VISIBILI) ? n : NODI_VISIBILI;
-      const bool comodo = nodiLayoutComodo(quanti, msgFascia);
-      const int16_t h   = (yBot - NODI_TOP) / quanti;
+      const bool comodo = nodiLayoutComodo(quanti, msgFascia, allarme.length() > 0);
+      const int16_t h   = nodiAltezzaBlocco(quanti, msgFascia, allarme.length() > 0);
 
       for (int i = 0; i < quanti; i++)
       {
@@ -1537,8 +1620,8 @@ static void screenNodi(bool full)
         // l'anello delle 24 h. E' una lettura immediata, consumata dentro
         // questo giro: non e' lo stesso caso di s_ritardo, che era stato che
         // SOPRAVVIVE fra una chiamata e l'altra e per questo va tenuto per MAC.
-        if (comodo) drawNodoComodo(nodo, y, i);
-        else        drawNodoCompatto(nodo, y);
+        if (comodo) drawNodoComodo(nodo, y, h, i);
+        else        drawNodoCompatto(nodo, y, h, i);
 
         // Niente separatore fra un nodo e l'altro: ogni blocco si apre con la
         // sua testata, che porta gia' il filetto sotto il nome. Due separatori
@@ -1604,137 +1687,12 @@ static void screenNodi(bool full)
       }
     }
 
-    // --- piede ---
-    tela.drawFastHLine(0, NODI_BOT + 2, W, GxEPD_BLACK);
-    tela.setFont(&FreeSans9pt7b);
-
-    int muti = 0;
-    for (int i = 0; i < n; i++) {
-      RemoteNode nodo;
-      // hasData nel conto, da v38: `online` e' falso anche per un nodo che non
-      // ha ANCORA parlato, quindi dopo ogni riavvio dell'hub il piede scriveva
-      // "2 muto" mentre il corpo della pagina diceva correttamente "in attesa
-      // del primo dato" -- la stessa pagina si contraddiceva, e l'unico allarme
-      // che questa rete ha suonava a vuoto per qualche minuto ad ogni OTA.
-      if (remote_get(i, &nodo) && nodo.hasData && !nodo.online) muti++;
-    }
-    // --- prima si decide COSA va a destra, poi quanto spazio resta a sinistra.
-    //
-    // L'ordine e' quello dell'urgenza: cosa sta succedendo adesso batte quanto
-    // spazio c'e' sulla card.
-    //
-    // Fino a v38 la riga di sinistra si regolava su una riserva FISSA di 96 px,
-    // che e' la larghezza esatta di "SD 14,6 GB" -- cioe' zero margine, e sul
-    // vetro si leggeva "agg. ~11:09SD 14,6 GB", attaccati. Gli altri tre casi
-    // stavano molto peggio: "SD NON MONTATA" e' 163 px, quindi l'avviso piu'
-    // importante che questo pannello sappia dare finiva SOTTO il piede, di 65
-    // px. Il guasto piu' silenzioso della scheda annunciato da una scritta
-    // illeggibile: la riserva a occhio si paga sempre nel caso peggiore.
-    String destra;
-    bool   destraNegativo = false;
-    if (remote_pairing_active()) {
-      const uint32_t r = remote_pairing_remaining_s();
-      char buf[24];
-      snprintf(buf, sizeof(buf), "ASSOCIAZIONE %lu:%02lu",
-               (unsigned long)(r / 60), (unsigned long)(r % 60));
-      destra = buf;
-    }
-    else if (!remote_ready()) {
-      destra = "ESP-NOW NON ATTIVO";
-    }
-    else if (!sd_mounted()) {
-      // In negativo: senza card i DATA non li registra nessuno, ed e' il
-      // guasto piu' silenzioso che questa scheda possa avere - tutto il resto
-      // continua a funzionare come se niente fosse.
-      destra         = "SD NON MONTATA";
-      destraNegativo = true;
-    }
-    else {
-      // In GB e non in MB: "14,9 GB" si legge meglio di "14900 MB" e occupa
-      // meno, che in questo piede e' diventato il vincolo.
-      // fmtNum() e non snprintf: mette la VIRGOLA decimale come tutto il
-      // resto della pagina. Con "%.1f" usciva "14.6 GB" accanto a "27,4 C",
-      // due convenzioni diverse a tre centimetri di distanza.
-      destra = "SD " + fmtNum(sd_free_mb() / 1024.0f, 1) + " GB";
-    }
-
-    int16_t dbx, dby; uint16_t dbw, dbh;
-    tela.getTextBounds(destra, 0, 0, &dbx, &dby, &dbw, &dbh);
-    const int16_t xDestra = W - (destraNegativo ? 16 : 12);   // bordo destro
-    // 12 px di respiro fra le due righe: sotto quella soglia si leggono come
-    // una parola sola, che e' il difetto appena tolto.
-    const int16_t limiteSx = xDestra - (int16_t)dbw - (destraNegativo ? 6 : 0) - 12;
-
-    // --- la riga di sinistra, in tre versioni: si prende la prima che ci sta.
-    // L'ordine E' la priorita', come in drawFila(): si sacrifica l'ornamento,
-    // mai il dato. L'ora se ne va per prima (la si legge nella web UI), poi
-    // l'IP -- che con la card smontata interessa molto meno del perche'.
-    // Il conteggio si scrive solo quando DICE qualcosa. Con due nodi in
-    // elenco e due blocchi disegnati qui sopra, "2 nodi" e' la stessa
-    // ridondanza per cui in v36 e' sparita l'intestazione "STAZIONE METEO":
-    // occupa spazio per confermare cio' che si sta gia' guardando. Se invece
-    // qualcuno tace, o non c'e' stato posto per tutti, allora il numero e'
-    // l'unico posto dove quell'informazione esiste e va scritto.
-    //
-    // I 44 px risparmiati sono esattamente quelli che servono all'ora
-    // dell'ultimo aggiornamento, che altrimenti non ci sarebbe entrata.
-    String base;
-    if (muti > 0 || n > NODI_VISIBILI) {
-      base = String(n) + (n == 1 ? " nodo" : " nodi");
-      if (muti > 0)          base += String(", ") + muti + " muto";
-      if (n > NODI_VISIBILI) base += String(" (+") + (n - NODI_VISIBILI) + " non mostrati)";
-      base += "   ";
-    }
-
-    // La spaziatura la porta gia' `base` (che finisce con tre spazi quando c'e'
-    // qualcosa): senza questo, con il conteggio taciuto la riga partirebbe con
-    // tre spazi vuoti e l'IP risulterebbe scostato dal margine rispetto a tutte
-    // le altre righe della pagina.
-    const String conIp = base + (net_isConnected()
-                                 ? WiFi.localIP().toString()
-                                 : String("WiFi assente"));
-    String conOra = conIp;
-    {
-      char ora[8] = "";
-      if (rtctime_format(rtctime_now(), "%H:%M", ora, sizeof(ora)))
-        conOra = conIp + "   agg. " + (rtctime_isSynced() ? "" : "~") + ora;
-    }
-
-    // L'ultimo gradino tiene SOLO l'allarme: con la card smontata e otto nodi
-    // di cui due muti, la riga completa non entra accanto a "SD NON MONTATA"
-    // (163 px) -- e in quel caso l'IP e il totale dei nodi valgono meno del
-    // fatto che due tacciono. Si scende fin qui solo quando c'e' un allarme:
-    // nel caso normale `base` e' vuota e la riga con IP e ora entra sempre.
-    String corta;
-    if (muti > 0)               corta = String(muti) + " muto";
-    else if (n > NODI_VISIBILI) corta = String("+") + (n - NODI_VISIBILI) + " non mostrati";
-
-    String baseSola = base;
-    baseSola.trim();                           // via i tre spazi di giunzione
-
-    String piede = corta;                      // l'ultima spiaggia
-    const String candidati[] = { conOra, conIp, baseSola, corta };
-    for (int i = 0; i < 4; i++) {
-      int16_t bx, by; uint16_t bw, bh;
-      tela.getTextBounds(candidati[i], 0, 0, &bx, &by, &bw, &bh);
-      if (12 + (int16_t)bw <= limiteSx) { piede = candidati[i]; break; }
-    }
-
-    tela.setCursor(12, 288);
-    tela.print(piede);
-
-    if (destraNegativo) {
-      // Il riquadro si dimensiona sul testo misurato, non su un 118 fisso: un
-      // avviso piu' lungo sporgerebbe dal nero e si leggerebbe meta' bianco su
-      // nero e meta' nero su bianco.
-      tela.fillRect(xDestra - (int16_t)dbw - 6, 274, (int16_t)dbw + 12, 18, GxEPD_BLACK);
-      tela.setTextColor(GxEPD_WHITE);
-      drawRight(destra, xDestra, 288);
-      tela.setTextColor(GxEPD_BLACK);
-    }
-    else {
-      drawRight(destra, xDestra, 288);
-    }
+    // --- l'allarme, se c'e' -------------------------------------------
+    // Qui, fino alla v58, c'era il piede: IP, ora dell'ultimo aggiornamento e
+    // spazio libero sulla card, 28 px occupati SEMPRE. Quei pixel ora sono del
+    // grafico, e di quel piede resta solo cio' che era un avviso -- vedi
+    // allarmeCorrente() per il perche' e per cosa si e' perso.
+    if (allarme.length()) drawAllarme(allarme);
   }
   telaSulPannello(full);
 }
@@ -3006,6 +2964,14 @@ static uint32_t firmaStato()
   uint32_t f = 2166136261u;                       // FNV-1a
   firmaMescola(f, remote_count());
   firmaMescola(f, pages_fascia() ? 1 : 0);
+
+  // La pillola d'allarme entra QUI e non fra i valori (v59): e' esattamente
+  // "quello che deve comparire subito". Una card che smette di montare cambia
+  // la pagina in due modi -- la pillola e i blocchi che si stringono -- e
+  // aspettare la cadenza dei valori vorrebbe dire annunciare il guasto piu'
+  // silenzioso della scheda con cinque minuti di ritardo.
+  { const String a = allarmeCorrente();
+    for (int i = 0; i < (int)a.length(); i++) firmaMescola(f, (int32_t)(uint8_t)a[i]); }
   for (int i = 0; i < remote_count(); i++) {
     RemoteNode n;
     if (!remote_get(i, &n)) continue;
@@ -3039,7 +3005,7 @@ static uint32_t firmaValori()
   const Message* m = pages_fascia() ? msg_active(time(nullptr)) : nullptr;
   const int n      = remote_count();
   const int quanti = (n < NODI_VISIBILI) ? n : NODI_VISIBILI;
-  const bool comodo = nodiLayoutComodo(quanti, m);
+  const bool comodo = nodiLayoutComodo(quanti, m, allarmeCorrente().length() > 0);
 
   for (int i = 0; i < remote_count(); i++) {
     RemoteNode n;
@@ -3055,14 +3021,10 @@ static uint32_t firmaValori()
     firmaMescola(f, firmaComeScritto(n.value[2], 1));   // pressione: 1013,9
     firmaMescola(f, (int32_t)n.trend);
 
-    // La rugiada la disegna SOLO il blocco compatto, e ha un decimale: li'
-    // dipende dall'umidita' in modo continuo, quindi arrotondarla a intero
-    // nella firma perderebbe dei cambiamenti veri (41,2 e 41,7 danno lo stesso
-    // "41%" ma due rugiade diverse). Fuori dal compatto non si disegna, e
-    // metterla in firma sarebbe l'errore opposto: refresh per un numero che
-    // non c'e'.
-    if (!comodo)
-      firmaMescola(f, firmaComeScritto(meteo_dewpoint_c(n.value[0], n.value[1]), 1));
+    // La rugiada NON entra piu' (v59): il blocco compatto era l'unico a
+    // disegnarla e ora al suo posto c'e' la riga delle variazioni. Un valore
+    // in firma che nessuno disegna e' l'errore speculare a uno disegnato che
+    // manca: refresh completi da 2,2 s per un numero che non si vede.
 
     // Anche min, max e variazione a 3 ore, da v38: sono disegnati, quindi se
     // cambiano la pagina e' cambiata. Senza, il pannello resterebbe fermo
@@ -3073,19 +3035,33 @@ static uint32_t firmaValori()
     // Nel compatto non ci sono: stessa regola della rugiada, al contrario.
     //
     // Le tre variazioni della TEMPERATURA entrano da v58, per la stessa
-    // ragione: sono disegnate. Il conto e' stato fatto prima di scriverle,
-    // rigiocando i CSV veri del 4-6 settembre con tools/refresh_simula.py:
-    // 277 refresh al giorno diventano 279, su un tetto di 288 che e' la
-    // cadenza dei nodi. Due al giorno, non uno in piu' per pacchetto: il capo
-    // nuovo del delta e' la temperatura di adesso, che era gia' in firma, e la
-    // firma cambiava comunque quasi sempre per la pressione.
+    // ragione: sono disegnate. Da v59 le disegnano ENTRAMBI i layout, quindi
+    // stanno in firma sempre. Il conto e' stato fatto prima di scriverle,
+    // rigiocando i CSV veri con tools/refresh_simula.py: 277 refresh al giorno
+    // diventano 279, su un tetto di 288 che e' la cadenza dei nodi.
+    float mn, mx, dl[TEMP_DELTA_N];
+    statTemp(i, &mn, &mx, dl);
+    firmaMescola(f, firmaComeScritto(n.delta3h, 1));
+    for (int k = 0; k < TEMP_DELTA_N; k++) firmaMescola(f, firmaComeScritto(dl[k], 1));
+
+    // E il GRAFICO, che c'e' solo nel blocco comodo (v59). Non basta il minimo
+    // e il massimo: la curva cambia anche quando i due estremi restano gli
+    // stessi -- una gobba che si sposta e' un disegno diverso -- quindi entrano
+    // tutte e 48 le celle. Ci entra anche l'ora dell'ultimo slot, perche' ogni
+    // mezz'ora la finestra scorre e con lei si spostano le tacche dell'asse:
+    // senza, il pannello mostrerebbe un asse fermo sotto una curva che scorre.
+    //
+    // Costo misurato, non stimato: rigiocando i CSV veri con
+    // tools/refresh_simula.py, 277 refresh al giorno diventano 279 -- due --
+    // su un tetto di 288 che e' la cadenza dei nodi.
     if (comodo) {
-      float mn, mx, dl[TEMP_DELTA_N];
-      statTemp(i, &mn, &mx, dl);
       firmaMescola(f, firmaComeScritto(mn, 1));
       firmaMescola(f, firmaComeScritto(mx, 1));
-      firmaMescola(f, firmaComeScritto(n.delta3h, 1));
-      for (int k = 0; k < TEMP_DELTA_N; k++) firmaMescola(f, firmaComeScritto(dl[k], 1));
+      static int16_t serie[REMOTE_TEMP_SLOTS];
+      time_t ts = 0;
+      const int k = remote_temp_history(i, serie, REMOTE_TEMP_SLOTS, &ts);
+      for (int j = 0; j < k; j++) firmaMescola(f, serie[j]);
+      firmaMescola(f, (int32_t)(ts / (time_t)1800));
     }
   }
   if (m) for (const char* c = m->testo; *c; c++) firmaMescola(f, (int32_t)(uint8_t)*c);

@@ -111,7 +111,8 @@ def anello_delta(anello, ts, slot_indietro):
     return anello[ancora] - vecchio       # in decimi, come firmaComeScritto(v,1)
 
 
-def simula(nodi, ore=24, hum_dec=0, con_minmax=True, con_delta_t=True):
+def simula(nodi, ore=24, hum_dec=0, con_minmax=True, con_delta_t=True,
+           con_grafico=False):
     """(refresh, eventi, cambi per componente) nelle ultime `ore`."""
     eventi = sorted((r[0], nome, r) for nome, righe in nodi.items() for r in righe)
     if not eventi:
@@ -147,6 +148,14 @@ def simula(nodi, ore=24, hum_dec=0, con_minmax=True, con_delta_t=True):
             stato += (mn, mx, d3)
         if con_delta_t:
             stato += dT
+        if con_grafico:
+            # La CURVA, cella per cella, piu' lo slot dell'ultimo campione: e'
+            # cio' che la v59 mette in firma, e cambia anche quando i valori di
+            # adesso non cambiano, perche' la finestra scorre e con lei le
+            # tacche dell'asse.
+            ultimo = ts // TH_SLOT_S
+            stato += (tuple(anelli[nome].get(ultimo - 47 + i)
+                            for i in range(TH_SLOTS)), ultimo)
 
         prec = stato_nodo.get(nome)
         if prec is not None:
@@ -183,6 +192,8 @@ def main(cartella):
         ("v40   umidita' a 0,1, con min/max",    dict(hum_dec=1, con_minmax=True,  con_delta_t=False)),
         ("v41   umidita' com'e' SCRITTA (0 dec)", dict(hum_dec=0, con_minmax=True,  con_delta_t=False)),
         ("v58   piu' le variazioni di T a 1-2-3 h", dict(hum_dec=0, con_minmax=True, con_delta_t=True)),
+        ("v59   piu' il grafico delle 24 h",        dict(hum_dec=0, con_minmax=True, con_delta_t=True,
+                                                        con_grafico=True)),
     )
     for etichetta, kw in varianti:
         r, ev, _ = simula(nodi, **kw)

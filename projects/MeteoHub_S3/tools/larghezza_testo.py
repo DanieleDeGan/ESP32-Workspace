@@ -3,10 +3,8 @@
 """Quanto e' largo un testo sul pannello, prima di disegnarlo.
 
     python tools/larghezza_testo.py FreeSans9pt7b "-10,5"
-    python tools/larghezza_testo.py --riga3          (riga min/max del blocco nodo)
-    python tools/larghezza_testo.py --riga4          (riga delle variazioni, v58)
-    python tools/larghezza_testo.py --testata        (il nome del nodo, v58)
-    python tools/larghezza_testo.py --piede          (le due meta del piede)
+    python tools/larghezza_testo.py --righe          (le due righe di testo del blocco)
+    python tools/larghezza_testo.py --testata        (il nome del nodo e il badge MUTO)
 
 Legge i .h veri dei font Adafruit GFX e somma gli xAdvance dei glifi, che e'
 esattamente quello che fa Adafruit_GFX avanzando il cursore -- quindi il numero
@@ -59,162 +57,115 @@ def larghezza(font, s, _cache={}):
     return tot
 
 
-def riga3():
-    """Le prove del caso peggiore per la terza riga del blocco comodo (v38).
+def righe():
+    """Le due righe di testo del blocco nodo (v59).
 
     Le coordinate sono quelle scritte in drawNodoComodo(): se si toccano li',
     si toccano anche qui, o questa verifica smette di dire la verita'.
+
+      riga A   36 [temperatura 18pt] +6 [grado] +9 ["C"]   176 [umidita' 12pt]
+               ... e a destra la pressione, che finisce a 388-36, piu' "hPa"
+      riga B   21 ["C"]  42 [tre variazioni, drawFila si ferma a 300]
+               ... la freccia sta a 300, il delta della pressione finisce a 388
     """
-    F = "FreeSans9pt7b"
-    prove = [
-        # (testo, x di partenza, x oltre il quale invade qualcos'altro, cosa)
-        ("24h",           12,  46, "il minimo"),
-        ("-10,5",         46,  92, "la barra del giorno"),
-        ("in raccolta",   46, 274, "la freccia del trend"),
-        ("-10,5",        224, 274, "la freccia del trend"),
-    ]
     ko = 0
-    for testo, x, limite, chi in prove:
-        w = larghezza(F, testo)
-        fine = x + w
-        esito = "ok " if fine <= limite else "SFORA"
-        if fine > limite:
+    G18, G12, N9 = "FreeSansBold18pt7b", "FreeSansBold12pt7b", "FreeSans9pt7b"
+
+    print("--- riga A: temperatura, umidita', pressione ---")
+    # Il caso peggiore non e' quello di oggi ma l'inverno: "-10,5" e' molto piu'
+    # largo di "21,4", e la "C" col cerchietto gli va dietro.
+    for t in ("27,5", "-10,5", "-9,9"):
+        fine = 36 + larghezza(G18, t) + 6 + 8 + larghezza(G12, "C")
+        esito = "ok " if fine <= 150 else "SFORA (invade l'icona della goccia)"
+        print('  temperatura "%-6s" finisce a %3d  (la goccia sta a 150)  %s'
+              % (t, fine, esito))
+        if fine > 150:
             ko += 1
-        print("%-14s x=%3d  w=%3d  fine=%3d  (limite %3d, poi c'e' %s)  %s"
-              % ('"' + testo + '"', x, w, fine, limite, chi, esito))
 
-    # Il delta e' allineato a DESTRA a 388: si controlla da dove comincia.
-    for testo in ("+1,5/3h", "+12,3/3h", "-12,3/3h"):
-        w = larghezza(F, testo)
-        inizio = 388 - w
-        esito = "ok " if inizio >= 296 else "SFORA"
-        if inizio < 296:
+    for rh in ("48%", "100%"):
+        fine = 176 + larghezza(G12, rh)
+        # a destra: "hPa" (32 px) piu' la pressione, che comincia a 388-36-w
+        inizio = 388 - 36 - larghezza(G12, "1016,9")
+        esito = "ok " if fine + 12 <= inizio else "SFORA (tocca la pressione)"
+        print('  umidita\'    "%-6s" finisce a %3d  (la pressione comincia a %d)  %s'
+              % (rh, fine, inizio, esito))
+        if fine + 12 > inizio:
             ko += 1
-        print("%-14s w=%3d  inizia a %3d  (la freccia arriva a 296)      %s"
-              % ('"' + testo + '"', w, inizio, esito))
 
-    # Controprova: la variante SCARTATA. Deve sforare -- e' il motivo per cui
-    # sul pannello si legge "+1,5/3h" e non "+1,5 hPa/3h", e senza questa riga
-    # fra sei mesi qualcuno rimetterebbe l'unita' "che ci sta benissimo".
-    w = larghezza(F, "+12,3 hPa/3h")
-    print('%-14s w=%3d  inizia a %3d  --> scartata apposta, invade la freccia'
-          % ('"+12,3 hPa/3h"', w, 388 - w))
-    if 388 - w >= 296:
-        print("  ATTENZIONE: non sfora piu'. Se il layout e' cambiato, "
-              "rileggere questa prova invece di fidarsi.")
-        ko += 1
-    return ko
-
-
-def riga4():
-    """La quarta riga del blocco comodo: le variazioni a 1, 2 e 3 ore (v58).
-
-    Le coordinate sono quelle scritte in drawNodoComodo(): prefisso "C" a 21
-    (col cerchietto del grado a 12..18), le tre voci da 42 con 14 px di stacco,
-    e il bordo destro del blocco a 388.
-    """
-    F = "FreeSans9pt7b"
-    ko = 0
-
-    w = larghezza(F, "C")
-    print('prefisso "C"    x= 21  w=%3d  fine=%3d  (le voci partono da 42)  %s'
-          % (w, 21 + w, "ok " if 21 + w <= 42 else "SFORA"))
-    if 21 + w > 42:
+    # La riserva per l'unita': con 30 px il nove di "1016,9" toccava l'acca.
+    print('  "hPa" e\' largo %d px: la riserva e\' 36, quindi restano %d px di stacco'
+          % (larghezza(N9, "hPa"), 36 - larghezza(N9, "hPa")))
+    if 36 - larghezza(N9, "hPa") < 3:
+        print("    ATTENZIONE: meno di 3 px, il numero tocca l'unita'")
         ko += 1
 
-    # Il caso peggiore non e' quello di oggi: "-10,5" e' l'inverno, ed e' la
-    # stessa trappola che in v38 aveva fatto finire il minimo sotto la barra.
+    print("")
+    print("--- riga B: le tre variazioni, poi la freccia ---")
+    print('  prefisso "C" da 21: finisce a %d  (le voci partono da 42)'
+          % (21 + larghezza(N9, "C")))
     for peggiore in ("+0,2", "-10,5"):
         x = 42
         for eti in ("1h", "2h", "3h"):
-            x += larghezza(F, eti + " " + peggiore) + 14
+            x += larghezza(N9, eti + " " + peggiore) + 14
         fine = x - 14
-        esito = "ok " if fine <= 388 else "SFORA"
-        print('tre voci "%-5s"  da 42  fine=%3d  (il blocco finisce a 388)  %s'
+        esito = "ok " if fine <= 300 else "TRONCATA da drawFila"
+        print('  tre voci "%-5s" finiscono a %3d  (drawFila si ferma a 300)  %s'
               % (peggiore, fine, esito))
-        if fine > 388:
+        if fine > 300:
+            ko += 1
+    for d in ("+1,5/3h", "+12,3/3h", "-12,3/3h"):
+        inizio = 388 - larghezza(N9, d)
+        esito = "ok " if inizio >= 313 else "SFORA (sotto la freccia)"
+        print('  delta pressione "%-9s" comincia a %3d  (la freccia arriva a 311)  %s'
+              % (d, inizio, esito))
+        if inizio < 313:
+            ko += 1
+
+    print("")
+    print("--- le etichette del grafico, allineate a destra a 43 ---")
+    for v in ("27,5", "-10,5", "-9,9"):
+        inizio = 43 - larghezza(N9, v)
+        esito = "ok " if inizio >= 2 else "esce dal bordo sinistro"
+        print('  "%-6s" comincia a %3d  %s' % (v, inizio, esito))
+        if inizio < 2:
             ko += 1
     return ko
 
 
 def testata():
-    """Il nome del nodo in 9pt grassetto (v58), accanto al badge MUTO.
+    """Il nome del nodo e il badge MUTO (v59).
 
-    Il badge sta a x=336 (W-64) ed e' largo 54: il nome parte da 10 e non deve
-    arrivarci sotto. In 12pt -- com'era fino a v57 -- un nome lungo ci finiva.
+    Il badge sta a 388-83 = 305 ed e' largo 71: il nome parte da 10 e non deve
+    arrivarci sotto. E la scritta dentro il badge non deve uscire DAL BADGE --
+    e' il difetto trovato in v59: 54 px di riquadro per 55 di testo, cioe' la O
+    disegnata in bianco su bianco. Sul pannello si leggeva "MUT".
     """
     ko = 0
-    nomi = ["MeteoEsp32", "Meteo-7EAE0C", "MeteoNodeLungo12", "NodoCantinaNord1"]
-    for font, limite in (("FreeSansBold12pt7b", 336), ("FreeSansBold9pt7b", 336)):
-        print("--- %s ---" % font)
-        for nome in nomi:
-            w = larghezza(font, nome)
-            fine = 10 + w
-            esito = "ok " if fine <= limite else "sotto il badge MUTO"
-            print('  %-18s w=%3d  fine=%3d  %s' % ('"' + nome + '"', w, fine, esito))
-            if fine > limite and font.endswith("9pt7b"):
-                ko += 1
+    w = larghezza("FreeSansBold9pt7b", "MUTO")
+    print('"MUTO" e\' largo %d px; il riquadro e\' 71 con il testo a +8, quindi'
+          % w)
+    print("  finisce a %d su 71: %s" % (8 + w, "ok" if 8 + w <= 71 else "ESCE DAL NERO"))
+    if 8 + w > 71:
+        ko += 1
+    print("  (fino alla v58 il riquadro era 54: la O finiva fuori, invisibile)")
     print("")
-    print("Il 12pt e' li' come CONTROPROVA: e' quello che c'era fino a v57.")
-    return ko
 
-
-def piede():
-    """Il piede della pagina nodi: sinistra + destra sulla stessa riga (v39).
-
-    Da v39 la riserva non e' piu' un numero fisso -- si misura la stringa di
-    destra e la sinistra si accorcia finche' ci sta. Qui si verifica che la
-    piu' lunga delle sinistre entri accanto alla piu' larga delle destre.
-    """
-    F = "FreeSans9pt7b"
-    destre = ["SD 14,6 GB", "SD NON MONTATA", "ESP-NOW NON ATTIVO",
-              "ASSOCIAZIONE 2:00"]
-    # Da v39 il conteggio si scrive solo quando dice qualcosa (nodi muti o non
-    # mostrati): nel caso normale la riga comincia dall'IP.
-    sinistre = [
-        "192.168.1.72   agg. ~11:09",          # il caso normale, tutto intero
-        "192.168.1.12",
-        "WiFi assente",
-    ]
-    sinistre_allarme = [
-        "8 nodi, 2 muto (+4 non mostrati)   192.168.1.72   agg. ~11:09",
-        "8 nodi, 2 muto (+4 non mostrati)   192.168.1.12",
-        "8 nodi, 2 muto (+4 non mostrati)",
-        "2 muto",                              # l'ultimo gradino: solo l'allarme
-    ]
-    ko = 0
-    for etichetta, gruppo in (("normale", sinistre), ("allarme", sinistre_allarme)):
-        print("--- riga di sinistra, caso %s ---" % etichetta)
-        for d in destre:
-            dw = larghezza(F, d)
-            negativo = (d == "SD NON MONTATA")
-            xDestra = 400 - (16 if negativo else 12)
-            limite = xDestra - dw - (6 if negativo else 0) - 12
-            scelta = None
-            for s in gruppo:
-                if 12 + larghezza(F, s) <= limite:
-                    scelta = s
-                    break
-            print('  destra %-20s (%3d px, limite sx %3d)  ->  %s'
-                  % ('"' + d + '"', dw, limite,
-                     ('"' + scelta + '"') if scelta else "NESSUNA sinistra ci sta"))
-            if scelta is None:
-                ko += 1
-        print("")
-    print("Regola: si prende la prima riga di sinistra che entra, e l'ultima e'")
-    print("sempre corta abbastanza -- cosi' il piede non si sovrappone mai.")
+    nomi = ["MeteoEsp32", "Meteo-7EAE0C", "MeteoNodeLungo12", "NodoCantinaNord1"]
+    for nome in nomi:
+        fine = 10 + larghezza("FreeSansBold9pt7b", nome)
+        esito = "ok " if fine <= 305 else "sotto il badge MUTO"
+        print('  %-18s finisce a %3d  (il badge comincia a 305)  %s'
+              % ('"' + nome + '"', fine, esito))
+        if fine > 305:
+            ko += 1
     return ko
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 2 and sys.argv[1] == "--riga3":
-        sys.exit(1 if riga3() else 0)
-    if len(sys.argv) == 2 and sys.argv[1] == "--riga4":
-        sys.exit(1 if riga4() else 0)
+    if len(sys.argv) == 2 and sys.argv[1] == "--righe":
+        sys.exit(1 if righe() else 0)
     if len(sys.argv) == 2 and sys.argv[1] == "--testata":
         sys.exit(1 if testata() else 0)
-    if len(sys.argv) == 2 and sys.argv[1] == "--piede":
-        sys.exit(1 if piede() else 0)
     if len(sys.argv) != 3:
         sys.exit(__doc__)
     print(larghezza(sys.argv[1], sys.argv[2]))
