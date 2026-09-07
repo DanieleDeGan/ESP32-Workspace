@@ -160,6 +160,22 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
       schermo, `corrente` descrive il modello delle pagine, che il file non lo
       conosce — sarebbe una risposta vera e fuorviante insieme. Per lo stesso
       motivo la badge «A SCHERMO» sparisce dall'elenco finché dura la notte.
+    - **E c'è la via di ritorno** (`v61`): `POST /api/pannello/silenzio/rientra`,
+      col pulsante «Rimetti l'immagine della notte» in `/pannello`, che compare
+      **solo dentro la fascia** (fuori la rotta risponde **409**, perché un
+      pulsante premibile che non fa niente è il difetto che `postJson()` serve a
+      evitare). Serve perché qualunque pagina guardata di notte si prende il
+      vetro fino al mattino — giusto così, chi l'ha chiesta la voleva — ma senza
+      ritorno diventa «ho sbirciato i nodi alle 23 e mi sono perso la foto per
+      tutta la notte». Fino alla `v60` l'unico modo era cambiare la tendina
+      della pagina del silenzio e rimetterla: **due scritture in NVS per
+      un'azione che non è un'impostazione**.
+      - **Non disegna niente**: azzera `s_inSilenzio` e lascia che il `loop()`
+        rientri dalla porta di sempre — stessa condizione, stesso sorteggio,
+        stesso conteggio dei refresh. Due strade per la stessa cosa, e la
+        seconda invecchia.
+      - Siccome il sorteggio evita l'ultima immagine, il pulsante serve anche a
+        **cambiarla** se quella di stanotte non piace: prima non c'era modo.
     - **Al mattino si ridisegna solo se sul vetro c'è ancora l'immagine**:
       `showPage()` incrementa un contatore e il risveglio lo confronta. Se
       durante la notte si è premuto BOOT o chiesta una pagina dal web, quella

@@ -1675,7 +1675,16 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
   <label>In quelle ore mostra</label>
   <select id="spag" style="flex:1"></select>
  </div>
+ <div class="riga" id="rrientro" hidden>
+  <label>Adesso</label>
+  <button id="brientro" style="flex:1">Rimetti l'immagine della notte</button>
+ </div>
  <div class="esito" id="ss"></div>
+ <p class="muted" id="prientro" hidden>Qualunque pagina guardata durante le ore
+ di silenzio si prende il pannello fino al mattino &mdash; giusto cos&igrave;, chi
+ l'ha chiesta la voleva. Questo pulsante torna all'immagine, e siccome la
+ sorteggia di nuovo serve anche a <b>cambiarla</b> se quella di stanotte non
+ piace. Compare solo dentro la fascia.</p>
  <p class="muted">Con una sola pagina attiva non ruota: non c'&egrave; dove andare, e un
  cambio &egrave; sempre un refresh completo (~2,2 s, e lampeggia).</p>
  <p class="muted">&laquo;Fra tutte quelle sulla card&raquo; pesca nell'archivio
@@ -1942,6 +1951,13 @@ function render(d){
    esc(p.tipo+(p.param?(' — '+p.param):''))+'</option>').join('');
  if(scelta==null||scelta<0||scelta>=255) sp.value='-1';
  }
+ // Il pulsante del rientro c'e' solo quando ha senso: fuori dalla fascia la
+ // rotta risponde 409, e un pulsante premibile che non fa niente e' il difetto
+ // che postJson() serve a evitare. `hidden` da solo non basta se una classe
+ // imposta display (v54): qui la riga non ne ha, ma la regola resta.
+ E('rrientro').hidden = !d.sospeso;
+ E('prientro').hidden = !d.sospeso;
+
  E('fas').checked=d.fascia;
 
  box.querySelectorAll('[data-a]').forEach(c=>c.onchange=()=>
@@ -2110,6 +2126,7 @@ E('rot').onchange=()=>salvaRotazione(0);
 E('fas').onchange=()=>post('/api/pannello?fascia='+(E('fas').checked?1:0))
  .then(r=>r.json()).then(d=>{render(d);flash(E('sf'),'Salvato');post('/api/pannello/refresh');});
 E('spag').onchange=()=>salvaRotazione(0);
+E('brientro').onclick=()=>postJson('/api/pannello/silenzio/rientra','ss');
 E('sda').onchange=()=>salvaRotazione(800);
 E('sa').onchange=()=>salvaRotazione(800);
 E('brf').onclick=()=>post('/api/pannello/refresh')
@@ -2365,6 +2382,26 @@ static void handleApiPannelloVai() {
 
 // POST /api/pannello/refresh — completo sulla pagina corrente, per togliere
 // il ghosting senza aspettare il ciclo.
+// POST /api/pannello/silenzio/rientra -- rimette l'immagine della notte.
+//
+// Accoda e basta, come tutti gli handler che toccherebbero il display: un
+// disegno dentro un handler terrebbe fermo il WebServer, che e' sincrono, e con
+// lui l'OTA e il prelievo dei DATA dal driver ESP-NOW (che tiene solo l'ultimo
+// pacchetto). La richiesta accoda, il loop lavora.
+//
+// Fuori dalla fascia si risponde 409 invece di far finta: un pulsante che
+// risponde "ok" e non fa niente e' il difetto che postJson() serve a evitare.
+static void handleApiPannelloSilenzioRientra() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  if (!app_pannello_sospeso()) {
+    net_server().send(409, "text/plain",
+                      "non siamo nelle ore di silenzio: non c'e' dove rientrare");
+    return;
+  }
+  app_chiedi_rientro_silenzio();
+  net_server().send(200, "text/plain", "ok");
+}
+
 static void handleApiPannelloRefresh() {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
   app_chiedi_refresh();
@@ -2625,6 +2662,7 @@ static const Rotta ROTTE[] = {
   { HTTP_GET,  "/api/pannello/slot",    handleApiPannelloSlot,       "stato grezzo dei 16 slot: usato, tipo, attiva, param", "" },
   { HTTP_GET,  "/api/pannello/anteprima", handleApiPannelloAnteprima,  "i 15.000 byte che il pannello sta mostrando (formato .bin)", "" },
   { HTTP_POST, "/api/pannello/refresh", handleApiPannelloRefresh,    "ridisegna la pagina corrente (completo, ~2,2 s)", "" },
+  { HTTP_POST, "/api/pannello/silenzio/rientra", handleApiPannelloSilenzioRientra, "rimette l'immagine della notte (e ne sorteggia un'altra): serve dopo aver guardato una pagina durante le ore di silenzio. 409 fuori dalla fascia", "" },
   { HTTP_POST, "/api/pannello/aggiungi",handleApiPannelloAggiungi,   "aggiunge una pagina: immagine, grafico o dettaglio di un nodo", "param=NOME | tipo=grafico | tipo=dettaglio&param=NODO" },
   { HTTP_POST, "/api/pannello/rimuovi", handleApiPannelloRimuovi,    "toglie una pagina dall'elenco (lo slot 0 non si tocca)", "i=slot" },
   { HTTP_POST, "/api/pannello/sposta",  handleApiPannelloSposta,     "sposta una pagina di un posto nell'elenco", "i=slot, dir=-1|1" },

@@ -78,6 +78,10 @@ uint32_t app_refresh_evitati();
 // sono ~2,2 s: dentro un handler HTTP terrebbe fermo il server, l'OTA e il
 // prelievo dei DATA dei nodi dal driver ESP-NOW, che tiene solo l'ultimo.
 void app_chiedi_refresh();
+
+// Rimette l'immagine della notte: azzera lo stato del silenzio e lascia
+// rientrare il loop(). Vale solo dentro la fascia.
+void app_chiedi_rientro_silenzio();
 void app_chiedi_pagina(uint8_t indice);
 
 // Quanti giorni di riepilogo sono stati chiusi da quando la scheda e' accesa.

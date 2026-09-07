@@ -168,7 +168,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v60";
+static const char FW_VERSION[] = "v61";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -2113,6 +2113,7 @@ bool app_riepilogo_ricalcola(const char* nodo)
 // e' la stessa regola dei callback ESP-NOW — la richiesta accoda, il loop
 // lavora.
 static volatile bool    s_refreshChiesto = false;
+static volatile bool    s_rientroChiesto = false;   // v61: torna all'immagine della notte
 static volatile int16_t s_paginaChiesta  = -1;
 
 // L'anteprima: gli stessi byte che sono finiti sul vetro, nello stesso
@@ -2129,6 +2130,22 @@ const char* app_silenzio_immagine() { return s_silImgNome; }
 uint32_t app_refresh_evitati()     { return s_nodiInvariati; }
 
 void app_chiedi_refresh()          { s_refreshChiesto = true; }
+
+// Rimettere l'immagine della notte NON e' una configurazione, ed e' il motivo
+// per cui esiste (v61). Qualunque pagina guardata durante le ore di silenzio
+// -- dal web o col tasto BOOT -- si prende il vetro fino al mattino: e' il
+// comportamento giusto, perche' chi ha chiesto una pagina la vuole, ma senza
+// una via di ritorno diventa "ho sbirciato i nodi alle 23 e mi sono perso la
+// foto per tutta la notte".
+//
+// Fino alla v60 l'unico modo era cambiare la tendina della pagina del silenzio
+// e rimetterla: due scritture in NVS per un'azione che non e' un'impostazione.
+//
+// Qui non si disegna niente: si azzera lo stato e si lascia che il loop()
+// RIENTRI dalla stessa porta di sempre -- stessa condizione, stesso sorteggio,
+// stesso conteggio dei refresh. Duplicare il disegno vorrebbe dire due strade
+// per la stessa cosa, e la seconda invecchia.
+void app_chiedi_rientro_silenzio()  { s_rientroChiesto = true; }
 void app_chiedi_pagina(uint8_t i)  { s_paginaChiesta  = (int16_t)i; }
 
 // Chiamata da remote_loop() quando un nodo consegna un DATA. Gira nel contesto
@@ -3592,6 +3609,14 @@ void loop()
     const uint8_t silPag = pages_silenzio_pagina();
     const bool silenzio  = (silPag != PAG_SIL_NESSUNA) &&
                            rtctime_isSynced() && pages_in_silenzio(time(nullptr));
+
+    // La richiesta dal web: si finge di non essere mai entrati, e il rientro
+    // lo fa il ramo qui sotto. Vale solo DENTRO la fascia -- fuori, s_inSilenzio
+    // e' gia' falso e questo non fa niente, che e' la risposta giusta.
+    if (s_rientroChiesto) {
+      s_rientroChiesto = false;
+      s_inSilenzio     = false;
+    }
 
     if (silenzio && !s_inSilenzio) {
       s_inSilenzio    = true;
