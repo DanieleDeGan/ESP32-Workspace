@@ -18,6 +18,7 @@
 #include "web_ui.h"
 #include "net_ota.h"
 #include "remote_nodes.h"
+#include "meteo_calc.h"   // rugiada, percepiti, acqua nell'aria in /api/nodi
 #include <EspNowLink.h>    // Link_Hub_Unknown(): l'ascolto di /api/pairing/ascolto
 #include "forecast.h"
 #include "sd_logger.h"
@@ -363,6 +364,29 @@ static void handleApiNodi() {
     remote_temp_minmax(i, &tmn, &tmx);
     json += ",\"temp_min_24h\":"; appendJsonFloat(json, tmn, 2);
     json += ",\"temp_max_24h\":"; appendJsonFloat(json, tmx, 2);
+
+    // Le grandezze DERIVATE da T e RH (meteo_calc.h): rugiada, temperatura
+    // percepita, acqua nell'aria. Le disegna la pagina dettaglio del pannello,
+    // e da v59 escono anche di qui per la stessa ragione di temp_min_24h --
+    // il mock deve poter riprodurre quella pagina con gli STESSI numeri, e
+    // rifare le formule in Python vorrebbe dire due implementazioni che
+    // divergono al primo arrotondamento. Vale anche per chi si scrive una
+    // pagina propria: la formula sta in un posto solo, sull'hub.
+    //
+    // L'humidex e' null sotto i 20 gradi: li' non esiste, e uno zero sarebbe
+    // una temperatura percepita plausibile.
+    //
+    // E `hasData` PRIMA delle formule, non e' pedanteria: i valori non si
+    // persistono, quindi prima del primo DATA value[] vale ZERO -- e l'acqua
+    // nell'aria a 0 gradi con 0% di umidita' fa 0,0 g/m3, che e' un numero
+    // perfettamente plausibile. Mente in modo credibile, che e' peggio di una
+    // casella vuota. E' lo stesso schema della legenda del grafico, che
+    // scriveva "0,0 C" dopo ogni riavvio, e del NAN emesso come "nan".
+    const float tD = r.hasData ? r.value[0] : NAN;
+    const float hD = r.hasData ? r.value[1] : NAN;
+    json += ",\"rugiada\":";   appendJsonFloat(json, meteo_dewpoint_c(tD, hD), 2);
+    json += ",\"percepiti\":"; appendJsonFloat(json, meteo_humidex_c(tD, hD), 2);
+    json += ",\"acqua_gm3\":"; appendJsonFloat(json, meteo_umidita_assoluta_gm3(tD, hD), 2);
     json += '}';
   }
 

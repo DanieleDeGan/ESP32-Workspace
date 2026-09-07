@@ -31,7 +31,7 @@ CDC, deep sleep, OTA, scritture su SD, default NVS) `docs/Trappole-Hardware.md`.
 | `tools/controlla_piedi.py` | verifica che ogni pagina porti il piede di navigazione completo. Con `--host <ip>` controlla quelle che la **scheda** serve davvero e confronta `fw_caricata` col firmware che gira |
 | `tools/larghezza_testo.py` | quanto è largo un testo sul pannello **prima** di disegnarlo: somma gli `xAdvance` dei glifi nei `.h` veri dei font |
 | `tools/pannello_png.py` | scarica `/api/pannello/anteprima` e ne fa un PNG, senza dipendenze: il pannello si guarda da riga di comando |
-| `tools/pannello_mock.py` | **Adafruit_GFX rifatto in Python**: disegna una pagina del pannello senza la scheda, con i font e le icone veri. `--valida <ip>` lo confronta col vetro pixel per pixel |
+| `tools/pannello_mock.py` | **Adafruit_GFX rifatto in Python**: disegna una pagina del pannello senza la scheda, con i font e le icone veri. `--valida <ip>` e `--valida-dettaglio <ip>` lo confrontano col vetro pixel per pixel |
 | `tools/icone.py` | disegna le icone e le mostra a schermo per giudicarle; con `--c` genera `icone.h` |
 | `tools/refresh_simula.py` | quanti refresh farebbe il pannello, rigiocando i CSV veri dei nodi |
 | `tools/analisi.py` | cosa dicono davvero i CSV dei nodi: le analisi che a bordo non si possono fare |
@@ -407,15 +407,37 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     vicino, uno per volta. In `v24` quella riga è stata tolta e i valori sono passati qui,
     dove ci sono 300 px per incolonnarli. È la regola già scritta per la fascia
     del messaggio e per il grafico: su e-ink il tempo è la dimensione in più.
-  - **La riga `ultime 1-2-3 h`** (da `v58`) porta le tre variazioni della
-    temperatura, le stesse della pagina nodi, in una riga sola: `+0,2 / +0,5 /
-    +0,9`. Una riga e non tre perché qui le righe finiscono a `y=246`, dove
-    comincia il piede con la pressione, e da 116 con passo 26 ce ne stanno
-    **cinque in tutto** — rugiada, percepiti, acqua nell'aria, 24 ore e questa.
-    Tre righe separate avrebbero scritto sopra il filetto, che è il modo in cui
-    questo pannello sbaglia: senza dare errore. L'etichetta è corta apposta
-    (110 px): con `variazione 1h / 2h / 3h` (177 px) il valore nel caso
-    peggiore ci si sovrapponeva.
+  - **Rifatta in `v60` (2026-09-07), e la domanda era una sola**: *che cosa può
+    dire di un nodo, che la pagina nodi non può dire?* Fino alla `v59` era un
+    elenco di righe etichetta/valore — una tabella, non una pagina — e da quando
+    la pagina nodi ha il grafico mostrava **meno** cose di quella principale.
+    Le tre risposte sono le tre fasce del layout nuovo:
+    1. **la fiducia** (riga in alto): ora dell'ultimo pacchetto, cadenza
+       appresa, persi, batteria, riavvii. Dalla `v59`, tolto il piede, sul
+       vetro non c'era **un solo numero** che dicesse se un nodo sta bene — e
+       l'ora dell'ultimo pacchetto è ciò che distingue una curva ferma perché
+       fa caldo da una ferma perché il nodo tace. **Uno zero non si scrive**:
+       se non ci sono persi, quella voce non esiste.
+    2. **il significato** (riga sotto i numeri): rugiada, percepiti, acqua
+       nell'aria, su UNA riga e non tre — in colonna erano la tabella di prima.
+       Sotto i 20 gradi l'humidex non esiste e il suo posto lo prende l'acqua.
+    3. **la giornata**: la stessa curva della pagina nodi ma alta **98 px
+       invece di 40**, con il **cerchietto vuoto** sul minimo e sul massimo e
+       la loro **ora** sotto l'asse. È l'informazione che una curva alta può
+       portare e una bassa no: non solo quanto ha fatto, ma quando. Il
+       cerchietto è vuoto perché quello pieno è «adesso»: due segni uguali per
+       due cose diverse si leggono male.
+    - **In fondo, la frase della previsione**, che sul pannello non compariva
+      da nessuna parte: la pagina nodi ha la freccia e il numero, che dicono
+      quanto si muove il barometro, non che tempo farà. Accanto, il trend a
+      parole.
+    - **Se il nodo tace, lì non va la previsione ma da quanto tace**: una
+      previsione calcolata su numeri di tre ore fa non è una previsione.
+    - I numeri grandi stanno **negli stessi posti della pagina nodi** (stessa
+      icona, stesso allineamento, solo più grandi): chi passa da una pagina
+      all'altra deve ritrovarli, non cercarli.
+    - Le variazioni a 1-2-3 h **non ci sono più**: le dice la pagina nodi, e qui
+      la curva le mostra per esteso.
   - **Il nodo si indica per NOME, non per indice**: gli indici si spostano
     quando un nodo viene dimenticato, e la pagina mostrerebbe un altro nodo
     senza dirlo. Stessa ragione per cui i timer del ritardo si tengono per MAC.

@@ -168,7 +168,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v59";
+static const char FW_VERSION[] = "v60";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1232,6 +1232,28 @@ static void drawDeltaTemp(const float* d, int16_t yBase, int16_t xMax)
   drawFila(voci, TEMP_DELTA_N, 42, yBase, xMax, 14);
 }
 
+// "rugiada 15,6 °C" in corpo piccolo, col cerchietto disegnato al posto del
+// grado. Torna la x DOPO l'ultimo carattere, cosi' chi disegna una riga di
+// queste voci non deve rimisurarle: e' la stessa idea di drawFila(), per un
+// pezzo che ha un'unita' in mezzo.
+static int16_t drawGradiPiccoli(const char* etichetta, float v, int dec,
+                                int16_t x, int16_t yBase)
+{
+  tela.setFont(&FreeSans9pt7b);
+  tela.setCursor(x, yBase);
+  tela.print(etichetta);
+  const String s = fmtNum(v, dec);
+  tela.print(s);
+  int16_t bx, by; uint16_t bw, bh;
+  tela.getTextBounds(String(etichetta) + s, 0, 0, &bx, &by, &bw, &bh);
+  x += (int16_t)bw + 5;
+  drawGrado(x + 2, yBase - 9, 3);
+  tela.setCursor(x + 7, yBase);
+  tela.print("C");
+  tela.getTextBounds("C", 0, 0, &bx, &by, &bw, &bh);
+  return x + 7 + (int16_t)bw;
+}
+
 // ---------------------------------------------------------------------------
 // Le 24 ore di UN nodo, dentro il suo blocco (v59)
 // ---------------------------------------------------------------------------
@@ -1257,8 +1279,13 @@ static void drawDeltaTemp(const float* d, int16_t yBase, int16_t xMax)
 //    no;
 //  - un buco NON si attraversa con una retta: la linea si interrompe, o
 //    direbbe che la temperatura e' passata di li' mentre nessuno la misurava.
+// `yOrari` > 0 (solo pagina dettaglio): segna con un cerchietto VUOTO il
+// minimo e il massimo della giornata e ne scrive l'ORA sotto l'asse. Nel
+// blocco del nodo non si fa -- li' la curva e' alta 40 px e due cerchietti
+// sono rumore -- ma qui, dove ne ha 98, e' l'informazione che una curva alta
+// puo' portare e una bassa no: non solo quanto ha fatto, ma QUANDO.
 static void drawGrafico24h(int indice, int16_t x0, int16_t y0, int16_t x1, int16_t y1,
-                           int16_t yEtichette)
+                           int16_t yEtichette, int16_t yOrari = 0)
 {
   static int16_t serie[REMOTE_TEMP_SLOTS];      // static: 96 byte, non stack
   time_t tsUltimo = 0;
@@ -1349,6 +1376,36 @@ static void drawGrafico24h(int indice, int16_t x0, int16_t y0, int16_t x1, int16
     xPrec = x; yPrec = y; hoPrec = true;
   }
   if (hoPrec) tela.fillCircle(xPrec, yPrec, 2, GxEPD_BLACK);   // dove siamo adesso
+
+  if (yOrari <= 0) return;
+
+  // --- minimo e massimo: dove sono stati, e a che ora --------------------
+  // Cerchietto VUOTO, non pieno: quello pieno e' "adesso", ed erano due segni
+  // uguali per due cose diverse.
+  tela.setFont(&FreeSansBold9pt7b);
+  for (int quale = 0; quale < 2; quale++) {
+    const int16_t cerca = quale ? vMaxVero : vMinVero;
+    int iTrovato = -1;
+    for (int i = 0; i < n; i++) if (serie[i] == cerca) { iTrovato = i; break; }
+    if (iTrovato < 0) continue;
+
+    const int16_t x = x0 + (int16_t)(((int32_t)(x1 - x0) * iTrovato) / (n > 1 ? n - 1 : 1));
+    const int16_t y = y1 - (int16_t)(((int32_t)(cerca - vMin) * (y1 - y0)) / span);
+    tela.fillCircle(x, y, 3, GxEPD_WHITE);
+    tela.drawCircle(x, y, 3, GxEPD_BLACK);
+
+    // L'ora di QUEL campione: l'ultimo slot meno quanti slot mancano.
+    const time_t q = tsUltimo - (time_t)(n - 1 - iTrovato) * (time_t)REMOTE_TEMP_SLOT_S;
+    char ora[8];
+    if (!rtctime_format(q, "%H:%M", ora, sizeof(ora))) continue;
+    int16_t bx, by; uint16_t bw, bh;
+    tela.getTextBounds(ora, 0, 0, &bx, &by, &bw, &bh);
+    int16_t cx = x - (int16_t)bw / 2;
+    if (cx < x0)                cx = x0;
+    if (cx + (int16_t)bw > 388) cx = 388 - (int16_t)bw;
+    tela.setCursor(cx, yOrari);
+    tela.print(ora);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2554,84 +2611,122 @@ static void screenDettaglio(const char* nomeNodo)
     return;
   }
 
-  // Le due misure principali, in grande: chi guarda da lontano deve poterle
-  // leggere anche da questa pagina, non solo da quella dei nodi.
+  // --- riga della fiducia ------------------------------------------------
+  // Da v59 il piede non c'e' piu', e con lui e' sparita dal vetro OGNI
+  // diagnostica: l'ora dell'ultimo pacchetto, la cadenza, i persi. Questa
+  // riga se li riprende, ed e' una delle tre ragioni per cui questa pagina
+  // esiste -- la pagina nodi dice quanto fa, questa dice anche se ci si puo'
+  // fidare del numero.
+  //
+  // L'ordine E' la priorita' (drawFila si ferma alla prima che non entra), e
+  // l'ora dell'ultimo pacchetto va per prima: e' cio' che distingue una curva
+  // ferma perche' fa caldo da una ferma perche' il nodo tace.
+  //
+  // Uno zero non si scrive: se non ci sono persi o riavvii, quelle voci non
+  // esistono. Una riga che dice "0 persi 0 riavvii" e' rumore che occupa il
+  // posto di cio' che invece e' successo.
+  {
+    String voci[5];
+    int nv = 0;
+    char buf[24];
+    if (rtctime_format(n.ultimoTs, "%H:%M", buf, sizeof(buf)))
+      voci[nv++] = (n.online ? String("ultimo ") : String("fermo dalle ")) + buf;
+    if (n.intervalloS > 0) {
+      if (n.intervalloS >= 90) voci[nv++] = "ogni " + String((n.intervalloS + 30) / 60) + " min";
+      else                     voci[nv++] = "ogni " + String(n.intervalloS) + " s";
+    }
+    if (n.persi > 0)       voci[nv++] = String(n.persi) + " persi";
+    if (n.batteria_mv > 0) voci[nv++] = fmtNum(n.batteria_mv / 1000.0f, 2) + " V";
+    if (n.riavvii > 0)     voci[nv++] = (n.riavvii == 1) ? String("1 riavvio")
+                                                         : String(n.riavvii) + " riavvii";
+    tela.setFont(&FreeSans9pt7b);
+    drawFila(voci, nv, 14, 44, 386, 16);
+  }
+
+  // --- i due numeri, negli stessi posti della pagina nodi -----------------
+  // Chi passa dalla pagina nodi a questa deve ritrovare lo stesso numero, non
+  // cercarlo: stessa icona, stesso allineamento, solo piu' grande.
   if (isfinite(n.value[0])) {
-    tela.drawBitmap(14, 44, IC_TERMOMETRO, IC_TERMOMETRO_W, IC_TERMOMETRO_H, GxEPD_BLACK);
+    tela.drawBitmap(14, 58, IC_TERMOMETRO, IC_TERMOMETRO_W, IC_TERMOMETRO_H, GxEPD_BLACK);
     tela.setFont(&FreeSansBold24pt7b);
-    tela.setCursor(40, 72);
+    tela.setCursor(42, 88);
     tela.print(fmtNum(n.value[0], 1));
     int16_t bx, by; uint16_t bw, bh;
-    tela.getTextBounds(fmtNum(n.value[0], 1), 40, 72, &bx, &by, &bw, &bh);
-    drawGrado(40 + (int16_t)bw + 10, 48, 4);
+    tela.getTextBounds(fmtNum(n.value[0], 1), 42, 88, &bx, &by, &bw, &bh);
+    drawGrado(42 + (int16_t)bw + 12, 64, 4);
     tela.setFont(&FreeSansBold12pt7b);
-    tela.setCursor(40 + (int16_t)bw + 17, 72);
+    tela.setCursor(42 + (int16_t)bw + 19, 88);
     tela.print("C");
   }
   if (isfinite(n.value[1])) {
-    tela.drawBitmap(228, 46, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
-    tela.setFont(&FreeSansBold24pt7b);
-    tela.setCursor(256, 72);
+    tela.drawBitmap(236, 62, IC_GOCCIA, IC_GOCCIA_W, IC_GOCCIA_H, GxEPD_BLACK);
+    tela.setFont(&FreeSansBold18pt7b);
+    tela.setCursor(262, 88);
     tela.print(fmtNum(n.value[1], 0) + "%");
   }
-  tela.drawFastHLine(14, 88, W - 28, GxEPD_BLACK);
 
-  // La tabella. L'ordine e' quello dell'utilita': prima cosa si sente, poi
-  // dove e' stata la temperatura, poi la pressione col suo trend.
-  int16_t y = 116;
-  const float td = meteo_dewpoint_c(n.value[0], n.value[1]);
-  const float hx = meteo_humidex_c(n.value[0], n.value[1]);
-  const float ah = meteo_umidita_assoluta_gm3(n.value[0], n.value[1]);
-
-  if (isfinite(td)) { drawRigaDett("punto di rugiada", fmtNum(td, 1), "C", y); y += 26; }
-  // Sotto i 20 gradi l'humidex non esiste: la riga non compare affatto,
-  // invece di mostrare un trattino che occupa spazio per dire niente.
-  if (isfinite(hx)) { drawRigaDett("temperatura percepita", fmtNum(hx, 0), "C", y); y += 26; }
-  if (isfinite(ah)) { drawRigaDett("acqua nell'aria", fmtNum(ah, 1), "g/m3", y); y += 26; }
-
-  float tMin, tMax, tD[TEMP_DELTA_N];
-  const int nCamp = statTemp(indice, &tMin, &tMax, tD);
-  if (nCamp > 0) {
-    drawRigaDett("ultime 24 ore", fmtNum(tMin, 1) + " / " + fmtNum(tMax, 1), "C", y);
-    y += 26;
-  }
-
-  // Le tre variazioni su UNA riga, non tre (v58): qui le righe finiscono a
-  // y=246, dove comincia il piede con la pressione, e da 116 con passo 26 ce
-  // ne stanno cinque in tutto -- rugiada, percepiti, acqua, 24 ore e questa.
-  // Tre righe separate avrebbero scritto sopra il filetto, che e' il modo in
-  // cui questo pannello sbaglia: senza dare errore.
-  //
-  // L'etichetta e' corta apposta: "ultime 1-2-3 h" e' 110 px e il valore nel
-  // caso peggiore ("-10,5 / -10,5 / -10,5" in 12pt grassetto) e' 204, cioe'
-  // 314 dei 331 disponibili. Con "variazione 1h / 2h / 3h" (177 px) si
-  // sovrapponevano. Misurati con tools/larghezza_testo.py.
-  bool qualcuno = false;
-  for (int k = 0; k < TEMP_DELTA_N; k++) if (isfinite(tD[k])) qualcuno = true;
-  if (qualcuno) {
-    String v;
-    for (int k = 0; k < TEMP_DELTA_N; k++) {
-      if (k) v += " / ";
-      v += fmtDelta(tD[k], 1);
-    }
-    drawRigaDett("ultime 1-2-3 h", v, "C", y);
-    y += 26;
-  }
-
-  // La pressione in fondo, con il trend accanto: sono la stessa informazione
-  // letta in due modi, e separarle vorrebbe dire farle cercare due volte.
-  tela.drawFastHLine(14, 246, W - 28, GxEPD_BLACK);
-  if (isfinite(n.value[2])) {
-    tela.setFont(&FreeSansBold12pt7b);
-    tela.setCursor(18, 272);
-    tela.print(fmtNum(n.value[2], 1));
+  // --- cosa vuol dire: rugiada, percepiti, acqua nell'aria ----------------
+  // Su UNA riga e non tre: sono tre numeri piccoli dello stesso tipo, e in
+  // colonna diventavano la tabella che questa pagina era. L'ordine e' la
+  // priorita': l'ultima e' quella che si perde se non ci sta. Sotto i 20
+  // gradi l'humidex non esiste e il suo posto lo prende l'acqua.
+  {
+    const float td = meteo_dewpoint_c(n.value[0], n.value[1]);
+    const float hx = meteo_humidex_c(n.value[0], n.value[1]);
+    const float ah = meteo_umidita_assoluta_gm3(n.value[0], n.value[1]);
+    int16_t x = 14;
     tela.setFont(&FreeSans9pt7b);
-    tela.print(" hPa");
+    if (isfinite(td)) x = drawGradiPiccoli("rugiada ", td, 1, x, 112) + 14;
+    if (isfinite(hx)) x = drawGradiPiccoli("si sentono ", hx, 0, x, 112) + 14;
+    if (isfinite(ah)) {
+      const String s = "acqua " + fmtNum(ah, 1) + " g/m3";
+      int16_t bx, by; uint16_t bw, bh;
+      tela.getTextBounds(s, 0, 0, &bx, &by, &bw, &bh);
+      if (x + (int16_t)bw <= 386) { tela.setCursor(x, 112); tela.print(s); }
+    }
   }
-  drawFrecciaTrend(232, 266, n.trend);
+
+  // --- la giornata, alta 98 px invece dei 40 del blocco -------------------
+  // E' la seconda ragione per cui questa pagina esiste: la stessa serie, ma
+  // con la forma che a 40 px si perde -- i pianerottoli, il gradino dell'alba,
+  // il rumore di mezzo grado. E con l'ORA del minimo e del massimo, che a 40
+  // px non ci starebbe.
+  drawGrafico24h(indice, 44, 130, 388, 228, 244, 264);
+
+  // --- la riga che questa pagina ha e nessun'altra ------------------------
+  // La FRASE della previsione non compare da nessun'altra parte sul pannello:
+  // la pagina nodi ha la freccia e il numero, che dicono quanto si muove il
+  // barometro, non che tempo fara'.
+  //
+  // Se il nodo tace, li' non ci va la previsione ma DA QUANTO tace: una
+  // previsione calcolata su numeri di tre ore fa non e' una previsione.
+  tela.drawFastHLine(14, 272, 372, GxEPD_BLACK);
   tela.setFont(&FreeSans9pt7b);
-  tela.setCursor(250, 272);
-  tela.print(n.trend == TREND_IGNOTO ? "raccolgo dati" : remote_trend_label(n.trend));
+  if (!n.online) {
+    const uint32_t m = n.silenzioS / 60;
+    tela.setCursor(14, 292);
+    tela.print(m < 90 ? ("tace da " + String(m) + " min")
+                      : ("tace da " + String((n.silenzioS + 1800) / 3600) + " h"));
+  }
+  else {
+    const String parola = (n.trend == TREND_IGNOTO) ? String("raccolgo dati")
+                                                    : String(remote_trend_label(n.trend));
+    int16_t bx, by; uint16_t bw, bh;
+    tela.getTextBounds(parola, 0, 0, &bx, &by, &bw, &bh);
+    drawRight(parola, 386, 292);
+    drawFrecciaTrend(386 - (int16_t)bw - 26, 287, n.trend);
+
+    const String prev = remote_forecast_text(&n);
+    if (prev.length()) {
+      // Il corpo si sceglie misurando: la frase piu' lunga in 12pt grassetto
+      // invaderebbe la parola del trend, e allora scende a 9pt.
+      tela.setFont(&FreeSansBold12pt7b);
+      tela.getTextBounds(prev, 0, 0, &bx, &by, &bw, &bh);
+      if (14 + (int16_t)bw > 386 - (int16_t)bw - 40) tela.setFont(&FreeSans9pt7b);
+      tela.setCursor(14, 292);
+      tela.print(prev);
+    }
+  }
 
   telaSulPannello(true);
 }

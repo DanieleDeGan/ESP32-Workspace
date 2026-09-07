@@ -5,6 +5,7 @@
     python tools/pannello_mock.py --prova out.png 2      (la pagina nodi)
     python tools/pannello_mock.py --casi <cartella>      (i casi limite)
     python tools/pannello_mock.py --valida <ip>          (mock contro vetro)
+    python tools/pannello_mock.py --valida-dettaglio <ip>
 
 E' `Adafruit_GFX` rifatto in Python su una tela 400x300 a 1 bit: gli stessi
 `.h` dei font (glifi E bitmap), le stesse icone di `icone.h`, le stesse
@@ -480,16 +481,36 @@ def dati_prova(quanti=2, buchi=False, muto=False):
     nodi = [
         {"nome": "MeteoEsp32", "t": 27.53, "rh": 47.85, "p": 1016.94,
          "d": [0.1, 0.5, 0.6], "dp3h": -0.82, "trend": 4,
+         "trend_parola": "in lieve discesa",
+         "previsione": "bel tempo confermato", "press_sea": 1020.4,
+         "rugiada": 15.6, "percepiti": 30.0, "acqua": 13.0,
+         "ultimo": "16:47", "silenzio_s": 92, "intervallo_s": 299,
+         "pacchetti": 425, "persi": 0, "riavvii": 1, "batteria_mv": 0,
          "online": True, "ritardo": False, "ora_ultimo": 16.5, "serie": a},
         {"nome": "Meteo-7EAE0C", "t": 27.53, "rh": 47.52, "p": 1018.04,
          "d": [0.2, 0.5, 0.6], "dp3h": -0.81, "trend": 4,
+         "trend_parola": "in lieve discesa",
+         "previsione": "bel tempo confermato", "press_sea": 1021.5,
+         "rugiada": 15.5, "percepiti": 30.0, "acqua": 12.9,
+         "ultimo": "16:45" if not muto else "14:02",
+         "silenzio_s": 214 if not muto else 9840, "intervallo_s": 299,
+         "pacchetti": 424, "persi": 0, "riavvii": 0, "batteria_mv": 0,
          "online": not muto, "ritardo": False, "ora_ultimo": 16.5, "serie": b},
         {"nome": "Cantina", "t": 18.2, "rh": 62.0, "p": 1017.1,
          "d": [-0.1, -0.2, 0.0], "dp3h": -0.8, "trend": 4,
+         "trend_parola": "in lieve discesa",
+         "previsione": "bel tempo confermato", "press_sea": 1020.6,
+         "rugiada": 10.7, "percepiti": None, "acqua": 9.6,
+         "ultimo": "16:44", "silenzio_s": 310, "intervallo_s": 300,
+         "pacchetti": 288, "persi": 3, "riavvii": 0, "batteria_mv": 3980,
          "online": True, "ritardo": False, "ora_ultimo": 16.5,
          "serie": [None if v is None else v - 8.5 for v in SERIE_B]},
         {"nome": "Serra", "t": 31.8, "rh": 30.0, "p": None,
          "d": [1.2, 2.4, 3.1], "dp3h": None, "trend": 0,
+         "trend_parola": "", "previsione": "", "press_sea": None,
+         "rugiada": 11.9, "percepiti": 34.0, "acqua": 9.5,
+         "ultimo": "16:40", "silenzio_s": 620, "intervallo_s": 300,
+         "pacchetti": 96, "persi": 12, "riavvii": 2, "batteria_mv": 3610,
          "online": True, "ritardo": True, "ora_ultimo": 16.5,
          "serie": [None if v is None else v + 5.0 for v in SERIE_A]},
     ]
@@ -555,7 +576,7 @@ def drawDeltaTemp(t, d, yBase, xMax):
     drawFila(t, voci, 42, yBase, xMax, 14)
 
 
-def drawGrafico24h(t, n, x0, y0, x1, y1, yEtichette):
+def drawGrafico24h(t, n, x0, y0, x1, y1, yEtichette, yOrari=0):
     """La curva delle 24 h. `serie` arriva in gradi; dentro si torna ai DECIMI,
     che e' cio' su cui il firmware fa i conti."""
     serie = [None if v is None else int(round(v * 10)) for v in n["serie"]]
@@ -618,6 +639,47 @@ def drawGrafico24h(t, n, x0, y0, x1, y1, yEtichette):
         xPrec, yPrec = x, y
     if xPrec is not None:
         t.fillCircle(xPrec, yPrec, 2)
+
+    if yOrari <= 0:
+        return
+    t.setFont("FreeSansBold9pt7b")
+    import time as _time
+    for cerca in (vMinVero, vMaxVero):
+        try:
+            i = serie.index(cerca)
+        except ValueError:
+            continue
+        x = x0 + _tronca((x1 - x0) * i, n_slot - 1 if n_slot > 1 else 1)
+        y = y1 - _tronca((cerca - vMin) * (y1 - y0), span)
+        t.fillCircle(x, y, 3, BIANCO)
+        t.drawCircle(x, y, 3)
+        ore = n["ora_ultimo"] - (n_slot - 1 - i) * 0.5
+        while ore < 0:
+            ore += 24
+        s_ora = "%02d:%02d" % (int(ore) % 24, int(round((ore % 1) * 60)))
+        _bx, _by, bw, _bh = t.getTextBounds(s_ora)
+        cx = x - _tronca(bw, 2)
+        if cx < x0:
+            cx = x0
+        if cx + bw > 388:
+            cx = 388 - bw
+        t.setCursor(cx, yOrari)
+        t.print(s_ora)
+
+
+def drawGradiPiccoli(t, etichetta, v, dec, x, yBase):
+    t.setFont("FreeSans9pt7b")
+    t.setCursor(x, yBase)
+    t.print(etichetta)
+    s = fmtNum(v, dec)
+    t.print(s)
+    _bx, _by, bw, _bh = t.getTextBounds(etichetta + s)
+    x += bw + 5
+    drawGrado(t, x + 2, yBase - 9, 3)
+    t.setCursor(x + 7, yBase)
+    t.print("C")
+    _bx, _by, bw, _bh = t.getTextBounds("C")
+    return x + 7 + bw
 
 
 def drawAllarme(t, testo):
@@ -708,6 +770,124 @@ def scena_nodi(t, nodi, allarme=""):
 
 
 # ---------------------------------------------------------------------------
+#  La scena della pagina DETTAGLIO (com'e' alla v59)
+# ---------------------------------------------------------------------------
+# Stessa regola della pagina nodi: traduzione fedele di screenDettaglio(), non
+# "la stessa idea". I valori derivati (rugiada, percepiti, acqua) NON si
+# ricalcolano qui -- arrivano da /api/nodi, che li espone apposta: rifare le
+# formule in Python vorrebbe dire due implementazioni che divergono al primo
+# arrotondamento, e il confronto pixel per pixel non varrebbe piu'.
+def drawRigaDett(t, etichetta, valore, unita, y):
+    t.setFont("FreeSans9pt7b")
+    t.setCursor(18, y)
+    t.print(etichetta)
+
+    xFine = t.width() - 18
+    if unita == "C":
+        t.setFont("FreeSans9pt7b")
+        _bx, _by, bw, _bh = t.getTextBounds("C")
+        t.setCursor(xFine - bw, y + 2)
+        t.print("C")
+        xFine -= bw + 4
+        drawGrado(t, xFine, y - 6, 3)
+        xFine -= 8
+    elif unita:
+        t.setFont("FreeSans9pt7b")
+        _bx, _by, bw, _bh = t.getTextBounds(unita)
+        t.setCursor(xFine - bw, y + 2)
+        t.print(unita)
+        xFine -= bw + 6
+
+    t.setFont("FreeSansBold12pt7b")
+    t.drawRight(valore, xFine, y + 2)
+
+
+def scena_dettaglio(t, n):
+    """Tutto quello che si sa di UN nodo (v60). Traduzione fedele di
+    screenDettaglio(): stesse coordinate, stesso ordine, stessa aritmetica."""
+    t.fillScreen(BIANCO)
+    t.setTextColor(NERO)
+    drawTestataNodo(t, n, 0, 26)
+
+    if n["t"] is None and n["rh"] is None:
+        t.setFont("FreeSans9pt7b")
+        t.drawCenter("in attesa del primo dato", 200, 150)
+        return
+
+    voci = []
+    if n.get("ultimo"):
+        voci.append(("ultimo " if n.get("online", True) else "fermo dalle ") + n["ultimo"])
+    iv = n.get("intervallo_s") or 0
+    if iv:
+        voci.append("ogni %d min" % ((iv + 30) // 60) if iv >= 90 else "ogni %d s" % iv)
+    if n.get("persi"):
+        voci.append("%d persi" % n["persi"])
+    if n.get("batteria_mv"):
+        voci.append(fmtNum(n["batteria_mv"] / 1000.0, 2) + " V")
+    if n.get("riavvii"):
+        voci.append("1 riavvio" if n["riavvii"] == 1 else "%d riavvii" % n["riavvii"])
+    t.setFont("FreeSans9pt7b")
+    drawFila(t, voci, 14, 44, 386, 16)
+
+    if n["t"] is not None:
+        iw, ih, ib = icona("IC_TERMOMETRO")
+        t.drawBitmap(14, 58, ib, iw, ih)
+        t.setFont("FreeSansBold24pt7b")
+        t.setCursor(42, 88)
+        v = fmtNum(n["t"], 1)
+        t.print(v)
+        _bx, _by, bw, _bh = t.getTextBounds(v, 42, 88)
+        drawGrado(t, 42 + bw + 12, 64, 4)
+        t.setFont("FreeSansBold12pt7b")
+        t.setCursor(42 + bw + 19, 88)
+        t.print("C")
+    if n["rh"] is not None:
+        iw, ih, ib = icona("IC_GOCCIA")
+        t.drawBitmap(236, 62, ib, iw, ih)
+        t.setFont("FreeSansBold18pt7b")
+        t.setCursor(262, 88)
+        t.print(fmtNum(n["rh"], 0) + "%")
+
+    x = 14
+    t.setFont("FreeSans9pt7b")
+    if n.get("rugiada") is not None:
+        x = drawGradiPiccoli(t, "rugiada ", n["rugiada"], 1, x, 112) + 14
+    if n.get("percepiti") is not None:
+        x = drawGradiPiccoli(t, "si sentono ", n["percepiti"], 0, x, 112) + 14
+    if n.get("acqua") is not None:
+        s_a = "acqua " + fmtNum(n["acqua"], 1) + " g/m3"
+        _bx, _by, bw, _bh = t.getTextBounds(s_a)
+        if x + bw <= 386:
+            t.setCursor(x, 112)
+            t.print(s_a)
+
+    drawGrafico24h(t, n, 44, 130, 388, 228, 244, 264)
+
+    t.drawFastHLine(14, 272, 372)
+    t.setFont("FreeSans9pt7b")
+    if not n.get("online", True):
+        m = (n.get("silenzio_s") or 0) // 60
+        t.setCursor(14, 292)
+        t.print("tace da %d min" % m if m < 90
+                else "tace da %d h" % (((n.get("silenzio_s") or 0) + 1800) // 3600))
+        return
+
+    parola = "raccolgo dati" if n["trend"] == 0 else (n.get("trend_parola") or "")
+    _bx, _by, bw, _bh = t.getTextBounds(parola)
+    t.drawRight(parola, 386, 292)
+    drawFrecciaTrend(t, 386 - bw - 26, 287, n["trend"])
+
+    prev = n.get("previsione") or ""
+    if prev:
+        t.setFont("FreeSansBold12pt7b")
+        _bx, _by, bw2, _bh = t.getTextBounds(prev)
+        if 14 + bw2 > 386 - bw2 - 40:
+            t.setFont("FreeSans9pt7b")
+        t.setCursor(14, 292)
+        t.print(prev)
+
+
+# ---------------------------------------------------------------------------
 #  La prova che il mock non mente
 # ---------------------------------------------------------------------------
 TREND_DA_PAROLA = {
@@ -747,6 +927,114 @@ def allarme_da_stato(st):
     return ""
 
 
+def _nodi_da_api(host):
+    """I nodi come li vede la scheda, con la serie dell'anello e le derivate.
+    Un posto solo: lo usano sia valida() sia chi vuole rendere una pagina con
+    i dati veri invece che con quelli di prova."""
+    import time
+    j = _api(host, "/api/nodi")
+    nodi = []
+    for n in j["nodi"]:
+        v = n["valori"] or [None, None, None]
+        d = {
+            "nome": n["nome"], "t": v[0], "rh": v[1], "p": v[2],
+            "d": [n["delta_t_1h"], n["delta_t_2h"], n["delta_t_3h"]],
+            "dp3h": n["delta_3h"], "trend": TREND_DA_PAROLA.get(n["trend"], 0),
+            "trend_parola": n["trend"], "online": n["online"], "ritardo": False,
+            "rugiada": n.get("rugiada"), "percepiti": n.get("percepiti"),
+            "acqua": n.get("acqua_gm3"),
+            # La pagina dettaglio vuole anche questi. Dimenticarli non da'
+            # errore: il mock semplicemente non li disegna, e il confronto col
+            # vetro esce "diverso" in due zone -- che e' esattamente come li ho
+            # trovati.
+            "previsione": n.get("previsione"),
+            "ultimo": (n["ultimo"] or "--:--:--")[11:16] if n.get("ultimo") else None,
+            "silenzio_s": n.get("silenzio_s"), "intervallo_s": n.get("intervallo_s"),
+            "persi": n.get("persi"), "riavvii": n.get("riavvii"),
+            "batteria_mv": n.get("batteria_mv"),
+        }
+        a = _api(host, "/api/nodi/anello?nodo=" + n["nome"].replace(" ", "%20"))
+        loc = time.localtime(a["ts_ultimo"])
+        d["serie"] = a["t"]
+        d["ora_ultimo"] = loc.tm_hour + loc.tm_min / 60.0
+        nodi.append(d)
+    return nodi
+
+
+def _confronta(vero, mio):
+    diversi = 0
+    for y in range(H):
+        for x in range(W):
+            a = (vero[y * STRIDE + (x >> 3)] >> (7 - (x & 7))) & 1
+            b = (mio[y * STRIDE + (x >> 3)] >> (7 - (x & 7))) & 1
+            if a != b:
+                diversi += 1
+    print("pixel diversi: %d su %d (%.3f%%)"
+          % (diversi, W * H, diversi * 100.0 / (W * H)))
+    if diversi:
+        print("Il mock e il vetro non coincidono piu': o e' cambiato il disegno")
+        print("nel .ino senza aggiornare la scena, o il mock ha un difetto. In")
+        print("ogni caso, da qui in avanti le proposte rese con questo strumento")
+        print("non valgono come prova.")
+    return diversi
+
+
+def _ridisegna(host):
+    """Fa ridisegnare e aspetta che l'abbia fatto. Torna lo stato, o None."""
+    import time
+    prima = _api(host, "/api/stato")["epd_refresh"]
+    _api(host, "/api/pannello/refresh", post=True)
+    for _ in range(30):
+        st = _api(host, "/api/stato")
+        if st["epd_refresh"] != prima:
+            return st
+        time.sleep(1)
+    return None
+
+
+def valida_dettaglio(host):
+    """Come valida(), ma sulla pagina DETTAGLIO.
+
+    Manda il pannello sulla pagina dettaglio, confronta, e **rimette la pagina
+    che c'era prima**: questa scheda sta appesa a un muro e la sta guardando
+    qualcuno, non e' un banco di prova.
+    """
+    import time
+    pan = _api(host, "/api/pannello")
+    slot = None
+    for p in pan["pagine"]:
+        if p["tipo"] == "dettaglio":
+            slot = p["i"]
+            nodo = p["param"]
+            break
+    if slot is None:
+        print("nessuna pagina dettaglio in elenco: aggiungila con")
+        print("  POST /api/pannello/aggiungi?tipo=dettaglio&param=NOME")
+        return -1
+    prima = pan["corrente"]
+
+    _api(host, "/api/pannello/vai?i=%d" % slot, post=True)
+    for _ in range(30):
+        if _api(host, "/api/pannello")["corrente"] == slot:
+            break
+        time.sleep(1)
+    time.sleep(2)
+
+    from pannello_png import scarica
+    vero = bytearray(scarica(host))
+    nodi = [n for n in _nodi_da_api(host) if n["nome"] == nodo]
+    if not nodi:
+        print("il nodo %r della pagina non e' in elenco" % nodo)
+        return -1
+
+    t = Tela()
+    scena_dettaglio(t, nodi[0])
+    diversi = _confronta(vero, bytearray(t.bin()))
+
+    _api(host, "/api/pannello/vai?i=%d" % prima, post=True)
+    return diversi
+
+
 def valida(host):
     """Il mock contro il vetro: stessa scena, stessi pixel?
 
@@ -764,55 +1052,18 @@ def valida(host):
     """
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from pannello_png import scarica
-    import time
 
-    prima = _api(host, "/api/stato")["epd_refresh"]
-    _api(host, "/api/pannello/refresh", post=True)
-    for _ in range(30):
-        st = _api(host, "/api/stato")
-        if st["epd_refresh"] != prima:
-            break
-        time.sleep(1)
-    else:
+    st = _ridisegna(host)
+    if st is None:
         print("la scheda non ha ridisegnato: mi fermo, il confronto non sarebbe onesto")
         return -1
 
-    j = _api(host, "/api/nodi")
+    nodi = _nodi_da_api(host)
     vero = bytearray(scarica(host))
-
-    nodi = []
-    for n in j["nodi"]:
-        v = n["valori"] or [None, None, None]
-        nodi.append({
-            "nome": n["nome"], "t": v[0], "rh": v[1], "p": v[2],
-            "d": [n["delta_t_1h"], n["delta_t_2h"], n["delta_t_3h"]],
-            "dp3h": n["delta_3h"], "trend": TREND_DA_PAROLA.get(n["trend"], 0),
-            "online": n["online"], "ritardo": False,
-        })
-        a = _api(host, "/api/nodi/anello?nodo=" + n["nome"].replace(" ", "%20"))
-        loc = time.localtime(a["ts_ultimo"])
-        nodi[-1]["serie"] = a["t"]
-        nodi[-1]["ora_ultimo"] = loc.tm_hour + loc.tm_min / 60.0
 
     t = Tela()
     scena_nodi(t, nodi, allarme_da_stato(st))
-    mio = bytearray(t.bin())
-
-    diversi = 0
-    for y in range(H):
-        for x in range(W):
-            a = (vero[y * STRIDE + (x >> 3)] >> (7 - (x & 7))) & 1
-            b = (mio[y * STRIDE + (x >> 3)] >> (7 - (x & 7))) & 1
-            if a != b:
-                diversi += 1
-    print("pixel diversi: %d su %d (%.3f%%)"
-          % (diversi, W * H, diversi * 100.0 / (W * H)))
-    if diversi:
-        print("Il mock e il vetro non coincidono piu': o e' cambiato il disegno")
-        print("nel .ino senza aggiornare scena_nodi(), o il mock ha un difetto.")
-        print("In ogni caso, da qui in avanti le proposte rese con questo")
-        print("strumento non valgono come prova.")
-    return diversi
+    return _confronta(vero, bytearray(t.bin()))
 
 
 def casi(cartella):
@@ -837,6 +1088,8 @@ def casi(cartella):
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "--valida":
         sys.exit(0 if valida(sys.argv[2]) == 0 else 1)
+    if len(sys.argv) >= 3 and sys.argv[1] == "--valida-dettaglio":
+        sys.exit(0 if valida_dettaglio(sys.argv[2]) == 0 else 1)
     if len(sys.argv) >= 3 and sys.argv[1] == "--casi":
         casi(sys.argv[2])
         sys.exit(0)
