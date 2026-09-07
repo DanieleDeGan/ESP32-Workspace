@@ -31,7 +31,7 @@ CDC, deep sleep, OTA, scritture su SD, default NVS) `docs/Trappole-Hardware.md`.
 | `tools/controlla_piedi.py` | verifica che ogni pagina porti il piede di navigazione completo. Con `--host <ip>` controlla quelle che la **scheda** serve davvero e confronta `fw_caricata` col firmware che gira |
 | `tools/larghezza_testo.py` | quanto è largo un testo sul pannello **prima** di disegnarlo: somma gli `xAdvance` dei glifi nei `.h` veri dei font |
 | `tools/pannello_png.py` | scarica `/api/pannello/anteprima` e ne fa un PNG, senza dipendenze: il pannello si guarda da riga di comando |
-| `tools/pannello_mock.py` | **Adafruit_GFX rifatto in Python**: disegna una pagina del pannello senza la scheda, con i font e le icone veri. `--valida <ip>` e `--valida-dettaglio <ip>` lo confrontano col vetro pixel per pixel |
+| `tools/pannello_mock.py` | **Adafruit_GFX rifatto in Python**: disegna una pagina del pannello senza la scheda, con i font e le icone veri. `--valida <ip>` e `--valida-dettaglio <ip>` lo confrontano col vetro pixel per pixel. **Tre regole in cima al file** (cast nello stesso posto, divisione che tronca verso lo zero, aritmetica in `float`): ognuna e stata una differenza da un pixel |
 | `tools/icone.py` | disegna le icone e le mostra a schermo per giudicarle; con `--c` genera `icone.h` |
 | `tools/refresh_simula.py` | quanti refresh farebbe il pannello, rigiocando i CSV veri dei nodi |
 | `tools/analisi.py` | cosa dicono davvero i CSV dei nodi: le analisi che a bordo non si possono fare |

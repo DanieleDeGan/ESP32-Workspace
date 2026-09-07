@@ -35,6 +35,13 @@ DUE REGOLE PER CHI LO TOCCA:
 2. Le divisioni intere del C troncano verso lo zero, quelle di Python
    arrotondano verso il basso. Per i numeri negativi -- una temperatura
    d'inverno, un delta -- non e' la stessa cosa: c'e' `_tronca()`.
+3. Dove il C usa `float`, qui ci vuole `_f32()`. Python conta in doppia
+   precisione, l'ESP32 in singola, e per un pixel non e' la stessa cosa: alla
+   freccia del trend inclinata di 30 gradi il seno vale 0,5, e `dy * 4` fa
+   **1,9999999 in doppia e 2,0000000 in singola** -- che troncati sono 1 e 2.
+   Un vertice del triangolo si sposta di un pixel e la punta cambia forma.
+   Trovato dopo tre validazioni a zero: quelle erano state fatte con il
+   barometro a -15 gradi, dove il troncamento non cade su un mezzo.
 
 FINO A DOVE CI SI PUO' FIDARE. `--valida` fa ridisegnare la scheda, ne scarica
 l'anteprima e la confronta pixel per pixel con la stessa scena disegnata qui:
@@ -57,6 +64,11 @@ BIANCO, NERO = 1, 0                      # come nel .bin: bit 1 = bianco
 FONT_DIR = os.path.expanduser(
     "~/Documents/Arduino/libraries/Adafruit_GFX_Library/Fonts")
 ICONE_H = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "icone.h")
+
+
+def _f32(x):
+    """Il valore arrotondato a `float` come lo terrebbe l'ESP32."""
+    return struct.unpack("f", struct.pack("f", x))[0]
 
 
 def _tronca(n, d):
@@ -431,20 +443,21 @@ def drawFrecciaTrend(t, x, y, trend):
         t.drawFastHLine(x - 8, y, 6)
         t.drawFastHLine(x + 2, y, 6)
         return
-    rad = ANGOLI[trend] * math.pi / 180.0
-    dx, dy = math.cos(rad), -math.sin(rad)
+    # Tutto in SINGOLA precisione, compreso il pi greco: il .ino scrive
+    # `3.14159265f`, che in float e' 3.14159274 -- vedi la regola 3 in cima.
+    rad = _f32(_f32(ANGOLI[trend] * _f32(3.14159265)) / 180.0)
+    dx, dy = _f32(math.cos(rad)), _f32(-math.sin(rad))
     L = 11
-    # Il troncamento sul PRODOTTO, come il cast del .ino: vedi la regola 1 in
-    # cima al file.
-    ddx, ddy = int(dx * L), int(dy * L)
+    # Il troncamento sul PRODOTTO, come il cast del .ino: regola 1.
+    ddx, ddy = int(_f32(dx * L)), int(_f32(dy * L))
     x0, y0 = x - ddx, y - ddy
     x1, y1 = x + ddx, y + ddy
     t.drawLine(x0, y0, x1, y1)
     t.drawLine(x0, y0 + 1, x1, y1 + 1)
-    px, py = -dy, dx
-    bx, by = x + int(dx * (L - 7)), y + int(dy * (L - 7))
-    t.fillTriangle(x1, y1, bx + int(px * 5), by + int(py * 5),
-                   bx - int(px * 5), by - int(py * 5))
+    px, py = _f32(-dy), _f32(dx)
+    bx, by = x + int(_f32(dx * (L - 7))), y + int(_f32(dy * (L - 7)))
+    t.fillTriangle(x1, y1, bx + int(_f32(px * 5)), by + int(_f32(py * 5)),
+                   bx - int(_f32(px * 5)), by - int(_f32(py * 5)))
 
 
 # ---------------------------------------------------------------------------
