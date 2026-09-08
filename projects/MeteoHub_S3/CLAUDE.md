@@ -35,6 +35,7 @@ CDC, deep sleep, OTA, scritture su SD, default NVS) `docs/Trappole-Hardware.md`.
 | `tools/icone.py` | disegna le icone e le mostra a schermo per giudicarle; con `--c` genera `icone.h` |
 | `tools/refresh_simula.py` | quanti refresh farebbe il pannello, rigiocando i CSV veri dei nodi |
 | `tools/analisi.py` | cosa dicono davvero i CSV dei nodi: le analisi che a bordo non si possono fare |
+| `tools/previsione_verifica.py` | **la previsione azzecca?** Confronta il trend a 3 h con quello che la pressione ha poi fatto, contro le due previsioni che non costano niente. `--marea` misura il ciclo giornaliero |
 
 
 Cresciuto dal bring-up del pannello e-ink, oggi è l'hub vero della stazione:
