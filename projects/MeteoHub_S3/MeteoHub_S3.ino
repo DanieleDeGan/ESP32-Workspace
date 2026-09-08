@@ -168,7 +168,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v62";
+static const char FW_VERSION[] = "v63";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1843,6 +1843,90 @@ static void seedForecastDaSD()
 }
 
 // ---------------------------------------------------------------------------
+// La marea barometrica, tarata dall'hub (v63)
+// ---------------------------------------------------------------------------
+// Il ciclo giornaliero della pressione e' astronomico e non meteorologico, e
+// falsa il trend: qui misura ~1,5 hPa da picco a picco, contro soglie che
+// partono da 0,5 hPa/3h. Misurato l'8 settembre 2026 su 833 casi
+// (tools/previsione_verifica.py): togliendolo, il guadagno della previsione
+// sulla base passa da +3,1 a +10,4 punti.
+//
+// PERCHE' LA CALCOLA LA SCHEDA invece di avere una tabella scritta a mano:
+// l'ampiezza della marea cambia con la stagione (cresce d'estate) e col posto.
+// Una costante incollata nel firmware sarebbe giusta a settembre e sbagliata a
+// luglio, **senza che niente lo dica** — che e' esattamente il difetto gia'
+// pagato con i default NVS. Cosi' invece si ritara da sola ogni notte.
+//
+// E non costa una lettura in piu': i 24 accumulatori si riempiono DENTRO la
+// passata che chiude la giornata, che ogni campione lo legge gia'.
+//
+// UNA TABELLA SOLA per tutti i nodi, non una per nodo: la marea e' una
+// proprieta' del posto, non del sensore, e due nodi nella stessa casa misurano
+// lo stesso ciclo. Averne una sola la fa anche convergere in meta' tempo.
+static const char* MAREA_NS   = "marea";
+static const uint32_t MAREA_MAGIC = 0x4D415231;   // "MAR1"
+
+static int8_t   s_mareaTab[24];
+static uint16_t s_mareaGiorni = 0;      // quanti giorni sono entrati nella media
+static time_t   s_mareaUltima = 0;      // quando e' stata aggiornata l'ultima volta
+
+uint16_t app_marea_giorni()  { return s_mareaGiorni; }
+time_t   app_marea_ultima()  { return s_mareaUltima; }
+
+// L'ampiezza da picco a picco, in hPa: e' il numero che dice se la tabella ha
+// senso. Sotto 0,3 hPa non e' marea, e' rumore; sopra 3 e' un errore.
+float app_marea_ampiezza() {
+  if (s_mareaGiorni == 0) return NAN;
+  int8_t mn = 127, mx = -128;
+  for (int h = 0; h < 24; h++) {
+    if (s_mareaTab[h] < mn) mn = s_mareaTab[h];
+    if (s_mareaTab[h] > mx) mx = s_mareaTab[h];
+  }
+  return (mx - mn) / 100.0f;
+}
+
+static void mareaCarica() {
+  Preferences p;
+  if (!p.begin(MAREA_NS, true)) return;
+  if (p.getUInt("magic", 0) == MAREA_MAGIC &&
+      p.getBytes("tab", s_mareaTab, sizeof(s_mareaTab)) == sizeof(s_mareaTab)) {
+    s_mareaGiorni = p.getUShort("giorni", 0);
+    s_mareaUltima = (time_t)p.getUInt("ultima", 0);
+  }
+  p.end();
+  if (s_mareaGiorni > 0) remote_set_marea(s_mareaTab);
+}
+
+static void mareaSalva() {
+  Preferences p;
+  if (!p.begin(MAREA_NS, false)) return;
+  p.putUInt("magic", MAREA_MAGIC);
+  p.putBytes("tab", s_mareaTab, sizeof(s_mareaTab));
+  p.putUShort("giorni", s_mareaGiorni);
+  p.putUInt("ultima", (uint32_t)s_mareaUltima);
+  p.end();
+}
+
+// Un giorno chiuso entra nella media. Il peso parte da 1 (il primo giorno E'
+// la tabella) e scende fino a 1/8: cosi' converge subito e poi si muove piano,
+// che e' quello che serve a un ciclo che cambia con la stagione e non con la
+// giornata.
+static void mareaAggiungiGiorno(const int8_t giorno[24], time_t quando) {
+  const uint16_t peso = (s_mareaGiorni < 8) ? (s_mareaGiorni + 1) : 8;
+  for (int h = 0; h < 24; h++) {
+    const long vecchio = s_mareaTab[h];
+    long nuovo = vecchio + (giorno[h] - vecchio) / (long)peso;
+    if (nuovo >  127) nuovo =  127;
+    if (nuovo < -127) nuovo = -127;
+    s_mareaTab[h] = (int8_t)nuovo;
+  }
+  if (s_mareaGiorni < 0xFFFF) s_mareaGiorni++;
+  s_mareaUltima = quando;
+  mareaSalva();
+  remote_set_marea(s_mareaTab);
+}
+
+// ---------------------------------------------------------------------------
 // Riepilogo giornaliero - una riga per giorno chiuso, in /nodi/<NOME>/riepilogo.csv
 // ---------------------------------------------------------------------------
 // I CSV per giorno rispondono bene a "com'era ieri alle 15:40" e male a "che
@@ -1888,6 +1972,27 @@ static void riepRiga(time_t ts, uint32_t seq, const float v[3],
 static bool riepilogoDaCsv(const RemoteNode* n, const char* giorno, daily_t& d)
 {
   daily_reset(d);
+
+  // Il fuso si guarda UNA VOLTA per giorno e si passa a daily_add come numero.
+  // Chiamare localtime_r a ogni campione costerebbe ~130 us per riga (misurato
+  // in v56 sul controllo del cambio giorno), e su 1440 righe sarebbero due
+  // decimi di secondo dentro un loop() che non deve fermarsi. Ma soprattutto:
+  // daily.h e' header-only e PURO, e una funzione che legge il fuso di sistema
+  // non lo sarebbe piu'.
+  {
+    struct tm t0 = {};
+    int a = 0, m = 0, g = 0;
+    if (sscanf(giorno, "%d-%d-%d", &a, &m, &g) == 3) {
+      t0.tm_year = a - 1900; t0.tm_mon = m - 1; t0.tm_mday = g; t0.tm_hour = 12;
+      t0.tm_isdst = -1;
+      const time_t mezzogiorno = mktime(&t0);
+      struct tm loc, utc;
+      if (mezzogiorno > 0 && localtime_r(&mezzogiorno, &loc) && gmtime_r(&mezzogiorno, &utc)) {
+        d.offLocale = (int32_t)(mktime(&loc) - mktime(&utc));
+      }
+    }
+  }
+
   sd_read_remote_day(n->nome, giorno, riepRiga, &d, 0);
   return d.campioni > 0;
 }
@@ -2075,6 +2180,23 @@ static void riepilogoTick()
     r += ',';  if (d.bUltimo) r += d.bUltimo;
     r += ',';  if (d.bMin)    r += d.bMin;
 
+    // --- il giorno entra nella taratura della marea? -------------------
+    // Due filtri, e sono la ragione per cui la tabella resta astronomica:
+    //  - COMPLETO: un giorno con sei ore di buco sposta la media del giorno, e
+    //    con lei tutti e 24 gli scarti (daily_marea lo rifiuta da se');
+    //  - QUIETO: una burrasca infila il sinottico dentro il ciclo. Cinque hPa
+    //    di variazione in 24 h e' gia' un passaggio frontale, e quel giorno la
+    //    marea non si misura -- se ne misurera' un altro, ce n'e' uno al
+    //    giorno per sempre.
+    int8_t mareaGiorno[24];
+    if (complPct >= 90.0f && fabsf(daily_p_var(d)) <= 5.0f &&
+        daily_marea(d, mareaGiorno))
+    {
+      mareaAggiungiGiorno(mareaGiorno, d.ultimo);
+      Serial.printf("[marea] %s %s: giorno %u in media, ampiezza %.2f hPa\n",
+                    n.nome, giorno, (unsigned)app_marea_giorni(), app_marea_ampiezza());
+    }
+
     if (sd_riep_append(n.nome, r.c_str()))
     {
       s_riepScritti++;
@@ -2113,7 +2235,25 @@ bool app_riepilogo_ricalcola(const char* nodo)
     if (nodo && *nodo && strcmp(nodo, n.nome) != 0) continue;
     if (sd_riep_azzera(n.nome)) almenoUno = true;
   }
-  if (almenoUno) { s_riepFatto = false; s_riepNodo = 0; }
+  if (almenoUno) {
+    s_riepFatto = false;
+    s_riepNodo  = 0;
+
+    // Azzera anche la MAREA, e non e' un di piu': la taratura si alimenta dai
+    // giorni chiusi, quindi una ricostruzione li rifornirebbe tutti una
+    // seconda volta. La tabella convergerebbe comunque -- e' una media degli
+    // stessi giorni -- ma `marea_giorni` direbbe il doppio delle prove che ha
+    // davvero, e quel numero esiste apposta per dire quanto fidarsi.
+    // Visto succedere: due `rifai` di fila su 13 giorni hanno dato 38.
+    //
+    // Per qualche minuto la correzione non c'e', ed e' giusto cosi': "rifai"
+    // vuol dire dimentica e riparti, non tieni il vecchio e sommaci il nuovo.
+    memset(s_mareaTab, 0, sizeof(s_mareaTab));
+    s_mareaGiorni = 0;
+    s_mareaUltima = 0;
+    mareaSalva();
+    remote_set_marea(nullptr);
+  }
   return almenoUno;
 }
 
@@ -3365,6 +3505,11 @@ void setup()
 
   // Elenco delle pagine e messaggio attivo: entrambi da NVS, quindi
   // disponibili anche senza microSD e prima che la rete sia su.
+  // La marea PRIMA di remote_begin(): cosi' il primo DATA che arriva trova gia'
+  // la correzione, invece di classificare un trend grezzo e correggersi al
+  // secondo pacchetto.
+  mareaCarica();
+
   pages_begin();
   msg_begin();
 

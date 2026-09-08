@@ -252,6 +252,26 @@ static float histLookup(int idx, time_t target, uint32_t toll) {
   return migliore;
 }
 
+// --- la marea barometrica ---------------------------------------------
+static int8_t s_marea[24];
+static bool   s_mareaAttiva = false;
+
+void remote_set_marea(const int8_t tab[24]) {
+  if (tab == nullptr) { s_mareaAttiva = false; return; }
+  memcpy(s_marea, tab, 24);
+  s_mareaAttiva = true;
+}
+
+// Lo scarto della marea all'istante ts, in hPa. L'ora e' quella LOCALE, come
+// la tabella: il fuso e l'ora legale spostano il ciclo di un'ora o due, e una
+// marea sfasata e' peggio di nessuna marea.
+static float mareaHpa(time_t ts) {
+  if (!s_mareaAttiva || ts <= 0) return 0.0f;
+  struct tm tmv;
+  if (localtime_r(&ts, &tmv) == nullptr) return 0.0f;
+  return s_marea[tmv.tm_hour] / 100.0f;
+}
+
 // Ricalcola pressione al livello del mare, delta a 3 h e trend di un nodo.
 // Da chiamare quando e' appena arrivato un DATA nuovo.
 static void forecastUpdate(int idx) {
@@ -282,8 +302,14 @@ static void forecastUpdate(int idx) {
   // termini. Sul trend si cancella quasi del tutto, ma tenerla esplicita
   // evita di doversi ricordare perche' era lecito ometterla il giorno che
   // l'altitudine diventasse un campo per nodo.
-  r->delta3h = forecast_sea_level_hpa(pNow,     s_altitudeM)
-             - forecast_sea_level_hpa(pAllora,  s_altitudeM);
+  //
+  // La MAREA invece non si cancella affatto, ed e' il punto: si sottrae a
+  // ciascun capo lo scarto della SUA ora, non lo stesso numero due volte. Fra
+  // le 14 e le 17, per dire, il ciclo scende da solo di mezzo hPa, e senza
+  // questa riga quel mezzo hPa diventava "il tempo peggiora".
+  r->delta3h = (forecast_sea_level_hpa(pNow,    s_altitudeM) - mareaHpa(r->ultimoTs))
+             - (forecast_sea_level_hpa(pAllora, s_altitudeM)
+                - mareaHpa(r->ultimoTs - (time_t)TREND_WINDOW_S));
   r->trend   = (uint8_t)forecast_classify_hyst(r->delta3h, (forecast_trend_t)r->trend);
 }
 

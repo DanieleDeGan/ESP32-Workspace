@@ -1091,6 +1091,20 @@ static void handleApiStato() {
   }
   j += "\"loop_lenti\":"    + String(app_loop_lenti()) + ",";
   j += "\"loop_giri_s\":"   + String(app_loop_giri_s()) + ",";
+  // La marea barometrica: giorni entrati nella media, ampiezza da picco a
+  // picco, data dell'ultimo aggiornamento. Zero giorni vuol dire "nessuna
+  // correzione applicata", ed e' lo stato in cui la scheda parte la prima
+  // volta. Serve a vedere da FUORI se la taratura e' viva: una tabella che non
+  // si aggiorna piu' e una che non e' mai partita si somigliano troppo -- ed e'
+  // il difetto che si voleva evitare rispetto a una costante scritta a mano.
+  j += "\"marea_giorni\":" + String(app_marea_giorni()) + ",";
+  j += "\"marea_ampiezza\":"; appendJsonFloat(j, app_marea_ampiezza(), 2); j += ',';
+  {
+    char buf[24] = "";
+    if (app_marea_ultima() > 0)
+      rtctime_format(app_marea_ultima(), "%Y-%m-%d", buf, sizeof(buf));
+    j += "\"marea_ultima\":"; appendJsonString(j, buf); j += ',';
+  }
   j += "\"wdt_armato\":";   j += (app_wdt_armato() ? "true" : "false"); j += ',';
   j += "\"wdt_timeout_s\":" + String(app_wdt_timeout_s()) + ",";
 

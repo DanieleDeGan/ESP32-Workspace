@@ -698,6 +698,32 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     **Sopra il 100 % ci si va e non si tappa** (la cadenza e' stimata: un
     secondo su 300 vale un campione al giorno), e `cadenza_s` sta nel CSV
     perche' altrimenti la completezza sarebbe un numero non verificabile.
+  - **La marea barometrica si tara qui dentro** (da `v63`). I 24 accumulatori
+    per ora locale si riempiono **nella stessa passata** che chiude la
+    giornata: quella legge già ogni campione, e farne una seconda apposta
+    sarebbe una rilettura della card per niente.
+    - **Perché la calcola la scheda invece di una tabella scritta a mano**:
+      l'ampiezza della marea cambia con la stagione (cresce d'estate) e col
+      posto. Una costante incollata nel firmware sarebbe giusta a settembre e
+      sbagliata a luglio **senza che niente lo dica** — il difetto già pagato
+      con i default NVS. Così invece si ritara ogni notte.
+    - **Solo i giorni completi e QUIETI entrano nella media**: completezza
+      ≥ 90 % e |Δ24 h| ≤ 5 hPa. Un giorno con sei ore di buco sposta la media
+      del giorno e con lei tutti e 24 gli scarti; una burrasca infila il
+      sinottico dentro quello che deve restare astronomico. Di giorni ce n'è
+      uno al giorno per sempre: si può essere schizzinosi.
+    - **Media mobile con peso da 1 a 1/8**: il primo giorno *è* la tabella, poi
+      si muove piano. Un ciclo che cambia con la stagione non deve inseguire la
+      giornata.
+    - **Parte a zeri**, cioè col comportamento di prima: la correzione entra da
+      sé man mano che i giorni si accumulano, senza salti il primo giorno.
+    - **`marea_giorni`, `marea_ampiezza` e `marea_ultima` in `/api/stato`**:
+      una tabella che non si aggiorna più e una che non è mai partita si
+      somigliano troppo, e questo è esattamente il difetto che si voleva
+      evitare rispetto alla costante a mano. Sotto 0,3 hPa di ampiezza non è
+      marea ma rumore; sopra 3 è un errore.
+    - Il tutto vale **+7 punti di previsione**, misurati: vedi
+      `tools/previsione_verifica.py` e la voce 0 del backlog.
   - **La batteria non si media** (tre colonne da `v62`: `b_primo_mv`,
     `b_ultimo_mv`, `b_min_mv`). Di una cella interessano tre cose e nessuna è
     una media: com'era al mattino, com'era a sera — **la differenza fra le due

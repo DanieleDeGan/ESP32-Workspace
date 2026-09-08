@@ -82,6 +82,14 @@ void app_chiedi_refresh();
 // Rimette l'immagine della notte: azzera lo stato del silenzio e lascia
 // rientrare il loop(). Vale solo dentro la fascia.
 void app_chiedi_rientro_silenzio();
+
+// La taratura della marea barometrica: quanti giorni sono entrati nella media,
+// quando e' stata aggiornata, e l'ampiezza da picco a picco. Servono a vedere
+// da FUORI se la correzione e' viva: una tabella che non si aggiorna piu' e una
+// che non e' mai partita si somigliano troppo.
+uint16_t app_marea_giorni();
+time_t   app_marea_ultima();
+float    app_marea_ampiezza();
 void app_chiedi_pagina(uint8_t indice);
 
 // Quanti giorni di riepilogo sono stati chiusi da quando la scheda e' accesa.

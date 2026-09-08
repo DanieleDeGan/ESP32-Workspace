@@ -77,6 +77,20 @@ struct daily_t {
   uint16_t bUltimo;
   uint16_t bMin;
 
+  // --- la marea barometrica (v63) --------------------------------------
+  // Somma e conteggio della pressione per ORA LOCALE. Serve a misurare il
+  // ciclo giornaliero, che e' astronomico e non meteorologico: si accumula
+  // QUI perche' questa passata legge gia' ogni campione del giorno, e farne
+  // una seconda apposta costerebbe una rilettura della card per niente.
+  //
+  // L'ora si ricava per aritmetica da `offLocale`, non con localtime_r a ogni
+  // campione: questo file e' header-only e PURO, e una funzione che dipende
+  // dal fuso di sistema non lo sarebbe piu'. Il fuso lo guarda il chiamante,
+  // una volta per giorno.
+  double   mSomma[24];
+  uint16_t mN[24];
+  int32_t  offLocale;      // secondi da aggiungere a ts per avere l'ora locale
+
   uint32_t seqPrec;
   bool     seqVisto;
   time_t   tsPrec;
@@ -105,6 +119,8 @@ static inline void daily_reset(daily_t& d) {
   d.campioni = 0; d.buchi = 0; d.primo = 0; d.ultimo = 0;
   d.pPrimo = NAN; d.pUltimo = NAN;
   d.bPrimo = 0;   d.bUltimo = 0;  d.bMin = 0;
+  for (int i = 0; i < 24; i++) { d.mSomma[i] = 0.0; d.mN[i] = 0; }
+  d.offLocale = 0;
   d.seqPrec = 0;  d.seqVisto = false;
   d.tsPrec = 0;   d.nDelta = 0;
 }
@@ -135,6 +151,14 @@ static inline void daily_add(daily_t& d, time_t ts, uint32_t seq,
     if (d.bPrimo == 0) d.bPrimo = battMv;
     d.bUltimo = battMv;
     if (d.bMin == 0 || battMv < d.bMin) d.bMin = battMv;
+  }
+
+  // La pressione per ora locale, per la marea.
+  if (isfinite(pressHpa)) {
+    long ora = (long)(((ts + (time_t)d.offLocale) / 3600) % 24);
+    if (ora < 0) ora += 24;
+    d.mSomma[ora] += pressHpa;
+    d.mN[ora]++;
   }
   // Il tetto sul salto e' quello di remote_nodes (PERSI_SALTO_MAX): il seq
   // attraversa il deep sleep passando dalla RTC memory, e un valore sporco
@@ -174,6 +198,37 @@ static inline void daily_add(daily_t& d, time_t ts, uint32_t seq,
   if (d.primo == 0) d.primo = ts;
   d.ultimo = ts;
   d.campioni++;
+}
+
+// I 24 scarti orari dalla media del giorno, in CENTESIMI di hPa: la marea di
+// quella giornata. Torna false se il giorno non e' utilizzabile.
+//
+// Due condizioni, e sono la ragione per cui questa funzione puo' dire di no:
+//  - servono tutte e 24 le ore. Un giorno con un buco di sei ore darebbe una
+//    "media del giorno" spostata, e con lei tutti e 24 gli scarti.
+//  - si sottrae la media DEL GIORNO STESSO, non una costante: senza, una
+//    settimana di alta pressione entrerebbe nel ciclo come se fosse periodica.
+//
+// Chi chiama deve gia' aver scartato i giorni MOSSI (vedi daily_p_var): una
+// burrasca infila il sinottico dentro quello che deve restare astronomico.
+static inline bool daily_marea(const daily_t& d, int8_t out[24]) {
+  double somma = 0.0;
+  int    ore   = 0;
+  double media[24];
+  for (int h = 0; h < 24; h++) {
+    if (d.mN[h] == 0) return false;
+    media[h] = d.mSomma[h] / d.mN[h];
+    somma += media[h];
+    ore++;
+  }
+  const double mGiorno = somma / ore;
+  for (int h = 0; h < 24; h++) {
+    long c = lround((media[h] - mGiorno) * 100.0);
+    if (c >  127) c =  127;          // +-1,27 hPa: la marea vera sta dentro,
+    if (c < -127) c = -127;          // e cio' che non ci sta non e' marea
+    out[h] = (int8_t)c;
+  }
+  return true;
 }
 
 // Variazione della pressione sulla giornata: l'analogo a 24 h del trend a 3 h.

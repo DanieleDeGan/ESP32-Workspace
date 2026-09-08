@@ -312,6 +312,22 @@ float remote_temp_delta(int index, int slotIndietro);
 // tiene un campione per mezz'ora, il CSV tutti.
 int remote_temp_minmax(int index, float* minC, float* maxC);
 
+// La correzione della marea barometrica: 24 scarti orari in CENTESIMI di hPa,
+// indicizzati per ORA LOCALE. Si sottraggono ai due capi del delta a 3 ore
+// prima di classificare il trend.
+//
+// PERCHE'. Il ciclo giornaliero della pressione e' astronomico, non
+// meteorologico: qui misura ~1,5 hPa da picco a picco, e le soglie del trend
+// partono da 0,5 hPa/3h — la marea da sola le attraversa due volte al giorno.
+// Misurato l'8 settembre 2026 su 833 casi: senza correzione la previsione
+// azzecca il 31,5% contro il 28,3% di "dico sempre stabile"; togliendo la
+// marea il guadagno passa da +3,1 a +10,4 punti.
+//
+// `tab` a nullptr (o mai chiamata) = nessuna correzione, cioe' il
+// comportamento di prima. E' anche lo stato in cui la scheda parte, finche'
+// non ha abbastanza giorni per dire qualcosa.
+void remote_set_marea(const int8_t tab[24]);
+
 // Etichetta e testo della previsione, per la UI. Incapsulati qui cosi' chi
 // disegna non deve includere forecast.h ne' sapere come e' fatto il trend.
 const char* remote_trend_label(uint8_t trend);
