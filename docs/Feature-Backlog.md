@@ -51,7 +51,47 @@ sono classificate "costo medio" e non "alto".
 
 ## Da fare
 
-### 1. Min/max del giorno per nodo — FATTA IN PARTE il 2026-08-31 (`v23`-`v25`)
+### 0. Togliere la marea barometrica dalla previsione — TARATURA DAL 2026-09-27
+
+**Misurato l'8 settembre 2026 con `tools/previsione_verifica.py`: la previsione
+non ha praticamente potere predittivo.** Azzecca il segno di cio' che la
+pressione fa nelle 6 ore dopo il 31,5% delle volte, contro il 28,3% di «dico
+sempre stabile»: +3 punti. E le medie condizionate sono **mescolate** — quando
+dice «discesa» la pressione sale di +0,25 hPa, quando dice «salita lenta» scende
+di −0,18. Le frasi non stanno distinguendo niente.
+
+La causa non e' l'algoritmo ma il segnale: la **marea barometrica**, cioe' il
+ciclo giornaliero della pressione, che e' astronomico e non meteorologico. Qui
+misura **1,51 hPa da picco a picco** (massimi alle 10 e alle 23, minimi alle
+17-18 e alle 5: la S2 da manuale). Le soglie di `forecast.h` partono da
+0,5 hPa/3h, quindi **la marea da sola le attraversa due volte al giorno**.
+
+**La correzione**: sottrarre il ciclo giornaliero prima di calcolare il delta a
+3 ore. Sono ~10 righe in `forecast.h`, che resta header-only e puro, piu' una
+tabella di 24 valori che `previsione_verifica.py --marea` stampa gia' pronta.
+Misurato a parita' di bersaglio, il guadagno sulla base passa da **+3,1 a +10,4
+punti**: il potere predittivo triplica.
+
+**Perche' non e' gia' fatta**: la tabella e' una costante di TARATURA, non una
+legge fisica. La fase e' astronomica e non si sposta, ma l'ampiezza dipende
+dalla stagione, e 13 giorni di settembre quieto sono un campione magro — dentro
+c'e' ancora rumore sinottico. **Si tara su un mese di dati, cioe' dal
+2026-09-27** (la registrazione parte dal 27/08), e meglio ancora dopo il primo
+peggioramento vero, che nel campione di oggi manca del tutto.
+
+Due accorgimenti quando si fa, perche' una costante che invecchia in silenzio e'
+il difetto gia' pagato con i default NVS:
+- **la data della taratura va esposta** (in `/api/stato`), o fra sei mesi
+  nessuno sapra' se vale ancora;
+- si **ricalcola con un comando**, non a mente: `--marea` e' li'.
+
+**Scartato per strada, misurato**: passare a Zambretti. La sua banda morta di
++-1,6 hPa/3h sembrava scavalcare la marea per costruzione; invece peggiora
+(-0,2 punti contro i +3,2 della nostra a +-0,5), e peggiora **anche sulla
+pressione de-mareata**, dove la marea non c'e' piu'. Non stava scavalcando il
+disturbo: stava cancellando il segnale. Vedi `--bande`.
+
+### 1. Min/max del giorno per nodo### 1. Min/max del giorno per nodo — FATTA IN PARTE il 2026-08-31 (`v23`-`v25`)
 **Fatto**: minimo e massimo di temperatura **delle ultime 24 ore** (non dalla
 mezzanotte) sul pannello, nella pagina dettaglio, letti dall'anello di 48
 mezz'ore che già serviva al grafico — quindi a costo zero di memoria.
