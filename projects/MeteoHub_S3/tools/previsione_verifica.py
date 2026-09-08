@@ -4,6 +4,7 @@
 
     python tools/previsione_verifica.py <ip> [nodo] [giorni]
     python tools/previsione_verifica.py <ip> [nodo] [giorni] --marea
+    python tools/previsione_verifica.py <ip> [nodo] [giorni] --bande
 
 QUELLO CHE QUESTO STRUMENTO NON PUO' FARE, ed e' la prima cosa da sapere: una
 previsione si giudica contro **cio' che il tempo ha poi fatto**, e questa
@@ -55,6 +56,27 @@ separano nel verso giusto (discesa lenta -0,93, stabile -0,07, salita lenta
 +0,70).
 
 `--marea` stampa la tabella delle 24 correzioni, pronta da incollare.
+
+E UN SOSPETTO RAGIONEVOLE CHE E' RISULTATO SBAGLIATO (`--bande`). Zambretti
+decide "salita / stabile / discesa" con una banda morta di +-1,6 hPa su 3 ore,
+mentre le nostre soglie partono a +-0,5: siccome la marea produce fino a ~0,8
+hPa/3h, sembrava che la banda larga la scavalcasse per costruzione, e che fosse
+quello il motivo per cui Zambretti gode di buona fama. Misurato, non e' cosi':
+
+    banda +-0,5 (nostra)      guadagno  +3,2 punti
+    banda +-1,0                         +0,4
+    banda +-1,6 (Zambretti)             -0,2
+    banda +-2,0 e oltre                  0,0   (dice sempre "stabile")
+
+Allargare la soglia non batte la marea: **butta via il tempo insieme a lei**.
+Oltre i 2 hPa la previsione degenera nella base -- dice sempre stabile e
+azzecca esattamente quanto chi non prevede niente. La marea si toglie
+sottraendola, perche' e' un segnale NOTO e periodico; una soglia piu' grossa
+non la conosce, la nasconde.
+
+Con una avvertenza: queste due settimane sono un regime quieto (7 hPa di
+escursione sinottica in tutto). In un periodo mosso una banda a 1,6 farebbe
+molti meno danni, perche' il segnale meteorologico la supererebbe da solo.
 """
 import base64
 import json
@@ -231,6 +253,41 @@ def stampa_marea(serie):
     print("ricalcolata su almeno un mese di dati, non su due settimane.")
 
 
+def bande(serie):
+    """Quanto rende la banda morta del trend, al variare della sua larghezza,
+    con e senza marea. Il bersaglio e' SEMPRE la pressione vera: cambia solo
+    come si decide cosa dire."""
+    import time as _t
+    marea, _g = ciclo_giornaliero(serie)
+    sc = [(ts, p - marea.get(_t.localtime(ts).tm_hour, 0.0)) for ts, p in serie]
+    seg = lambda x, b=0.5: 0 if abs(x) < b else (1 if x > 0 else -1)
+
+    def prova(banda, corretto):
+        src = sc if corretto else serie
+        ok = base = n = 0
+        for i, (ts, _p) in enumerate(serie):
+            prima = cerca(src, ts - 3 * 3600)
+            dopo = cerca(serie, ts + ORIZZONTE_H * 3600)
+            if prima is None or dopo is None:
+                continue
+            n += 1
+            ok += (seg(src[i][1] - prima, banda) == seg(dopo - serie[i][1]))
+            base += (seg(dopo - serie[i][1]) == 0)
+        return 100.0 * ok / n, 100.0 * base / n
+
+    print("Bersaglio uguale per tutti: il segno di cio' che la pressione VERA")
+    print("fa nelle %d h dopo. Cambia solo come si decide cosa dire." % ORIZZONTE_H)
+    print("")
+    for titolo, corretto in (("PRESSIONE GREZZA", False), ("DE-MAREATA", True)):
+        print(titolo)
+        for b in (0.5, 1.0, 1.6, 2.0):
+            a, base = prova(b, corretto)
+            nota = "  <- la nostra" if b == 0.5 else ("  <- quella di Zambretti" if b == 1.6 else "")
+            print("  banda +-%.1f hPa/3h   azzecca %5.1f%%  base %5.1f%%  guadagno %+5.1f%s"
+                  % (b, a, base, a - base, nota))
+        print("")
+
+
 def main(host, nodo, giorni):
     import datetime
     oggi = datetime.date.today()
@@ -239,6 +296,9 @@ def main(host, nodo, giorni):
     serie = serie_da_api(d)
     if "--marea" in sys.argv:
         stampa_marea(serie)
+        return
+    if "--bande" in sys.argv:
+        bande(serie)
         return
     ore = int((serie[-1][0] - serie[0][0]) / 3600) if len(serie) > 1 else 0
     stampa(verifica(serie), nodo, ore)
