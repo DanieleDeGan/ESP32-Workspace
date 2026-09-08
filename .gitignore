@@ -4,6 +4,11 @@ build/
 *.elf
 *.map
 
+# Python: gli strumenti in tools/ si importano fra loro, e l'import lascia i
+# .pyc. Ci sono finiti dentro una volta con un git add -A.
+__pycache__/
+*.pyc
+
 # OS
 Thumbs.db
 Desktop.ini
