@@ -152,7 +152,12 @@ File sd_open_remote_day(const char* nodeName, const char* isoDate);
 //                 pagare la lettura di giorni interi.
 //
 // Torna quante righe sono state passate alla callback.
-typedef void (*sd_remote_row_cb_t)(time_t ts, uint32_t seq, const float v[3], void* arg);
+// `battMv` e' 0 quando la colonna e' VUOTA, che sul CSV vuol dire "non
+// misurata" -- un nodo alimentato dalla rete, o uno a batteria prima che il
+// partitore fosse cablato. Non e' uno zero volt, e chi aggrega deve saltarla:
+// una cella a 0,00 V e' una lettura impossibile che pero' fa media.
+typedef void (*sd_remote_row_cb_t)(time_t ts, uint32_t seq, const float v[3],
+                                   uint16_t battMv, void* arg);
 int sd_read_remote_day(const char* nodeName, const char* isoDate,
                        sd_remote_row_cb_t cb, void* arg, size_t codaMaxBytes);
 

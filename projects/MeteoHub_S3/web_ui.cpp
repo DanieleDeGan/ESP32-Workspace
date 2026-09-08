@@ -552,8 +552,10 @@ struct SerieCtx {
   int      quale;       // 0=temp 1=umidita 2=pressione
 };
 
-static void serieRiga(time_t ts, uint32_t seq, const float v[3], void* arg)
+static void serieRiga(time_t ts, uint32_t seq, const float v[3],
+                      uint16_t battMv, void* arg)
 {
+  (void)battMv;              // la serie decimata porta T, RH e pressione
   (void)seq;
   SerieCtx* x = (SerieCtx*)arg;
   x->righe++;

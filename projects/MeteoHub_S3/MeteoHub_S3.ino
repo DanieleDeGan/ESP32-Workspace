@@ -168,7 +168,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v61";
+static const char FW_VERSION[] = "v62";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1769,9 +1769,10 @@ static bool s_seedFatto = false;
 // aggiunta un domani avrebbe dovuto essere ricordata in due punti.
 struct SeedCtx { const RemoteNode* n; time_t minTs; int* righe; };
 
-static void seedRiga(time_t ts, uint32_t seq, const float v[3], void* arg)
+static void seedRiga(time_t ts, uint32_t seq, const float v[3],
+                     uint16_t battMv, void* arg)
 {
-  (void)seq;
+  (void)seq; (void)battMv;      // il seeding ricostruisce solo T e pressione
   SeedCtx* c = (SeedCtx*)arg;
   if (ts < c->minTs) return;
 
@@ -1874,9 +1875,10 @@ static char     s_riepGiornoUlt[11] = "";   // per accorgersi del cambio giorno
 // seedNodoDaCsv(), ma il file si legge TUTTO: qui non si ricostruisce una
 // finestra recente, si chiude una giornata, e una coda troncata darebbe un
 // minimo calcolato su mezzo pomeriggio senza dirlo.
-static void riepRiga(time_t ts, uint32_t seq, const float v[3], void* arg)
+static void riepRiga(time_t ts, uint32_t seq, const float v[3],
+                     uint16_t battMv, void* arg)
 {
-  daily_add(*(daily_t*)arg, ts, seq, v[0], v[1], v[2]);
+  daily_add(*(daily_t*)arg, ts, seq, v[0], v[1], v[2], battMv);
 }
 
 // Legge il CSV di un giorno e ne produce gli aggregati. Il file si legge
@@ -2064,6 +2066,14 @@ static void riepilogoTick()
 
     riepCampo(r, d.td.minimo, 2); riepCampo(r, d.td.massimo, 2);
     riepCampo(r, daily_media(d.td), 2);
+
+    // La batteria in coda, e in millivolt interi: sono la stessa unita' che
+    // arriva dal nodo, e convertirli in volt qui vorrebbe dire scegliere un
+    // arrotondamento al posto di chi legge. Un giorno senza misure lascia tre
+    // campi VUOTI, non tre zeri.
+    r += ',';  if (d.bPrimo)  r += d.bPrimo;
+    r += ',';  if (d.bUltimo) r += d.bUltimo;
+    r += ',';  if (d.bMin)    r += d.bMin;
 
     if (sd_riep_append(n.nome, r.c_str()))
     {

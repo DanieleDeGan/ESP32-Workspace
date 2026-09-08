@@ -64,6 +64,19 @@ struct daily_t {
   float    pPrimo;     // pressione del primo e dell'ultimo campione:
   float    pUltimo;    // la loro differenza e' la variazione sulle 24 h
 
+  // La batteria non si media (da v62). Di una cella interessano tre cose e
+  // nessuna e' una media: com'era al mattino, com'era a sera -- la differenza
+  // fra le due E' il consumo del giorno, cioe' l'unico numero da cui esce
+  // un'autonomia -- e quanto e' scesa nel momento peggiore, che e' il tuffo
+  // sotto carico e dice se la cella sta invecchiando.
+  //
+  // Zero non e' un valore: e' la colonna vuota del CSV, cioe' "non misurata".
+  // Un nodo alimentato dalla rete ha tutti zeri, e mediarli darebbe una cella
+  // a 0,00 V perfettamente plausibile per chi legge il file fra sei mesi.
+  uint16_t bPrimo;
+  uint16_t bUltimo;
+  uint16_t bMin;
+
   uint32_t seqPrec;
   bool     seqVisto;
   time_t   tsPrec;
@@ -91,6 +104,7 @@ static inline void daily_reset(daily_t& d) {
   daily_stat_reset(d.p);  daily_stat_reset(d.td);
   d.campioni = 0; d.buchi = 0; d.primo = 0; d.ultimo = 0;
   d.pPrimo = NAN; d.pUltimo = NAN;
+  d.bPrimo = 0;   d.bUltimo = 0;  d.bMin = 0;
   d.seqPrec = 0;  d.seqVisto = false;
   d.tsPrec = 0;   d.nDelta = 0;
 }
@@ -111,7 +125,17 @@ static inline float daily_media(const daily_stat_t& s) {
 // dato, non un incidente da nascondere. Le grandezze mancanti si passano NAN
 // e non entrano da nessuna parte.
 static inline void daily_add(daily_t& d, time_t ts, uint32_t seq,
-                             float tempC, float humPct, float pressHpa) {
+                             float tempC, float humPct, float pressHpa,
+                             uint16_t battMv) {
+  // La batteria PRIMA di tutto il resto: una riga puo' avere la cella misurata
+  // e la temperatura no (il sensore che non risponde), e viceversa. Sono due
+  // grandezze indipendenti, e legarle vorrebbe dire perdere l'una per colpa
+  // dell'altra.
+  if (battMv > 0) {
+    if (d.bPrimo == 0) d.bPrimo = battMv;
+    d.bUltimo = battMv;
+    if (d.bMin == 0 || battMv < d.bMin) d.bMin = battMv;
+  }
   // Il tetto sul salto e' quello di remote_nodes (PERSI_SALTO_MAX): il seq
   // attraversa il deep sleep passando dalla RTC memory, e un valore sporco
   // letto da li' diventerebbe qualche milione di "persi" dentro una riga che

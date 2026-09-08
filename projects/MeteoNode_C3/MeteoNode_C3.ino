@@ -908,14 +908,34 @@ static float dewPointC(float tempC, float rhPct) {
   return (b * g) / (a - g);
 }
 
+// Il rapporto del partitore. E' 2,0 con due resistori uguali, ma **si misurano
+// col multimetro e si corregge qui**: al 5% di tolleranza l'errore arriva a
+// +-200 mV su una cella LiPo, cioe' la differenza fra "carica a meta'" e
+// "quasi scarica". Con R1 = 1,02 MOhm e R2 = 0,98 MOhm il rapporto e'
+// (R1+R2)/R2 = 2,041, non 2.
+#define BATTERY_PARTITORE 2.0f
+
 static float readBatteryV() {
 #if BATTERY_ADC_ENABLED
-  // Il partitore dimezza, quindi la tensione di cella e' il doppio di quella
-  // al pin. analogReadMilliVolts() applica gia' la calibrazione di fabbrica
-  // dell'ADC, che a occhio nudo vale qualche decina di mV di errore in meno.
+  // Attenuazione dichiarata e non lasciata al default: sul C3 gli 11 dB
+  // portano il fondo scala a ~2,5 V, e con il partitore che dimezza una cella
+  // a 4,2 V arriva al pin come 2,1 V -- dentro, ma non di tanto. Con
+  // l'attenuazione sbagliata la lettura satura e si legge una batteria
+  // perfettamente carica mentre si sta scaricando.
+  analogSetPinAttenuation(PIN_BATTERY, ADC_11db);
+
+  // La PRIMA lettura si butta. Il multiplexer dell'ADC ha appena cambiato
+  // canale e il condensatore di campionamento porta ancora la carica di
+  // prima: con 500 kOhm di impedenza della sorgente (i due resistori in
+  // parallelo) quella carica si smaltisce in millisecondi, non in
+  // microsecondi.
+  (void)analogReadMilliVolts(PIN_BATTERY);
+
+  // La media di otto: l'ADC di questi chip ha qualche mV di rumore, e otto
+  // letture costano meno di un millisecondo.
   uint32_t mv = 0;
   for (uint8_t i = 0; i < 8; i++) mv += analogReadMilliVolts(PIN_BATTERY);
-  return (mv / 8.0f) * 2.0f / 1000.0f;
+  return (mv / 8.0f) * BATTERY_PARTITORE / 1000.0f;
 #else
   return NAN;
 #endif

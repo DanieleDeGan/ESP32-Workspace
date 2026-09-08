@@ -697,6 +697,24 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     **Sopra il 100 % ci si va e non si tappa** (la cadenza e' stimata: un
     secondo su 300 vale un campione al giorno), e `cadenza_s` sta nel CSV
     perche' altrimenti la completezza sarebbe un numero non verificabile.
+  - **La batteria non si media** (tre colonne da `v62`: `b_primo_mv`,
+    `b_ultimo_mv`, `b_min_mv`). Di una cella interessano tre cose e nessuna è
+    una media: com'era al mattino, com'era a sera — **la differenza fra le due
+    È il consumo del giorno**, cioè l'unico numero da cui esce un'autonomia — e
+    quanto è scesa nel momento peggiore, che è il tuffo sotto carico e dice se
+    la cella sta invecchiando.
+    - **Zero non è un valore, è una colonna vuota**: un nodo alimentato dalla
+      rete non misura la batteria, e mediare i suoi zeri darebbe una cella a
+      0,00 V perfettamente plausibile per chi legge il file fra sei mesi.
+    - **Le colonne stanno in CODA**, non in mezzo: le righe già scritte hanno
+      meno campi e un lettore che va per indice trova al posto giusto tutto
+      quello che c'era prima. Il formato è comunque cambiato, quindi lo storico
+      è stato ricostruito con `/api/nodi/riepilogo/rifai` — ed è la prova che
+      quel comando serve: **i valori rifatti sono identici ai precedenti**,
+      colonne nuove a parte.
+    - **La colonna `batt_mv` era nel CSV dei nodi dalla prima versione, e
+      nessuno la leggeva**: il parser di `sd_read_remote_day()` la separava e
+      la buttava. Da `v62` la porta alla callback.
   - **La rugiada si media campione per campione**, non si calcola dalle medie:
     e' non lineare. La differenza misurata e' pero' solo `+0,02..0,03 C` — la
     si fa giusta perche' non costa niente, non perche' cambi una decisione.

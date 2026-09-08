@@ -28,6 +28,33 @@ nodo e guardia della `Serial` si scelgono a compile-time dal tipo di chip.
   **commutato** su D3/GPIO5, SDA su D4/GPIO6; D1/GPIO3 lasciato libero per il
   partitore della batteria, **non ancora cablato**. Il BMP280 risponde a
   **0x77**, non a 0x76.
+- **Il partitore, quando arriva** (componenti ordinati, consegna **10/09/2026**).
+  Schema: **2×1 MΩ** fra `BAT+` e GND, presa centrale su **D1/GPIO3**, più
+  **100 nF ceramico X7R** fra la presa e massa, vicino al pin.
+  - **Il condensatore non è opzionale**: con 500 kΩ di impedenza equivalente
+    l'ADC non riesce a caricare il proprio condensatore di campionamento, e le
+    letture ballano di decine di mV. E deve essere **ceramico**: un
+    elettrolitico o un tantalio hanno una corrente di perdita dell'ordine dei
+    microampere, cioè *la stessa* dei 2,1 µA che scorrono nel partitore — si
+    sommerebbe in parallelo a R2 e falserebbe la misura in modo permanente e
+    credibile. Niente Y5V/Z5U: perdono l'80% della capacità agli estremi di
+    temperatura, e questo nodo sta fuori.
+  - **Il pin**: sulla XIAO C3 `D1/GPIO3` è ADC1, leggibile con il WiFi acceso.
+    **Non** `D3/GPIO5`, che è ADC2 e con il WiFi non si legge. Sull'ESP32
+    classico è il GPIO35 (solo ingresso, perfetto per un partitore).
+  - **Il positivo si prende da `BAT+`**, mai dal pad 5V: quello è alimentato
+    solo dall'USB e a batteria è morto.
+  - **Misurare i due resistori e correggere `BATTERY_PARTITORE`** (`2.0f` di
+    default): al 5% di tolleranza l'errore arriva a ±200 mV, cioè la differenza
+    fra «carica a metà» e «quasi scarica».
+  - Da `v19` il ramo acceso fa tre cose in più: dichiara l'attenuazione
+    (`ADC_11db`, fondo scala ~2,5 V — con quella sbagliata la lettura satura e
+    si legge una cella carica mentre si scarica), **butta la prima lettura**
+    (il multiplexer ha appena cambiato canale e il condensatore porta ancora la
+    carica di prima) e media otto campioni. **Compila anche con la macro a 1**,
+    su C3 e su ESP32 classico: provato, così il giorno del cablaggio non si
+    scopre un refuso.
+
 - **La lettura della batteria è scritta ma spenta** (`BATTERY_ADC_ENABLED 0`):
   il partitore previsto è 2×1 MΩ fra + cella e GND con la presa centrale su
   D1/GPIO3 (sull'ESP32 classico è il **GPIO35**, perché lì il 3 è la RX di

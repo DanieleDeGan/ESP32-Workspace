@@ -557,7 +557,11 @@ int sd_read_remote_day(const char* nodeName, const char* isoDate,
     v[0] = campo[5][0] ? atof(campo[5]) : NAN;
     v[1] = campo[6][0] ? atof(campo[6]) : NAN;
     v[2] = campo[7][0] ? atof(campo[7]) : NAN;
-    cb(ts, (uint32_t)strtoul(campo[4], nullptr, 10), v, arg);
+    // La colonna della batteria c'e' dalla prima versione del CSV, ma fino
+    // alla v62 nessuno la leggeva: il parser la separava e la buttava.
+    const uint16_t batt = (nc > 8 && campo[8][0])
+                            ? (uint16_t)strtoul(campo[8], nullptr, 10) : 0;
+    cb(ts, (uint32_t)strtoul(campo[4], nullptr, 10), v, batt, arg);
     righe++;
   }
   f.close();
@@ -567,7 +571,12 @@ int sd_read_remote_day(const char* nodeName, const char* isoDate,
 // ---------------------------------------------------------------------
 //  Riepilogo giornaliero
 // ---------------------------------------------------------------------
-#define RIEP_HEADER "giorno,campioni,attesi,cadenza_s,completezza_pct,buchi,"                     "t_min,t_min_ora,t_max,t_max_ora,t_med,"                     "h_min,h_max,h_med,p_min,p_max,p_med,p_var24,"                     "td_min,td_max,td_med"
+// Le tre colonne della batteria sono IN CODA (da v62), e non in mezzo: le
+// righe gia' scritte hanno meno campi, e un lettore che va per indice continua
+// a trovare al posto giusto tutto quello che c'era prima. Aggiungere in mezzo
+// avrebbe voluto dire riscrivere lo storico -- che si puo' fare
+// (`/api/nodi/riepilogo/rifai`) ma non si deve dover fare.
+#define RIEP_HEADER "giorno,campioni,attesi,cadenza_s,completezza_pct,buchi,"                     "t_min,t_min_ora,t_max,t_max_ora,t_med,"                     "h_min,h_max,h_med,p_min,p_max,p_med,p_var24,"                     "td_min,td_max,td_med,"                     "b_primo_mv,b_ultimo_mv,b_min_mv"
 
 static bool riepPath(const char* nodeName, char* path, size_t cap) {
   char dir[20];
