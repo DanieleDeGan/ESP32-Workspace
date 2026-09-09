@@ -717,11 +717,25 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
       giornata.
     - **Parte a zeri**, cioè col comportamento di prima: la correzione entra da
       sé man mano che i giorni si accumulano, senza salti il primo giorno.
-    - **`marea_giorni`, `marea_ampiezza` e `marea_ultima` in `/api/stato`**:
-      una tabella che non si aggiorna più e una che non è mai partita si
-      somigliano troppo, e questo è esattamente il difetto che si voleva
-      evitare rispetto alla costante a mano. Sotto 0,3 hPa di ampiezza non è
-      marea ma rumore; sopra 3 è un errore.
+    - **`marea_giorni`, `marea_ampiezza`, `marea_ultima` e — da `v64` — la
+      tabella intera `marea_tab` in `/api/stato`**: una tabella che non si
+      aggiorna più e una che non è mai partita si somigliano troppo, e questo
+      è esattamente il difetto che si voleva evitare rispetto alla costante a
+      mano. Sotto 0,3 hPa di ampiezza non è marea ma rumore; sopra 3 è un
+      errore.
+      - **Perché anche i 24 valori, e non solo l'ampiezza** (`v64`): quei tre
+        numeri dicono che la taratura è viva, non che ha la **fase** giusta —
+        e una marea sfasata di un'ora sposta il Δ3h dalla parte sbagliata
+        senza che nessuno di loro se ne accorga. Verificato il **09/09/2026**:
+        la correzione ricavata dal `delta_3h` pubblicato era **+0,69 hPa**
+        sulla coppia di ore 07→04, mentre la stessa tabella ricalcolata da
+        fuori sui CSV ne prevedeva **+0,44** — e senza i valori non c'era modo
+        di dire se sbagliasse la scheda o la ricostruzione (sull'altro nodo,
+        coppia 08→05, tornava a 0,01 hPa). `marea_tab` sono 24 interi in
+        **centesimi** di hPa, indice = ora locale, `null` finché nessun giorno
+        è entrato: 24 zeri sarebbero una tabella *piatta*, che è un'altra cosa
+        da una mai partita. Costa ~110 byte su una risposta da 730, e
+        `/api/stato` non è una pagina che si preleva a raffica.
     - Il tutto vale **+7 punti di previsione**, misurati: vedi
       `tools/previsione_verifica.py` e la voce 0 del backlog.
   - **La batteria non si media** (tre colonne da `v62`: `b_primo_mv`,

@@ -168,7 +168,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v63";
+static const char FW_VERSION[] = "v64";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1872,6 +1872,18 @@ static time_t   s_mareaUltima = 0;      // quando e' stata aggiornata l'ultima v
 
 uint16_t app_marea_giorni()  { return s_mareaGiorni; }
 time_t   app_marea_ultima()  { return s_mareaUltima; }
+
+// I 24 valori, cosi' come sono: e' l'unico modo di sapere da fuori CHE
+// correzione la scheda sta applicando, e non un riassunto di essa. L'ampiezza
+// dice che la tabella e' viva, non che ha la FASE giusta -- e una marea
+// sfasata di un'ora e' peggio di nessuna marea, perche' sposta il delta a 3 h
+// dalla parte sbagliata senza che nessun numero se ne accorga.
+//
+// Verificato il 09/09/2026, ed e' il motivo per cui questa esiste: la
+// correzione ricavata dal delta pubblicato non tornava con quella ricalcolata
+// da fuori sui CSV (+0,69 contro +0,44 hPa sulla coppia 07-04), e senza i
+// valori non c'era modo di dire se sbagliasse la scheda o la ricostruzione.
+void app_marea_tab(int8_t out[24]) { memcpy(out, s_mareaTab, sizeof(s_mareaTab)); }
 
 // L'ampiezza da picco a picco, in hPa: e' il numero che dice se la tabella ha
 // senso. Sotto 0,3 hPa non e' marea, e' rumore; sopra 3 e' un errore.

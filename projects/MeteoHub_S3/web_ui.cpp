@@ -1024,7 +1024,7 @@ static void handleApiStato() {
   rtctime_format(rtctime_now(), "%Y-%m-%d %H:%M:%S", ora, sizeof(ora));
 
   String j;
-  j.reserve(600);
+  j.reserve(900);
   j += '{';
   j += "\"nodo\":";      appendJsonString(j, app_hub_nome());     j += ',';
   j += "\"fw\":";        appendJsonString(j, app_fw_version());   j += ',';
@@ -1104,6 +1104,23 @@ static void handleApiStato() {
     if (app_marea_ultima() > 0)
       rtctime_format(app_marea_ultima(), "%Y-%m-%d", buf, sizeof(buf));
     j += "\"marea_ultima\":"; appendJsonString(j, buf); j += ',';
+  }
+  // E la tabella intera, 24 scarti orari in CENTESIMI di hPa, indice = ora
+  // locale. I tre numeri qui sopra dicono che la taratura e' VIVA; questi
+  // dicono cosa sta facendo, ed e' l'unico modo di controllarne la FASE: una
+  // marea sfasata di un'ora sposta il delta a 3 h dalla parte sbagliata e
+  // nessuno degli altri campi se ne accorgerebbe. Costa ~110 byte su una
+  // risposta da 730, e questa non e' la pagina che si preleva a raffica.
+  // `null` finche' nessun giorno e' entrato, come marea_ampiezza: 24 zeri
+  // sarebbero una tabella piatta, che e' un'altra cosa da una mai partita.
+  if (app_marea_giorni() == 0) {
+    j += "\"marea_tab\":null,";
+  } else {
+    int8_t tab[24];
+    app_marea_tab(tab);
+    j += "\"marea_tab\":[";
+    for (int h = 0; h < 24; h++) { if (h) j += ','; j += String((int)tab[h]); }
+    j += "],";
   }
   j += "\"wdt_armato\":";   j += (app_wdt_armato() ? "true" : "false"); j += ',';
   j += "\"wdt_timeout_s\":" + String(app_wdt_timeout_s()) + ",";
@@ -2655,7 +2672,7 @@ static const Rotta ROTTE[] = {
   { HTTP_GET,  "/pannello",             handlePannelloPage,          "pagine del pannello, messaggi, immagini (sostituibile)", "" },
   { HTTP_GET,  "/immagini",             handleImmaginiPage,          "composizione di un'immagine per il pannello (sostituibile)", "" },
 
-  { HTTP_GET,  "/api/stato",            handleApiStato,              "stato generale: firmware, rete, ora, card, contatori", "" },
+  { HTTP_GET,  "/api/stato",            handleApiStato,              "stato generale: firmware, rete, ora, card, contatori, taratura della marea (marea_tab: 24 scarti orari in centesimi di hPa)", "" },
   { HTTP_GET,  "/api/salute",           handleApiSalute,             "controlli incrociati: pacchetti == righe + scartati + fallite", "" },
   { HTTP_GET,  "/api/elenco",           nullptr,                     "QUESTO elenco, in JSON", "" },
 

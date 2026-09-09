@@ -90,6 +90,11 @@ void app_chiedi_rientro_silenzio();
 uint16_t app_marea_giorni();
 time_t   app_marea_ultima();
 float    app_marea_ampiezza();
+
+// La tabella intera, 24 scarti orari in CENTESIMI di hPa (indice = ora
+// locale). L'ampiezza dice se la taratura e' viva; questa dice cosa sta
+// facendo, ed e' l'unica con cui si puo' controllare la FASE.
+void     app_marea_tab(int8_t out[24]);
 void app_chiedi_pagina(uint8_t indice);
 
 // Quanti giorni di riepilogo sono stati chiusi da quando la scheda e' accesa.
