@@ -2975,8 +2975,19 @@ static const PaginaSost* paginaSost(const String& nome) {
 // Serve la versione sulla card se c'e', altrimenti quella del firmware.
 // streamFileLimitato() come per ogni file: un client che se ne va a meta' non
 // deve tenere fermo il loop(), che nel frattempo non preleva i DATA dei nodi.
+//
+// `no-cache` da v70, e non e' pignoleria: queste pagine si sostituiscono sulla
+// card apposta per iterare SENZA un OTA, quindi cambiano spesso e senza che
+// cambi niente altro -- nessun nome di file, nessuna versione nell'URL. Senza
+// header il browser applica le sue euristiche e si tiene la copia vecchia,
+// cioe' l'unica cosa che rende inutile il meccanismo per cui quelle pagine
+// stanno sulla card. Costato mezz'ora di dubbio il 09/09/2026: la dashboard
+// nuova era servita dalla scheda e il telefono continuava a mostrare quella di
+// prima. `no-cache` non vuol dire "non salvare" ma "chiedimi prima di
+// riusarla", che e' esattamente cio' che serve qui.
 static void servePagina(const char* nome, const char* pm) {
   if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  net_server().sendHeader("Cache-Control", "no-cache");
   File f = sd_open_www(nome);
   if (f) {
     streamFileLimitato(net_server(), f, "text/html");

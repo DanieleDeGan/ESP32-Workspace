@@ -108,28 +108,58 @@ header{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin:.4rem 0 1
 .tiles.sec .tile{padding:.6rem .8rem}
 
 /* --- previsione ---------------------------------------------------
-   La striscia delle ore scorre in orizzontale invece di andare a capo:
-   dodici colonne che si spezzano su due righe perdono la forma della
-   giornata, che e' l'unica cosa che si legge davvero a colpo d'occhio. */
-.cielo{display:flex;align-items:center;gap:1rem;flex-wrap:wrap}
-.cielo .ora{display:flex;align-items:center;gap:.8rem}
+   Scritta per lo SCHERMO STRETTO, perche' e' li' che si guarda: la
+   dashboard si apre dal telefono molto piu' spesso che dal PC, e la prima
+   versione di questa sezione era leggibile solo sul secondo.
+
+   Due cose sbagliate, entrambe classiche e nessuna delle due visibile su un
+   monitor largo:
+     - la colonna dei nomi dei giorni era fissa a 2,4rem, cioe' 38 px, e
+       'dopodomani' e' una parola sola che non puo' andare a capo: sbordava
+       sopra l'icona accanto. Ora quella traccia e' `auto`, quindi si
+       dimensiona sul nome piu' lungo e le tre righe restano incolonnate lo
+       stesso (in un grid le colonne sono condivise fra le righe);
+     - la striscia delle 12 ore e' larga ~670 px, e senza `min-width:0` un
+       figlio che scorre ALLARGA il contenitore invece di scorrere dentro di
+       se': la pagina intera prendeva la barra orizzontale, e con lei tutte
+       le altre card. `min-width:0` sui contenitori flex e' la riga che
+       manca in nove overflow su dieci.                                    */
+.cielo{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;min-width:0}
+.cielo .ora{display:flex;align-items:center;gap:.8rem;min-width:0}
 .cielo .gr{font-size:2.1rem;font-weight:600;line-height:1}
-.cielo .dett{display:flex;flex-direction:column;gap:.15rem;font-size:.8rem;color:var(--tx2)}
+.cielo .dett{display:flex;flex-direction:column;gap:.15rem;font-size:.8rem;
+             color:var(--tx2);min-width:0;overflow-wrap:anywhere}
 .cielo .dett b{color:var(--tx);font-size:.95rem;font-weight:600}
+#cieloCorpo{min-width:0}
 .ico{width:44px;height:44px;flex:none;color:var(--tx)}
 .ico.sm{width:26px;height:26px}
-.ore{display:flex;gap:.1rem;overflow-x:auto;margin-top:.9rem;padding-bottom:.3rem}
-.ore .o{flex:1 0 auto;min-width:56px;text-align:center;font-size:.7rem;color:var(--tx3);
-        padding:.35rem .1rem;border-radius:8px}
+/* `flex:0 0 auto` e non `1 0 auto`: le dodici colonne devono restare larghe
+   uguali e SCORRERE, non allargarsi fino a spingere fuori la card. */
+.ore{display:flex;gap:.1rem;overflow-x:auto;margin-top:.9rem;padding-bottom:.3rem;
+     min-width:0;max-width:100%}
+.ore .o{flex:0 0 auto;min-width:52px;text-align:center;font-size:.7rem;
+        color:var(--tx3);padding:.35rem .1rem;border-radius:8px}
 .ore .o b{display:block;color:var(--tx);font-size:.85rem;font-weight:600;margin-top:.1rem}
 .ore .o .pp{color:var(--tx2)}
 .ore .o.bagnata{background:var(--inset)}
-.giorni{display:grid;gap:.4rem;margin-top:.9rem}
-.giorni .g{display:grid;grid-template-columns:2.4rem 1.7rem 1fr auto;align-items:center;
-           gap:.6rem;font-size:.85rem}
-.giorni .g .nm{color:var(--tx2)}
-.giorni .g .tt{color:var(--tx)}
+.giorni{display:grid;gap:.4rem;margin-top:.9rem;min-width:0}
+.giorni .g{display:grid;grid-template-columns:auto 1.7rem minmax(0,1fr) auto;
+           align-items:center;gap:.6rem;font-size:.85rem;min-width:0}
+.giorni .g .nm{color:var(--tx2);white-space:nowrap}
+.giorni .g .tt{color:var(--tx);min-width:0;overflow:hidden;
+               text-overflow:ellipsis;white-space:nowrap}
 .cielo-ko{color:var(--tx3);font-size:.85rem}
+@media (max-width:480px){
+  /* Sul telefono l'icona grande vale meno dello spazio che toglie alle due
+     righe di numeri accanto, che sono la parte che si legge. */
+  .ico{width:34px;height:34px}
+  .ico.sm{width:22px;height:22px}
+  .cielo{gap:.7rem}
+  .cielo .ora{gap:.5rem}
+  .giorni .g{font-size:.8rem;gap:.4rem}
+  .ore .o{min-width:46px}
+  #inLat,#inLon{width:5rem}
+}
 .tiles.sec .tile .big{font-size:1.1rem;font-weight:500}
 .tile{background:var(--inset);border:1px solid var(--line);border-radius:11px;
   padding:.8rem .9rem;position:relative;overflow:hidden}
