@@ -168,7 +168,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v64";
+static const char FW_VERSION[] = "v65";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -2000,7 +2000,38 @@ static bool riepilogoDaCsv(const RemoteNode* n, const char* giorno, daily_t& d)
       const time_t mezzogiorno = mktime(&t0);
       struct tm loc, utc;
       if (mezzogiorno > 0 && localtime_r(&mezzogiorno, &loc) && gmtime_r(&mezzogiorno, &utc)) {
-        d.offLocale = (int32_t)(mktime(&loc) - mktime(&utc));
+        // L'offset del fuso, ora legale COMPRESA: si sottraggono le due ORE
+        // DEL GIORNO, quella locale e quella UTC dello stesso istante. Niente
+        // mktime -- e' proprio mktime ad aver introdotto il difetto qui sotto
+        // -- e niente `tm_gmtoff`, che su questo newlib non esiste ('struct tm
+        // has no member named tm_gmtoff', provato).
+        //
+        // COSTATO UN'ORA DI MAREA (trovato il 09/09/2026, corretto in v65). Il
+        // conto di prima era `mktime(&loc) - mktime(&utc)` con `utc` uscita da
+        // gmtime_r: sembra ovvio e non lo e', perche' gmtime_r lascia
+        // `tm_isdst = 0` e mktime prende quella tm per un'ora LOCALE STANDARD.
+        // A settembre l'ora UTC reinterpretata come CET invece che CEST vale
+        // un'ora in meno: l'offset usciva 3600 invece di 7200, ogni campione
+        // finiva nell'accumulatore dell'ora precedente e la tabella della marea
+        // nasceva ANTICIPATA DI UN'ORA -- cioe' proprio la marea sfasata che
+        // mareaHpa() dichiara essere peggio di nessuna marea. Vive SOLO durante
+        // l'ora legale: d'inverno il conto sbagliato da' il numero giusto, ed e'
+        // il genere di cosa che sarebbe tornata da sola a marzo.
+        //
+        // Non lo diceva nessuno dei numeri esposti: `marea_giorni` saliva,
+        // `marea_ultima` si aggiornava, l'ampiezza era 1,62 hPa -- giusta,
+        // perche' la CURVA e' quella vera, solo spostata. Si e' visto
+        // confrontando i 24 valori con la stessa tabella ricalcolata da fuori
+        // sui CSV, ed e' esattamente il motivo per cui `marea_tab` e' finita in
+        // /api/stato in v64.
+        long secLoc = loc.tm_hour * 3600L + loc.tm_min * 60L + loc.tm_sec;
+        long secUtc = utc.tm_hour * 3600L + utc.tm_min * 60L + utc.tm_sec;
+        long diff   = secLoc - secUtc;
+        // Il giorno puo' essere diverso fra le due (a mezzogiorno non capita,
+        // ma il conto non deve dipendere dall'ora scelta come riferimento).
+        if (diff >  43200) diff -= 86400;
+        if (diff < -43200) diff += 86400;
+        d.offLocale = (int32_t)diff;
       }
     }
   }

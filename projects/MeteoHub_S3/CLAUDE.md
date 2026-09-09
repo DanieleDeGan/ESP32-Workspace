@@ -736,6 +736,30 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
         è entrato: 24 zeri sarebbero una tabella *piatta*, che è un'altra cosa
         da una mai partita. Costa ~110 byte su una risposta da 730, e
         `/api/stato` non è una pagina che si preleva a raffica.
+    - **L'ora locale si prende da `tm_gmtoff`, mai per differenza fra due
+      `mktime()`** (`v65`, e la `v63` sbagliava). Il conto di prima era
+      `mktime(&loc) - mktime(&utc)` con `utc` uscita da `gmtime_r`: sembra
+      ovvio e non lo è, perché `gmtime_r` lascia `tm_isdst = 0` e `mktime`
+      legge quella `tm` come **ora locale standard**. A settembre l'ora UTC
+      reinterpretata come CET invece che CEST vale un'ora in meno: l'offset
+      usciva 3600 invece di 7200, ogni campione finiva nell'accumulatore
+      dell'ora prima e **la tabella nasceva anticipata di un'ora** — cioè
+      proprio la marea sfasata che `mareaHpa()` dichiara essere peggio di
+      nessuna marea. Vive **solo durante l'ora legale**: d'inverno il conto
+      sbagliato dà il numero giusto, quindi sarebbe tornato da solo a marzo.
+      - **Come si è visto, e perché non prima**: nessuno dei numeri esposti
+        lo diceva. `marea_giorni` saliva, `marea_ultima` si aggiornava,
+        l'ampiezza era 1,62 hPa — *giusta*, perché la curva è quella vera,
+        solo spostata. È saltato fuori il **09/09/2026**, minuti dopo l'OTA
+        della `v64`, confrontando i 24 valori con la stessa tabella
+        ricalcolata da fuori sui CSV: scarto medio 17 centesimi di hPa
+        allineando le ore, **1,3 centesimi spostandone una** (massimo della
+        scheda alle 09 contro le 10 della marea vera).
+      - **Dopo la correzione la tabella vecchia va buttata**, non lasciata
+        convergere: con 19 giorni già in media il peso è fisso a 1/8 e la
+        tabella sfasata resterebbe a correggere l'ora sbagliata per una
+        settimana. Si fa con `POST /api/nodi/riepilogo/rifai`, che dalla
+        `v63` azzera anche la marea e riparte dai giorni sulla card.
     - Il tutto vale **+7 punti di previsione**, misurati: vedi
       `tools/previsione_verifica.py` e la voce 0 del backlog.
   - **La batteria non si media** (tre colonne da `v62`: `b_primo_mv`,
