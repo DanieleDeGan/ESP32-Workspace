@@ -25,6 +25,7 @@
 #include "rtc_time.h"
 #include "pages.h"
 #include "messages.h"
+#include "cielo.h"        // la previsione vera, in /api/cielo
 #include "dither_page.h"
 #include "analisi_page.h"   // GENERATO da www/gen_page.py, servito su /immagini
 
@@ -678,6 +679,139 @@ static void handleApiNodiSerie() {
   free(cesti);
 
   srv.send(200, "application/json", j);
+}
+
+// --- la previsione vera (Open-Meteo) ----------------------------------
+// Tutto quello che il servizio ha detto, non la riduzione che va sul
+// pannello: li' c'e' una icona sola perche' a 32 px non ci sta altro, qui lo
+// spazio non manca e nascondere meta' del dato sarebbe una scelta senza
+// motivo. Il codice WMO grezzo c'e' accanto alla classe, cosi' chi legge puo'
+// rifare la riduzione a modo suo.
+//
+// `valido` false NON e' un errore da nascondere: e' la regola della
+// dipendenza esterna, cioe' dire NON RAGGIUNGIBILE invece di mostrare il
+// cielo di un'ora fa come se fosse quello di adesso.
+static void handleApiCielo() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+
+  CieloStato c;
+  cielo_get(&c);
+
+  String j;
+  j.reserve(1200);
+  j += '{';
+  j += "\"valido\":"; j += (c.valido ? "true" : "false"); j += ',';
+  j += "\"posizione\":"; j += (cielo_posizione_valida() ? "true" : "false"); j += ',';
+  j += "\"lat\":"; appendJsonFloat(j, cielo_lat(), 2); j += ',';
+  j += "\"lon\":"; appendJsonFloat(j, cielo_lon(), 2); j += ',';
+  {
+    char buf[24] = "";
+    if (c.quando > 0) rtctime_format(c.quando, "%Y-%m-%d %H:%M:%S", buf, sizeof(buf));
+    j += "\"quando\":"; appendJsonString(j, buf); j += ',';
+  }
+  j += "\"eta_s\":";
+  if (c.quando > 0 && rtctime_isSynced()) j += String((long)(rtctime_now() - c.quando));
+  else                                    j += "null";
+  j += ',';
+
+  j += "\"adesso\":";      appendJsonString(j, cielo_classe_nome(c.adesso));  j += ',';
+  j += "\"breve\":";       appendJsonString(j, cielo_classe_nome(c.breve));   j += ',';
+  j += "\"ore_brevi\":";   j += String(CIELO_ORE_BREVI); j += ',';
+  j += "\"wmo_adesso\":";  j += String(c.wmoAdesso); j += ',';
+  j += "\"wmo_breve\":";   j += String(c.wmoBreve);  j += ',';
+
+  j += "\"temp_c\":";      appendJsonFloat(j, c.tempC, 1);      j += ',';
+  j += "\"percepita_c\":"; appendJsonFloat(j, c.percepitaC, 1); j += ',';
+  j += "\"umidita_pct\":"; j += (c.umiditaPct >= 0 ? String((int)c.umiditaPct) : String("null")); j += ',';
+  j += "\"pioggia_mm\":";  appendJsonFloat(j, c.pioggiaMm, 1);  j += ',';
+  j += "\"vento_kmh\":";   appendJsonFloat(j, c.ventoKmh, 1);   j += ',';
+  j += "\"raffiche_kmh\":";appendJsonFloat(j, c.raficheKmh, 1); j += ',';
+
+  j += "\"ore\":[";
+  for (int i = 0; i < c.nOre; i++) {
+    if (i) j += ',';
+    j += "{\"wmo\":"; j += String(c.ore[i].wmo);
+    j += ",\"classe\":"; appendJsonString(j, cielo_classe_nome(cielo_classe_da_wmo(c.ore[i].wmo)));
+    j += ",\"temp_c\":"; appendJsonFloat(j, c.ore[i].tempC, 1);
+    j += ",\"pioggia_pct\":";
+    j += (c.ore[i].pioggiaPct >= 0 ? String((int)c.ore[i].pioggiaPct) : String("null"));
+    j += '}';
+  }
+  j += "],";
+
+  j += "\"giorni\":[";
+  for (int i = 0; i < c.nGiorni; i++) {
+    if (i) j += ',';
+    j += "{\"wmo\":"; j += String(c.giorni[i].wmo);
+    j += ",\"classe\":"; appendJsonString(j, cielo_classe_nome(cielo_classe_da_wmo(c.giorni[i].wmo)));
+    j += ",\"t_min\":"; appendJsonFloat(j, c.giorni[i].tMinC, 1);
+    j += ",\"t_max\":"; appendJsonFloat(j, c.giorni[i].tMaxC, 1);
+    j += ",\"pioggia_pct\":";
+    j += (c.giorni[i].pioggiaPct >= 0 ? String((int)c.giorni[i].pioggiaPct) : String("null"));
+    j += '}';
+  }
+  j += "],";
+
+  // Il servizio visto da qui: quanto e' costato al loop(), quanto ha reso, e
+  // cosa e' andato storto l'ultima volta. Sono i numeri che distinguono
+  // "internet giu'" da "posizione mai impostata" da "servizio lento".
+  j += "\"prese\":";   j += String(c.prese);   j += ',';
+  j += "\"fallite\":"; j += String(c.fallite); j += ',';
+  j += "\"durata_ms\":"; j += String(c.ultimaDurataMs); j += ',';
+  j += "\"byte\":";    j += String(c.ultimiByte); j += ',';
+  j += "\"errore\":";  appendJsonString(j, c.errore);
+  j += '}';
+  net_server().send(200, "application/json", j);
+}
+
+// Il registro del confronto, un file al mese. Stesso schema di /api/eventi:
+// il mese assente vuol dire quello corrente, ed e' la richiesta che si fa
+// quasi sempre.
+static void handleApiCieloRegistro() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+
+  char meseOra[8];
+  if (!srv.hasArg("m")) {
+    time_t t = rtctime_now();
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    snprintf(meseOra, sizeof(meseOra), "%04d-%02d", tmv.tm_year + 1900, tmv.tm_mon + 1);
+  }
+  const String mese = srv.hasArg("m") ? srv.arg("m") : String(meseOra);
+
+  File f = sd_open_cielo(mese.c_str());
+  if (!f) { srv.send(404, "text/plain", "nessun registro per quel mese"); return; }
+
+  char disp[64];
+  snprintf(disp, sizeof(disp), "inline; filename=\"cielo_%s.csv\"", mese.c_str());
+  srv.sendHeader("Content-Disposition", disp);
+  streamFileLimitato(srv, f, "text/csv");
+  f.close();
+}
+
+static void handleApiCieloPosizione() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  WebServer& srv = net_server();
+  if (!srv.hasArg("lat") || !srv.hasArg("lon")) {
+    srv.send(400, "text/plain", "mancano lat e lon");
+    return;
+  }
+  if (!cielo_set_posizione(srv.arg("lat").toFloat(), srv.arg("lon").toFloat())) {
+    srv.send(400, "text/plain", "fuori range (lat -90..90, lon -180..180)");
+    return;
+  }
+  srv.send(200, "text/plain", String("posizione: ") + String(cielo_lat(), 2) +
+                              ", " + String(cielo_lon(), 2));
+}
+
+// Non aspetta la risposta: chiede al loop() di farlo al giro dopo. Aspettarla
+// qui vorrebbe dire tenere fermo il web server per il tempo di una richiesta
+// verso internet, dentro un handler.
+static void handleApiCieloAggiorna() {
+  if (!net_webAuthOk()) { net_server().requestAuthentication(); return; }
+  cielo_chiedi_ora();
+  net_server().send(200, "text/plain", "richiesta accodata: arriva entro un giro di loop");
 }
 
 static void handleApiNodiAltitudine() {
@@ -2679,6 +2813,11 @@ static const Rotta ROTTE[] = {
   { HTTP_GET,  "/api/elenco",           nullptr,                     "QUESTO elenco, in JSON", "" },
 
   { HTTP_GET,  "/api/nodi",             handleApiNodi,               "i nodi: valori, cadenza, trend della pressione, previsione, variazioni della temperatura a 1/2/3 h, pacchetti persi", "" },
+
+  { HTTP_GET,  "/api/cielo",            handleApiCielo,              "la previsione VERA (Open-Meteo): cielo adesso e nelle prossime 3 h, 12 ore avanti, 3 giorni, piu' lo stato del servizio. Il barometro di casa dice come si muove la pressione, non che tempo fara'", "" },
+  { HTTP_POST, "/api/cielo/posizione",  handleApiCieloPosizione,     "dove sta la stazione, per la previsione. Due decimali bastano (~1 km) e la richiesta viaggia in chiaro", "lat=45.41, lon=11.88" },
+  { HTTP_POST, "/api/cielo/aggiorna",   handleApiCieloAggiorna,      "chiede il dato adesso invece di aspettare la mezz'ora (la richiesta la fa il loop, non questo handler)", "" },
+  { HTTP_GET,  "/api/cielo/registro",   handleApiCieloRegistro,      "il registro del confronto fra le due previsioni, un file al mese: la nostra, quella del servizio, e che tempo faceva in quel momento. Una riga l'ora", "m=AAAA-MM (default: il mese corrente)" },
   { HTTP_POST, "/api/pairing",          handleApiPairing,            "apre o chiude la finestra di associazione", "on=0|1, s=secondi" },
   { HTTP_GET,  "/api/pairing/ascolto",  handleApiPairingAscolto,     "chi bussa e non entra: MAC sconosciuti con RSSI e motivo dello scarto, anche fuori dalla finestra", "" },
   { HTTP_POST, "/api/nodi/dimentica",   handleApiNodiDimentica,      "toglie un nodo dal registro (RAM e NVS)", "mac=AA:BB:..." },

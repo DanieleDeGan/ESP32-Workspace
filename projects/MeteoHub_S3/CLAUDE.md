@@ -18,6 +18,7 @@ CDC, deep sleep, OTA, scritture su SD, default NVS) `docs/Trappole-Hardware.md`.
 | `forecast.h` | copia dal nodo: trend barometrico a 3 h con isteresi, header-only e puro. Il calcolo autorevole sta **qui**, non sul nodo |
 | `daily.h` | aggregati di una giornata (min/max/media di T, RH, pressione, rugiada, più completezza e cadenza dedotta), header-only e puro |
 | `meteo_calc.h` | quello che si ricava da T e RH: rugiada, umidità assoluta, humidex. Header-only e puro come `forecast.h` — sta **sull'hub** perché sono grandezze derivate, e un errore di formula spedito dal nodo finirebbe nello storico per sempre |
+| `cielo.h/.cpp` | **la previsione vera**: Open-Meteo in HTTP semplice, ridotta a sette classi di cielo. Esiste perché questa stazione non ha niente che guardi il cielo, e il barometro non sa che tempo farà |
 | `icone.h` | le icone 1 bit del pannello, **generate** da `tools/icone.py` — non si modificano a mano |
 | `net_ota.h/.cpp` | WiFi + ArduinoOTA + `/update`, variante con `net_server()` condiviso |
 | `web_ui.h/.cpp` | pagine servite dalla scheda, tabella delle rotte e API — gli stessi endpoint di `EnvNode_C3`, più quelli del pannello |
@@ -485,6 +486,75 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     **mostra a schermo prima di generarle**: a 14-20 px e 1 bit si vede la
     silhouette, non il dettaglio, quindi quelle che funzionano sono pochissime e
     l'unico modo di accorgersene è guardarle — non immaginarsele.
+
+- **La previsione VERA, e perché non la fa il barometro** (`cielo.*`, `v67`-`v68`,
+  2026-09-09). Sul pannello e nella dashboard c'è un'icona del cielo — sole,
+  nuvole, pioggia, temporale — e **non è dedotta dalla pressione**: la porta
+  Open-Meteo.
+  - **Il motivo è misurato, non estetico**: questa stazione misura tre numeri e
+    non ha nessun sensore che guardi il cielo. La previsione di `forecast.h` è
+    il trend del barometro, e l'8-9 settembre 2026 su 819 casi **non batte la
+    persistenza**: azzecca il segno di come si muove la pressione, non che
+    tempo farà. Un'icona con la pioggia mentre fuori c'è il sole è l'errore più
+    visibile che un pannello possa fare, ed è quello da cui non si riprende.
+  - **HTTP semplice, nessuna chiave, ~1,5 kB**: misurato **137 ms** dalla
+    scheda. La posizione si manda con **due decimali** (~1 km): al meteo basta,
+    e la richiesta viaggia in chiaro.
+  - **Sette classi e non 28 codici WMO**: a 1 bit e 20 px si vede la
+    silhouette, e «pioviggine leggera» contro «pioggia moderata» sarebbe la
+    stessa macchia nera. Sul web invece il codice grezzo c'è tutto — ridurre è
+    una scelta del pannello, non del dato.
+  - **La regola della dipendenza esterna, applicata**: il dato **scade a 90
+    minuti** e allora l'icona sparisce e il web dice perché. Mai mostrare il
+    cielo di un'ora fa come se fosse quello di adesso. Un tentativo fallito non
+    spegne un dato ancora fresco: a spegnerlo è la scadenza, che è l'unica cosa
+    capace di distinguere «vecchio» da «andato male una volta».
+  - **Non si tenta a rete giù né senza posizione**: sarebbero errori ad ogni
+    giro, e il contatore delle fallite direbbe che non va il *servizio*. Visto
+    subito: appena accesa la scheda diceva già «1 fallita».
+  - **Il timeout è 2,5 s ed è la cosa delicata**: il `loop()` è sincrono, e
+    mentre si aspetta il server i DATA dei nodi non vengono prelevati dal
+    driver, che ne tiene **uno solo**. La richiesta ha una **fase sua**
+    (`loop_max_dove="cielo"`) e la durata dell'ultima sta in `/api/cielo`: un
+    servizio diventato lento si deve vedere, non nascondere.
+  - **Sul pannello: due icone quando il tempo cambia entro tre ore**, una sola
+    quando non cambia — ed è la seconda a valere i 24 px che la riga costa. Un
+    pannello che dice «sereno» mentre fra due ore piove non serve a decidere se
+    uscire, che è la cosa per cui lo si guarda. **Tre ore come il trend del
+    barometro**, apposta: le due previsioni parlano dello stesso futuro.
+    - **La riga la divide con la pillola d'allarme** invece di prendersene una
+      sua: due strisce da 24 px porterebbero i blocchi sotto `NODI_H_GRAFICO`,
+      cioè farebbero sparire la curva delle 24 h per un avviso che quasi mai
+      c'è.
+    - **Sì, rimette 24 px di quelli che la `v59` aveva tolto col piede.** La
+      differenza è cosa c'è scritto: il piede diceva IP e spazio libero, che
+      non cambiano mai; qui c'è l'unica cosa sul pannello che il barometro di
+      casa non sa dire.
+    - **La classe entra in `firmaStato()`**, non fra i valori: quando cambia,
+      cambia anche l'altezza dei blocchi. Ci va la **classe** e non il codice
+      WMO — due codici che disegnano la stessa icona sarebbero refresh da 2,2 s
+      per niente.
+  - **E il confronto si registra** (`/cielo/AAAA-MM.csv`, `GET
+    /api/cielo/registro`): una riga l'ora con la nostra previsione, quella del
+    servizio e **che tempo faceva in quel momento**. È la parte interessante
+    della voce 7 del backlog: mostrare un'icona presa da internet non insegna
+    niente, affiancarla alla propria previsione trasforma «la mia regola vale
+    qualcosa?» in una domanda con una risposta numerica. Il file va cominciato
+    adesso proprio perché la risposta arriverà fra settimane.
+    - **Si allinea all'ora tonda**, non a un timer da 3600 s: dopo un OTA un
+      timer ripartirebbe da lì e le righe non starebbero più sulla stessa
+      griglia — cioè la colonna «cosa è successo tre ore dopo» andrebbe cercata
+      a tolleranza invece che per costruzione.
+    - **Un fallimento di scrittura NON entra nelle `scritture_fallite` di
+      `/api/salute`**: là il conto che regge è `pacchetti == righe + scartati +
+      fallite`, e una riga che non viene da un pacchetto lo sbilancerebbe.
+  - **Nella dashboard c'è la sezione «Previsione»**: cielo adesso e fra tre
+    ore, striscia delle 12 ore, tre giorni, vento/raffiche/umidità, stato del
+    servizio (prese, fallite, ms, byte) e i campi per la posizione. Le icone
+    sono **SVG inline**, non emoji: le emoji cambiano faccia su ogni sistema,
+    mentre qui servono le stesse sette silhouette del pannello.
+    - Accanto c'è **la nostra previsione barometrica**, apposta: non dicono la
+      stessa cosa, e vederle vicine è il modo di non confonderle mai più.
 
 - **`GET /api/salute` fa i controlli incrociati da sola** (da `v13`). Il
   controllo che vale e' **`pacchetti ricevuti == righe scritte + scartati per

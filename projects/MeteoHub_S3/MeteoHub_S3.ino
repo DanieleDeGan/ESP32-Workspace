@@ -97,6 +97,8 @@
 #include "web_ui.h"        // pagina di stato e API, registrate su net_server()
 #include "pages.h"        // il modello delle pagine: cosa mostrare e quando
 #include "messages.h"     // il messaggio attivo (NVS) e il suo archivio (SD)
+#include "cielo.h"        // la previsione VERA (Open-Meteo): il barometro di
+                          // casa non sa che tempo fara', e questa lo sa
 #include "secrets.h"       // OTA_HOSTNAME, per dirlo sul pannello
 
 // v44 (2026-09-03) — le cinque correzioni del "Blocco A" di
@@ -168,7 +170,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v66";
+static const char FW_VERSION[] = "v68";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1463,15 +1465,103 @@ static void drawAllarme(const String& testo)
   tela.setTextColor(GxEPD_BLACK);
 }
 
+// L'icona del cielo per una classe. `nullptr` per CIELO_IGNOTO: chi disegna
+// deve poter decidere di non disegnare niente, che e' diverso da disegnare un
+// punto interrogativo.
+static const uint8_t* cieloBitmap(uint8_t classe)
+{
+  switch (classe) {
+    case CIELO_SERENO:        return IC_CIELO_SOLE;
+    case CIELO_POCO_NUVOLOSO: return IC_CIELO_SOLE_NUVOLA;
+    case CIELO_COPERTO:       return IC_CIELO_NUVOLA;
+    case CIELO_NEBBIA:        return IC_CIELO_NEBBIA;
+    case CIELO_PIOGGIA:       return IC_CIELO_PIOGGIA;
+    case CIELO_NEVE:          return IC_CIELO_NEVE;
+    case CIELO_TEMPORALE:     return IC_CIELO_TEMPORALE;
+    default:                  return nullptr;
+  }
+}
+
+// Il cielo in fondo a destra, sulla stessa riga della pillola d'allarme.
+//
+// DUE ICONE quando il tempo cambia entro tre ore, una sola quando non cambia.
+// La seconda e' il motivo per cui questa riga vale i 24 px che costa: un
+// pannello che dice 'sereno' mentre fra due ore piove non serve a decidere
+// niente, ed e' proprio decidere se uscire la cosa per cui la si guarda.
+//
+// TRE ORE come il trend del barometro, apposta: le due previsioni parlano
+// dello stesso futuro e stanno sulla stessa pagina. Quella a sinistra e' la
+// pressione misurata qui, questa e' il cielo secondo chi lo guarda davvero.
+//
+// Se il dato non e' fresco NON si disegna niente (cielo_get lo dice con
+// `valido`): un'icona vecchia di due ore e' peggio di nessuna icona, ed e' la
+// regola della dipendenza esterna scritta in cielo.h.
+static void drawCielo(int16_t yBase)
+{
+  CieloStato c;
+  cielo_get(&c);
+  if (!c.valido) return;
+
+  const uint8_t* ic1 = cieloBitmap(c.adesso);
+  if (!ic1) return;
+  const bool cambia = (c.breve != c.adesso);
+  const uint8_t* ic2 = cambia ? cieloBitmap(c.breve) : nullptr;
+
+  // Il testo e' la classe di ARRIVO quando cambia, non quella di adesso: se
+  // fra tre ore piove, la parola che serve e' 'pioggia'. L'icona di sinistra
+  // dice gia' com'e' adesso.
+  const String testo = cielo_classe_nome(cambia ? c.breve : c.adesso);
+
+  tela.setFont(&FreeSans9pt7b);
+  int16_t bx, by; uint16_t bw, bh;
+  tela.getTextBounds(testo, 0, 0, &bx, &by, &bw, &bh);
+
+  // Si misura tutto e si parte da destra: la riga la condivide con la pillola
+  // d'allarme, che cresce da sinistra col suo testo.
+  const int16_t larg = (int16_t)(20 + 4 + (ic2 ? 20 + 10 : 0) + bw);
+  int16_t x = 388 - larg;
+
+  tela.drawBitmap(x, yBase - 20, ic1, IC_CIELO_SOLE_W, IC_CIELO_SOLE_H, GxEPD_BLACK);
+  x += 20 + 4;
+  if (ic2) {
+    // La freccia fra le due: due trattini e una punta, disegnati e non
+    // scritti, perche' '->' in FreeSans a 9pt e' un trattino e un maggiore.
+    tela.fillRect(x, yBase - 11, 6, 2, GxEPD_BLACK);
+    tela.fillTriangle(x + 6, yBase - 14, x + 6, yBase - 6, x + 10, yBase - 10, GxEPD_BLACK);
+    x += 10;
+    tela.drawBitmap(x, yBase - 20, ic2, IC_CIELO_SOLE_W, IC_CIELO_SOLE_H, GxEPD_BLACK);
+    x += 20 + 4;
+  }
+  tela.setCursor(x, yBase - 5);
+  tela.print(testo);
+}
+
 // Quanto e' alto un blocco. Una funzione sola perche' il conto serve in DUE
 // posti -- screenNodi() per disegnare, firmaValori() per sapere che cosa e'
 // stato disegnato -- e due conti copiati divergerebbero al primo ritocco. Una
 // firma che non corrisponde alla pagina si vede come refresh mancati: il
 // pannello resta indietro e nessun contatore lo dice.
-static int16_t nodiAltezzaBlocco(int quanti, const Message* fascia, bool allarme)
+// C'e' la riga in fondo? La condizione sta QUI, in una funzione sola, e non
+// nei tre posti che la usano -- screenNodi() per disegnare, firmaValori() per
+// sapere cosa e' stato disegnato, nodiLayoutComodo() per scegliere il layout.
+//
+// COPIATA A MANO SI E' GIA' SFASATA UNA VOLTA, il giorno stesso in cui il
+// cielo e' arrivato: lo spazio veniva tolto in screenNodi() e non qui, quindi
+// i blocchi si prendevano tutta la pagina e l'icona finiva sopra l'asse del
+// grafico dell'ultimo nodo. Si e' visto con /api/pannello/anteprima, non
+// guardando il vetro.
+static bool nodiRigaBassa()
+{
+  if (allarmeCorrente().length()) return true;
+  CieloStato c;
+  cielo_get(&c);
+  return c.valido && cieloBitmap(c.adesso) != nullptr;
+}
+
+static int16_t nodiAltezzaBlocco(int quanti, const Message* fascia)
 {
   int16_t bot = fascia ? NODI_BOT_FASCIA : NODI_BOT;
-  if (allarme) bot -= ALLARME_H;
+  if (nodiRigaBassa()) bot -= ALLARME_H;
   if (quanti < 1) quanti = 1;
   return (bot - NODI_TOP) / (int16_t)quanti;
 }
@@ -1481,10 +1571,10 @@ static int16_t nodiAltezzaBlocco(int quanti, const Message* fascia, bool allarme
 // sono in tre -- un nodo in piu', la fascia del messaggio, la pillola
 // d'allarme. Prima erano due condizioni scritte a mano che si sarebbero
 // dimenticate la terza.
-static bool nodiLayoutComodo(int quanti, const Message* fascia, bool allarme)
+static bool nodiLayoutComodo(int quanti, const Message* fascia)
 {
   return (quanti <= NODI_COMODI_FINO_A) &&
-         (nodiAltezzaBlocco(quanti, fascia, allarme) >= NODI_H_GRAFICO);
+         (nodiAltezzaBlocco(quanti, fascia) >= NODI_H_GRAFICO);
 }
 
 // --- blocco COMODO: fino a due nodi, con il grafico ------------------------
@@ -1643,8 +1733,25 @@ static void screenNodi(bool full)
     // layout si usa. Deciderlo in fondo, dopo aver disegnato, vorrebbe dire
     // scrivere la pillola sopra il grafico dell'ultimo nodo.
     const String  allarme = allarmeCorrente();
+
+    // Il cielo divide la riga con l'allarme invece di prendersene una sua
+    // (v67): sono due cose che compaiono in fondo, e due strisce da 24 px
+    // porterebbero i blocchi sotto NODI_H_GRAFICO, cioe' farebbero sparire la
+    // curva delle 24 h per far posto a un avviso che quasi mai c'e'.
+    //
+    // Si', questo rimette 24 px di quelli che la v59 aveva tolto col piede. La
+    // differenza e' cosa ci sta scritto: il piede diceva IP e spazio libero,
+    // che non cambiano mai; qui c'e' l'unica cosa sul pannello che il barometro
+    // di casa non sa dire.
+    // Allarme e cielo stanno sulla STESSA riga e ai due lati: la pillola
+    // cresce da sinistra col suo testo, il cielo si misura e parte da destra.
+    // Il caso peggiore misurato -- "SD NON MONTATA" piu' due icone e
+    // "temporale" -- sta in 376 px con margine.
+    CieloStato cieloOra;
+    cielo_get(&cieloOra);
+    const bool    cielo   = cieloOra.valido && cieloBitmap(cieloOra.adesso) != nullptr;
     const int16_t yBot    = (msgFascia ? NODI_BOT_FASCIA : NODI_BOT)
-                            - (allarme.length() ? ALLARME_H : 0);
+                            - (nodiRigaBassa() ? ALLARME_H : 0);
 
     // --- corpo ---
     const int n = remote_count();
@@ -1664,8 +1771,8 @@ static void screenNodi(bool full)
     else
     {
       const int quanti  = (n < NODI_VISIBILI) ? n : NODI_VISIBILI;
-      const bool comodo = nodiLayoutComodo(quanti, msgFascia, allarme.length() > 0);
-      const int16_t h   = nodiAltezzaBlocco(quanti, msgFascia, allarme.length() > 0);
+      const bool comodo = nodiLayoutComodo(quanti, msgFascia);
+      const int16_t h   = nodiAltezzaBlocco(quanti, msgFascia);
 
       for (int i = 0; i < quanti; i++)
       {
@@ -1750,6 +1857,7 @@ static void screenNodi(bool full)
     // grafico, e di quel piede resta solo cio' che era un avviso -- vedi
     // allarmeCorrente() per il perche' e per cosa si e' perso.
     if (allarme.length()) drawAllarme(allarme);
+    if (cielo)             drawCielo(NODI_BOT);
   }
   telaSulPannello(full);
 }
@@ -2111,6 +2219,73 @@ static void riepilogoContaGiro()
     s_giri = 0;
     s_giriT0 = ora;
   }
+}
+
+// Una riga l'ora con le DUE previsioni e il tempo che fa: e' cio' che fra
+// qualche settimana permettera' di rispondere a «la mia regola empirica vale
+// qualcosa?» con un numero invece che con un'impressione. Il perche' lungo,
+// e le colonne, stanno in sd_logger.h.
+//
+// SI ALLINEA ALL'ORA TONDA e non a un timer da 3600 s: dopo un riavvio o un
+// OTA un timer ripartirebbe da li', e le righe di ieri e quelle di oggi non
+// starebbero piu' sulla stessa griglia -- cioe' la colonna "cosa e' successo
+// tre ore dopo" andrebbe cercata a tolleranza invece che per costruzione.
+//
+// Se il servizio non ha un dato fresco NON si scrive niente: una riga con
+// meta' colonne vuote peserebbe come le altre in un conteggio, e sarebbe una
+// bugia per omissione. Il buco nella griglia oraria e' l'informazione.
+static void cieloRegistraTick()
+{
+  static time_t s_ultima = 0;
+  if (!orario_registrabile()) return;
+
+  const time_t ora      = rtctime_now();
+  const time_t oraTonda = ora - (ora % 3600);
+  if (oraTonda == s_ultima) return;
+
+  CieloStato c;
+  cielo_get(&c);
+  if (!c.valido) return;
+
+  s_ultima = oraTonda;
+
+  // Il barometro di casa: il primo nodo che ha un trend vero. Uno solo e non
+  // la media -- i nodi stanno a pochi metri e la pressione e' la stessa, ma
+  // una media di due sensori tarati diversamente non e' la misura di nessuno
+  // dei due (i due AHT20/BMP280 differiscono di 1,265 hPa, misurato).
+  String trend = "", d3 = "", psea = "";
+  for (int i = 0; i < remote_count(); i++) {
+    RemoteNode n;
+    if (!remote_get(i, &n) || !n.hasData) continue;
+    if (n.trend == TREND_IGNOTO || !isfinite(n.delta3h)) continue;
+    trend = remote_trend_label(n.trend);
+    d3    = String(n.delta3h, 2);
+    psea  = isfinite(n.pressSeaHpa) ? String(n.pressSeaHpa, 2) : String("");
+    break;
+  }
+
+  char ts[24] = "";
+  rtctime_format(ora, "%Y-%m-%dT%H:%M:%S", ts, sizeof(ts));
+
+  String r(ts);
+  r += ','; r += (long)ora;
+  r += ','; r += trend;
+  r += ','; r += d3;
+  r += ','; r += psea;
+  r += ','; r += (int)c.wmoAdesso;
+  r += ','; r += cielo_classe_nome(c.adesso);
+  r += ','; r += (int)c.wmoBreve;
+  r += ','; r += cielo_classe_nome(c.breve);
+  r += ','; if (isfinite(c.tempC)) r += String(c.tempC, 1);
+  r += ','; r += (long)(ora - c.quando);
+
+  // Un fallimento qui NON entra fra le `scritture_fallite` di /api/salute: la'
+  // il conto che regge e' `pacchetti == righe + scartati + fallite`, e una
+  // riga che non viene da un pacchetto lo sbilancerebbe -- cioe' farebbe
+  // suonare l'allarme del guasto piu' silenzioso della scheda per un file di
+  // diagnostica. Resta il messaggio, e il buco nella griglia oraria.
+  if (!sd_log_cielo(r.c_str()))
+    Serial.println("[cielo] riga di confronto non scritta (card?)");
 }
 
 static void riepilogoTick()
@@ -3271,6 +3446,17 @@ static uint32_t firmaStato()
   // silenzioso della scheda con cinque minuti di ritardo.
   { const String a = allarmeCorrente();
     for (int i = 0; i < (int)a.length(); i++) firmaMescola(f, (int32_t)(uint8_t)a[i]); }
+
+  // E il cielo, per la stessa ragione (v67): quando l'icona cambia, cambia
+  // anche l'altezza dei blocchi -- la riga in fondo compare o sparisce col
+  // dato fresco. Ci entra la CLASSE, non il codice WMO: 'pioviggine' e
+  // 'pioggia moderata' disegnano la stessa icona, e due firme diverse per lo
+  // stesso disegno sono refresh da 2,2 s per niente. Costa poco perche' la
+  // classe cambia qualche volta al giorno, non ad ogni richiesta.
+  { CieloStato c; cielo_get(&c);
+    firmaMescola(f, c.valido ? 1 : 0);
+    firmaMescola(f, c.valido ? (int32_t)c.adesso : -1);
+    firmaMescola(f, c.valido ? (int32_t)c.breve  : -1); }
   for (int i = 0; i < remote_count(); i++) {
     RemoteNode n;
     if (!remote_get(i, &n)) continue;
@@ -3304,7 +3490,7 @@ static uint32_t firmaValori()
   const Message* m = pages_fascia() ? msg_active(time(nullptr)) : nullptr;
   const int n      = remote_count();
   const int quanti = (n < NODI_VISIBILI) ? n : NODI_VISIBILI;
-  const bool comodo = nodiLayoutComodo(quanti, m, allarmeCorrente().length() > 0);
+  const bool comodo = nodiLayoutComodo(quanti, m);
 
   for (int i = 0; i < remote_count(); i++) {
     RemoteNode n;
@@ -3513,6 +3699,11 @@ void setup()
   // durante un aggiornamento, e un OTA puo' partire appena il server e' su.
   net_setOtaProgressCb(onOtaProgress);
   net_begin();
+
+  // La previsione vera: la posizione arriva dalla NVS, la prima richiesta la
+  // fa il loop appena la rete c'e'. Qui non si aspetta nessuno -- una GET
+  // dentro il setup allungherebbe l'avvio per un'icona.
+  cielo_begin();
   web_ui_begin();
   if (net_isConnected()) rtctime_onWifiConnected();
 
@@ -3620,6 +3811,14 @@ void loop()
   remote_loop();
   diarioNodi();
   t = faseFine("nodi", t);
+
+  // La previsione vera, ogni mezz'ora. Ha una fase SUA e non sta dentro
+  // "web" apposta: e' l'unica cosa del loop() che aspetta una macchina
+  // dall'altra parte di internet, e se un giorno diventa lenta si deve
+  // vedere in loop_max_dove invece di essere confusa con il server locale.
+  cielo_loop();
+  cieloRegistraTick();
+  t = faseFine("cielo", t);
 
   // L'orologio e' diventato vero. Una riga sola per accensione, e vale la pena
   // perche' DATA TUTTO IL RESTO: le righe del diario e dei CSV scritte prima

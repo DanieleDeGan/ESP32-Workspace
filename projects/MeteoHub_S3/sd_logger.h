@@ -362,6 +362,38 @@ bool sd_log_refresh(const char* motivo, bool completo, uint32_t ms);
 // Colonne: ts_iso,tipo,dettaglio
 bool sd_log_evento(const char* tipo, const char* dettaglio);
 
+// ---------------------------------------------------------------------
+//  Le due previsioni, una accanto all'altra
+// ---------------------------------------------------------------------
+// Una riga l'ora in /cielo/AAAA-MM.csv: cosa dice il barometro di casa, cosa
+// dice il servizio, e che tempo faceva in quel momento.
+//
+// PERCHE' ESISTE, ed e' la parte interessante della previsione vera (voce 7
+// del backlog): mostrare un'icona presa da internet non insegna niente. Ma
+// affiancarla alla NOSTRA previsione e a cio' che poi e' successo trasforma
+// «la mia regola empirica vale qualcosa?» in una domanda con una risposta
+// numerica. Le due previsioni ci sono da oggi; il confronto si potra' fare
+// solo fra qualche settimana, ed e' esattamente il motivo per cui il file va
+// cominciato ADESSO.
+//
+// UNA RIGA L'ORA e non una per pacchetto: le due previsioni cambiano su scala
+// oraria, e 24 righe al giorno sono ~2 kB al mese. E' la stessa regola del
+// diario -- un file che nessuno rilegge non serve a niente, e uno illeggibile
+// non lo rilegge nessuno.
+//
+// Colonne: ts_iso,ts_unix,nostro_trend,nostro_delta3h,press_sea,
+//          wmo_ora,classe_ora,wmo_3h,classe_3h,temp_est_c,eta_dato_s
+//   nostro_*   il barometro di casa: trend classificato e delta a 3 h
+//   wmo_ora    che tempo fa ADESSO secondo il servizio -- e' questa la
+//              colonna che, riletta tre ore dopo, dice com'e' andata
+//   wmo_3h     che tempo dice il servizio per le prossime 3 h
+//   eta_dato_s da quanti secondi il dato del servizio era vecchio: una riga
+//              scritta su un dato di 80 minuti non pesa quanto una fresca
+bool sd_log_cielo(const char* riga);
+
+// Il file di un mese del confronto ("AAAA-MM").
+File sd_open_cielo(const char* mese);
+
 // Il file di un mese ("AAAA-MM"), per il download. File falsy se assente o se
 // il nome non e' valido.
 File sd_open_eventi(const char* mese);

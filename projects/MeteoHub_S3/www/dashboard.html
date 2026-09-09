@@ -106,6 +106,30 @@ header{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin:.4rem 0 1
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:.75rem}
 .tiles.sec{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin-top:.75rem}
 .tiles.sec .tile{padding:.6rem .8rem}
+
+/* --- previsione ---------------------------------------------------
+   La striscia delle ore scorre in orizzontale invece di andare a capo:
+   dodici colonne che si spezzano su due righe perdono la forma della
+   giornata, che e' l'unica cosa che si legge davvero a colpo d'occhio. */
+.cielo{display:flex;align-items:center;gap:1rem;flex-wrap:wrap}
+.cielo .ora{display:flex;align-items:center;gap:.8rem}
+.cielo .gr{font-size:2.1rem;font-weight:600;line-height:1}
+.cielo .dett{display:flex;flex-direction:column;gap:.15rem;font-size:.8rem;color:var(--tx2)}
+.cielo .dett b{color:var(--tx);font-size:.95rem;font-weight:600}
+.ico{width:44px;height:44px;flex:none;color:var(--tx)}
+.ico.sm{width:26px;height:26px}
+.ore{display:flex;gap:.1rem;overflow-x:auto;margin-top:.9rem;padding-bottom:.3rem}
+.ore .o{flex:1 0 auto;min-width:56px;text-align:center;font-size:.7rem;color:var(--tx3);
+        padding:.35rem .1rem;border-radius:8px}
+.ore .o b{display:block;color:var(--tx);font-size:.85rem;font-weight:600;margin-top:.1rem}
+.ore .o .pp{color:var(--tx2)}
+.ore .o.bagnata{background:var(--inset)}
+.giorni{display:grid;gap:.4rem;margin-top:.9rem}
+.giorni .g{display:grid;grid-template-columns:2.4rem 1.7rem 1fr auto;align-items:center;
+           gap:.6rem;font-size:.85rem}
+.giorni .g .nm{color:var(--tx2)}
+.giorni .g .tt{color:var(--tx)}
+.cielo-ko{color:var(--tx3);font-size:.85rem}
 .tiles.sec .tile .big{font-size:1.1rem;font-weight:500}
 .tile{background:var(--inset);border:1px solid var(--line);border-radius:11px;
   padding:.8rem .9rem;position:relative;overflow:hidden}
@@ -184,6 +208,26 @@ nav{margin:1.6rem 0 .5rem;display:flex;flex-wrap:wrap;gap:.4rem 1rem;font-size:.
 <section class="card">
   <h2>I nodi adesso <span class="hint" id="hUpd"></span></h2>
   <div class="tiles" id="tiles"><div class="muted">lettura…</div></div>
+</section>
+
+<!-- ============ la previsione VERA ============ -->
+<!-- Sta qui, subito sotto i nodi, perche' e' l'altra meta' della stessa
+     domanda: i nodi dicono che tempo FA in questo momento e in questo
+     posto, questa dice che tempo FARA'. E le due previsioni — quella del
+     servizio e il barometro di casa — stanno una accanto all'altra
+     apposta: il barometro non sa che tempo fara', sa come si muove la
+     pressione, e affiancarle e' il modo di non confonderle mai piu'. -->
+<section class="card">
+  <h2>Previsione <span class="hint" id="hCielo">&mdash;</span></h2>
+  <div id="cieloCorpo"><div class="muted">lettura…</div></div>
+  <div class="ctrls" style="margin-top:.9rem">
+    <button id="bCielo">aggiorna adesso</button>
+    <input id="inLat" type="number" step="0.01" placeholder="lat" style="width:6.5rem">
+    <input id="inLon" type="number" step="0.01" placeholder="lon" style="width:6.5rem">
+    <button id="bPos">salva posizione</button>
+    <span class="msg" id="mCielo"></span>
+  </div>
+  <div class="hint" id="hCieloSrv" style="margin-top:.5rem"></div>
 </section>
 
 <!-- ============ il pannello adesso ============ -->
@@ -1025,10 +1069,175 @@ async function leggiAnte(){
 }
 $('bAnte').onclick = leggiAnte;
 
+// --- le icone del cielo, disegnate qui ------------------------------
+// SVG inline e non emoji: le emoji cambiano faccia su ogni sistema (e su
+// qualcuno la nuvola con la pioggia e' allegra e azzurra), mentre qui
+// servono le stesse sette silhouette del pannello. `currentColor` le fa
+// funzionare in chiaro e in scuro senza due copie.
+const CIELO_SVG = {
+  'sereno':        '<circle cx="12" cy="12" r="4.6"/>' +
+                   '<g stroke="currentColor" stroke-width="1.7" stroke-linecap="round">' +
+                   '<path d="M12 2.4v2.6M12 19v2.6M2.4 12h2.6M19 12h2.6"/>' +
+                   '<path d="M5.2 5.2l1.8 1.8M17 17l1.8 1.8M18.8 5.2L17 7M7 17l-1.8 1.8"/></g>',
+  'poco nuvoloso': '<circle cx="9" cy="8.5" r="3.4"/>' +
+                   '<g stroke="currentColor" stroke-width="1.5" stroke-linecap="round">' +
+                   '<path d="M9 1.8v1.9M2.3 8.5h1.9M4.3 3.8l1.3 1.3M13.7 3.8l-1.3 1.3"/></g>' +
+                   '<path d="M8.5 20.5h9a3.5 3.5 0 0 0 .4-7 5 5 0 0 0-9.5-1 3.6 3.6 0 0 0 .1 8z"/>',
+  'coperto':       '<path d="M7 19.5h10a4 4 0 0 0 .5-8 5.6 5.6 0 0 0-10.8-1.2A3.9 3.9 0 0 0 7 19.5z"/>',
+  'nebbia':        '<path d="M7 14h10a4 4 0 0 0 .5-8 5.6 5.6 0 0 0-10.8-1.2A3.9 3.9 0 0 0 7 14z"/>' +
+                   '<g stroke="currentColor" stroke-width="1.7" stroke-linecap="round">' +
+                   '<path d="M4 17.4h16M6.5 20.6h11"/></g>',
+  'pioggia':       '<path d="M7 14.5h10a4 4 0 0 0 .5-8 5.6 5.6 0 0 0-10.8-1.2A3.9 3.9 0 0 0 7 14.5z"/>' +
+                   '<g stroke="currentColor" stroke-width="1.8" stroke-linecap="round">' +
+                   '<path d="M8.6 17.2l-1 3M12.5 17.2l-1 3M16.4 17.2l-1 3"/></g>',
+  'neve':          '<path d="M7 14.5h10a4 4 0 0 0 .5-8 5.6 5.6 0 0 0-10.8-1.2A3.9 3.9 0 0 0 7 14.5z"/>' +
+                   '<g stroke="currentColor" stroke-width="1.6" stroke-linecap="round">' +
+                   '<path d="M8 18.2h1.6M8.8 17.4v1.6M12 18.2h1.6M12.8 17.4v1.6"/>' +
+                   '<path d="M8 21h1.6M8.8 20.2v1.6M12 21h1.6M12.8 20.2v1.6"/></g>',
+  'temporale':     '<path d="M7 13.8h10a4 4 0 0 0 .5-8 5.6 5.6 0 0 0-10.8-1.2A3.9 3.9 0 0 0 7 13.8z"/>' +
+                   '<path d="M13.2 15.4l-4.4 5h3l-1.2 3.4 4.6-5.4h-3z"/>',
+  'ignoto':        '<g stroke="currentColor" stroke-width="1.7" stroke-linecap="round" fill="none">' +
+                   '<path d="M4 12h3M10.5 12h3M17 12h3"/></g>'
+};
+function svgCielo(classe, piccola){
+  const d = CIELO_SVG[classe] || CIELO_SVG['ignoto'];
+  return '<svg class="ico' + (piccola ? ' sm' : '') + '" viewBox="0 0 24 24" ' +
+         'fill="currentColor" aria-label="' + esc(classe) + '">' + d + '</svg>';
+}
+
+// La previsione non cambia ogni cinque secondi: il servizio la aggiorna
+// ogni mezz'ora e la scheda pure. Rileggerla ad ogni giro sarebbe traffico
+// verso un server sincrono per far comparire lo stesso identico numero.
+let giriCielo = 0;
+async function caricaCielo(){
+  let d;
+  try{ d = await api('/api/cielo'); }
+  catch(e){ $('cieloCorpo').innerHTML = '<div class="cielo-ko">non leggibile: ' + esc(e.message) + '</div>'; return; }
+
+  if (!$('inLat').value && d.lat != null) $('inLat').value = d.lat;
+  if (!$('inLon').value && d.lon != null) $('inLon').value = d.lon;
+
+  // La regola della dipendenza esterna: mai mostrare il cielo di un'ora fa
+  // come se fosse quello di adesso. Se il dato non e' fresco si dice, e si
+  // dice anche PERCHE'.
+  if (!d.valido){
+    $('hCielo').textContent = 'non disponibile';
+    $('cieloCorpo').innerHTML = '<div class="cielo-ko">' +
+      (d.posizione ? 'nessun dato fresco' : 'posizione non impostata: scrivi lat e lon qui sotto') +
+      (d.errore ? ' &mdash; ' + esc(d.errore) : '') + '</div>';
+    $('hCieloSrv').textContent = statoServizio(d);
+    return;
+  }
+
+  const eta = d.eta_s == null ? '' : (d.eta_s < 90 ? 'adesso'
+            : (d.eta_s < 5400 ? Math.round(d.eta_s/60) + ' min fa' : 'oltre un\'ora fa'));
+  $('hCielo').textContent = eta;
+
+  // Le prossime tre ore accanto ad adesso: e' la stessa finestra del trend
+  // barometrico, ed e' il motivo per cui il confronto qui sotto ha senso.
+  const cambia = d.breve !== d.adesso;
+  let h = '<div class="cielo">' +
+    '<div class="ora">' + svgCielo(d.adesso) +
+      '<div class="dett">' +
+        '<b>' + esc(d.adesso) + '</b>' +
+        '<span>' + (d.temp_c == null ? '' : fmtC(d.temp_c,1) + ' °C') +
+          (d.percepita_c == null ? '' : ' · percepiti ' + fmtC(d.percepita_c,1)) + '</span>' +
+        '<span>' + (d.umidita_pct == null ? '' : d.umidita_pct + ' % RH') +
+          (d.vento_kmh == null ? '' : ' · vento ' + fmtC(d.vento_kmh,0) + ' km/h') +
+          (d.raffiche_kmh == null ? '' : ' (raffiche ' + fmtC(d.raffiche_kmh,0) + ')') + '</span>' +
+      '</div>' +
+    '</div>';
+  if (cambia)
+    h += '<div class="ora">' + svgCielo(d.breve) +
+         '<div class="dett"><b>' + esc(d.breve) + '</b>' +
+         '<span>entro ' + d.ore_brevi + ' h</span></div></div>';
+  h += '</div>';
+
+  // La striscia delle ore. Le ore sono UTC (la scheda chiede cosi', vedi
+  // cielo.cpp) e qui si riportano all'ora del posto: chi guarda vuole
+  // sapere se piove quando esce, non a che ora e' a Greenwich.
+  const ora0 = new Date(); ora0.setMinutes(0,0,0);
+  h += '<div class="ore">' + (d.ore||[]).map(function(o,i){
+    const t = new Date(ora0.getTime() + i*3600000);
+    const pp = (o.pioggia_pct == null) ? '' : o.pioggia_pct + '%';
+    return '<div class="o' + (o.pioggia_pct >= 50 ? ' bagnata' : '') + '">' +
+           String(t.getHours()).padStart(2,'0') +
+           '<div>' + svgCielo(o.classe, true) + '</div>' +
+           '<b>' + (o.temp_c == null ? '—' : Math.round(o.temp_c) + '°') + '</b>' +
+           '<span class="pp">' + pp + '</span></div>';
+  }).join('') + '</div>';
+
+  h += '<div class="giorni">' + (d.giorni||[]).map(function(g,i){
+    const nomi = ['oggi','domani','dopodomani'];
+    return '<div class="g"><span class="nm">' + (nomi[i]||('+'+i)) + '</span>' +
+           svgCielo(g.classe, true) +
+           '<span class="tt">' + esc(g.classe) +
+             (g.pioggia_pct == null ? '' : ' · pioggia ' + g.pioggia_pct + '%') + '</span>' +
+           '<span>' + (g.t_min == null ? '' : Math.round(g.t_min) + '°') + ' / ' +
+             (g.t_max == null ? '' : Math.round(g.t_max) + '°') + '</span></div>';
+  }).join('') + '</div>';
+
+  // E il confronto che rende interessante tutto il resto: il barometro di
+  // casa accanto alla previsione vera. NON dicono la stessa cosa, e vederle
+  // vicine e' il modo di ricordarselo.
+  const n = (NODI||[]).find(function(x){ return x.previsione; });
+  if (n)
+    h += '<div class="hint" style="margin-top:.9rem">il barometro di casa (' +
+         esc(n.nome) + '): <b>' + esc(n.trend) + '</b>, ' + esc(n.previsione) +
+         ' &mdash; dice come si muove la pressione, non che tempo far&agrave;</div>';
+
+  $('cieloCorpo').innerHTML = h;
+  $('hCieloSrv').textContent = statoServizio(d);
+}
+
+// Il servizio visto da qui: quante ne ha prese, quante ne ha perse, quanto
+// e' costata l'ultima al loop() della scheda. Serve a distinguere "internet
+// giu'" da "servizio lento" senza aprire la seriale.
+function statoServizio(d){
+  const p = [];
+  if (d.lat != null && d.lon != null) p.push(fmtC(d.lat,2) + ', ' + fmtC(d.lon,2));
+  if (d.quando) p.push('ultimo dato ' + d.quando);
+  p.push(d.prese + ' prese, ' + d.fallite + ' fallite');
+  if (d.durata_ms) p.push(d.durata_ms + ' ms, ' + d.byte + ' byte');
+  if (d.errore) p.push('errore: ' + d.errore);
+  return p.join('  ·  ');
+}
+
+
+// La virgola come separatore, come tutto il resto della pagina, e un trattino
+// dove il servizio non ha dato niente: uno zero al posto di un dato mancante
+// e' una bugia credibile (la stessa regola delle celle vuote nei CSV).
+function fmtC(x, dec){
+  if (x === null || x === undefined || !isFinite(x)) return '—';
+  return Number(x).toFixed(dec).replace('.', ',');
+}
+
+$('bCielo').onclick = async function(){
+  setMsg($('mCielo'), 'richiesta accodata…', '');
+  try{
+    await api('/api/cielo/aggiorna', {method:'POST'});
+    // Il loop() la fa al giro dopo, non adesso: un attimo di pazienza e poi
+    // si rilegge, o si mostrerebbe il dato di prima dicendo che e' nuovo.
+    setTimeout(caricaCielo, 1500);
+    setMsg($('mCielo'), 'fatto', 'ok');
+  }catch(e){ setMsg($('mCielo'), e.message, 'ko'); }
+};
+
+$('bPos').onclick = async function(){
+  const lat = $('inLat').value.trim(), lon = $('inLon').value.trim();
+  if (lat === '' || lon === ''){ setMsg($('mCielo'), 'servono lat e lon', 'ko'); return; }
+  try{
+    const t = await api('/api/cielo/posizione?lat=' + encodeURIComponent(lat) +
+                        '&lon=' + encodeURIComponent(lon), {method:'POST'});
+    setMsg($('mCielo'), t, 'ok');
+    setTimeout(caricaCielo, 2000);   // la posizione nuova vale subito, lato scheda
+  }catch(e){ setMsg($('mCielo'), e.message, 'ko'); }
+};
 async function giro(){
   await caricaStato();
   await caricaNodi();
   if ((giriSalute++ % 3) === 0) await caricaSalute();
+  if ((giriCielo++ % 12) === 0) await caricaCielo();
 }
 async function avvio(){
   readColors();

@@ -949,6 +949,48 @@ bool sd_log_evento(const char* tipo, const char* dettaglio) {
   return scritti > 0;
 }
 
+// Come sd_log_evento(), stesso schema file-per-mese e stesso controllo sui
+// byte scritti: File::write() non alza il writeError, quindi su una card
+// piena la print() torna 0 e il registro direbbe di aver scritto righe che
+// non esistono.
+bool sd_log_cielo(const char* riga) {
+  if (!sd_mounted() || riga == nullptr) return false;
+
+  char nomeFile[40];
+  time_t ora = time(nullptr);
+  struct tm tmv;
+  localtime_r(&ora, &tmv);
+  snprintf(nomeFile, sizeof(nomeFile), "/cielo/%04d-%02d.csv",
+           tmv.tm_year + 1900, tmv.tm_mon + 1);
+
+  if (!SD.exists("/cielo")) SD.mkdir("/cielo");
+
+  const bool nuovo = !SD.exists(nomeFile);
+  File f = SD.open(nomeFile, FILE_APPEND);
+  if (!f) return false;
+
+  size_t scritti = 0;
+  if (nuovo) scritti += f.println("ts_iso,ts_unix,nostro_trend,nostro_delta3h,"
+                                  "press_sea,wmo_ora,classe_ora,wmo_3h,classe_3h,"
+                                  "temp_est_c,eta_dato_s");
+  scritti += f.println(riga);
+  f.close();
+  return scritti > 0;
+}
+
+File sd_open_cielo(const char* mese) {
+  if (!sd_mounted() || mese == nullptr) return File();
+  if (strlen(mese) != 7 || mese[4] != '-') return File();
+  for (int i = 0; i < 7; i++) {
+    if (i == 4) continue;
+    if (mese[i] < '0' || mese[i] > '9') return File();
+  }
+  char nomeFile[40];
+  snprintf(nomeFile, sizeof(nomeFile), "/cielo/%s.csv", mese);
+  if (!SD.exists(nomeFile)) return File();
+  return SD.open(nomeFile, FILE_READ);
+}
+
 File sd_open_eventi(const char* mese) {
   if (!sd_mounted() || mese == nullptr) return File();
 
