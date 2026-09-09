@@ -559,7 +559,7 @@ def drawFila(t, voci, x, y, xMax, gap):
 # Le soglie e l'isteresi sono le stesse del firmware (BATT_SOGLIE,
 # BATT_ISTERESI): se un giorno divergono, il mock smette di essere un giudice
 # e diventa una seconda implementazione con opinioni proprie.
-BATT_SOGLIE = (3450, 3600, 3750, 3900, 4050)
+BATT_SOGLIE = (3350, 3580, 3730, 3880, 4050)
 
 
 def battLivello(mv):

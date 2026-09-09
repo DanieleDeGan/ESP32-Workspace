@@ -1204,9 +1204,13 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     parte inventato. Le tacche dicono ciò che si sa davvero (piena / a metà /
     da cambiare); la tensione esatta sta nella **pagina dettaglio**, dove c'è
     spazio per leggerla.
-  - **L'ultima tacca si spegne a 3,45 V**, ben prima della fine vera (~3,0):
-    su un nodo appeso a un muro «vai a cambiarla» deve arrivare mentre c'è
-    ancora tempo per farlo.
+  - **Le soglie seguono la curva vera, quindi NON sono equidistanti** (`v72`):
+    4,05 / 3,88 / 3,73 / 3,58 / 3,35 V. I 150 mV fra 3,73 e 3,88 coprono un
+    quinto della capacità — è il **plateau**, dove la cella passa la maggior
+    parte della sua vita, ed è anche la ragione per cui una percentuale lì
+    sarebbe una bugia. Sotto l'ultima tacca restano ancora 3,35 → ~3,0 V prima
+    del cutoff di protezione: è il margine per accorgersene e andarci, che su
+    un nodo appeso a un muro è tutto il punto.
   - **L'ISTERESI di 30 mV è la parte che serve al pannello, non alla misura.**
     L'ADC ha ±10 mV di rumore e la cella scende di frazioni di mV all'ora:
     senza isteresi, nelle ore in cui la tensione sta appoggiata a una soglia il

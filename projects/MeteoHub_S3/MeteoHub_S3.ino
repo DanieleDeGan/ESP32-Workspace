@@ -170,7 +170,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v71";
+static const char FW_VERSION[] = "v72";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1133,10 +1133,21 @@ static String fmtDelta(float v, int dec)
 // tacche dicono cio' che si sa davvero (piena / a meta' / da cambiare), e la
 // tensione esatta resta nella pagina dettaglio, dove c'e' spazio per leggerla.
 //
-// Le soglie sono quelle di una 18650 sotto carico leggero. L'ultima tacca si
-// spegne a 3,45 V, ben prima della fine vera (~3,0): su un nodo che sta su un
-// muro, "vai a cambiarla" deve arrivare mentre c'e' ancora tempo per farlo.
-static const uint16_t BATT_SOGLIE[5] = { 3450, 3600, 3750, 3900, 4050 };
+// Le soglie seguono la curva di scarica REALE di una 18650 a riposo, che non
+// e' una retta -- ed e' il motivo per cui non sono equidistanti:
+//   5 tacche  >= 4,05 V   cella carica (100-80%)
+//   4 tacche  >= 3,88 V   prima fase di scarica (80-60%)
+//   3 tacche  >= 3,73 V   il PLATEAU nominale (60-40%), dove la cella passa
+//                         la maggior parte della sua vita: e' anche il motivo
+//                         per cui una percentuale qui sarebbe una bugia --
+//                         150 mV coprono un quinto della capacita'
+//   2 tacche  >= 3,58 V   zona medio-bassa (40-20%)
+//   1 tacca   >= 3,35 V   riserva (20-5%), prima del crollo finale
+//   0 tacche   < 3,35 V   ricaricare adesso
+// Sotto restano ancora 3,35 -> ~3,0 V prima del cutoff di protezione, cioe' il
+// margine per accorgersene e andarci: su un nodo appeso a un muro "vai a
+// cambiarla" deve arrivare mentre c'e' ancora tempo per farlo.
+static const uint16_t BATT_SOGLIE[5] = { 3350, 3580, 3730, 3880, 4050 };
 
 // L'ISTERESI e' la parte che serve al pannello, non alla misura. L'ADC ha
 // +-10 mV di rumore e la cella scende di frazioni di mV all'ora: senza
