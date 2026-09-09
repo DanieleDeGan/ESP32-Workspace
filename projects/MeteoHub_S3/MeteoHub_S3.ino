@@ -170,7 +170,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v68";
+static const char FW_VERSION[] = "v69";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -2234,10 +2234,51 @@ static void riepilogoContaGiro()
 // Se il servizio non ha un dato fresco NON si scrive niente: una riga con
 // meta' colonne vuote peserebbe come le altre in un conteggio, e sarebbe una
 // bugia per omissione. Il buco nella griglia oraria e' l'informazione.
+// L'ora tonda dell'ultima riga gia' sulla card, 0 se non ce n'e'. Si legge la
+// CODA del file, non tutto: bastano gli ultimi 256 byte per trovare l'ultima
+// riga intera.
+//
+// SERVE PERCHE' LA VARIABILE STATICA NON SOPRAVVIVE AL RIAVVIO, ed e' successo
+// il giorno stesso: due OTA nella stessa ora hanno lasciato due righe per
+// l'ora 10, e in un file dove la griglia oraria E' la struttura un doppione
+// non e' un dettaglio -- l'analisi conterebbe due volte lo stesso caso. Su una
+// scheda che si aggiorna via rete i riavvii sono la norma, non l'incidente.
+static time_t cieloUltimaOraCard()
+{
+  char mese[8] = "";
+  rtctime_format(rtctime_now(), "%Y-%m", mese, sizeof(mese));
+  File f = sd_open_cielo(mese);
+  if (!f) return 0;
+
+  const size_t dim = f.size();
+  if (dim > 256) f.seek(dim - 256);
+  String coda;
+  while (f.available()) coda += (char)f.read();
+  f.close();
+
+  const int fine = coda.lastIndexOf((char)10);
+  if (fine <= 0) return 0;
+  int inizio = coda.lastIndexOf((char)10, fine - 1);
+  const String riga = coda.substring(inizio + 1, fine);
+
+  // La seconda colonna e' ts_unix: e' li' apposta, perche' un timestamp
+  // testuale andrebbe riconvertito passando dal fuso.
+  const int v1 = riga.indexOf(',');
+  if (v1 < 0) return 0;
+  const int v2 = riga.indexOf(',', v1 + 1);
+  const long ts = riga.substring(v1 + 1, v2 < 0 ? riga.length() : v2).toInt();
+  if (ts <= 0) return 0;
+  return (time_t)(ts - (ts % 3600));
+}
+
 static void cieloRegistraTick()
 {
   static time_t s_ultima = 0;
+  static bool   s_letta  = false;
   if (!orario_registrabile()) return;
+
+  // Una volta per accensione: si chiede alla CARD fin dove si era arrivati.
+  if (!s_letta) { s_letta = true; s_ultima = cieloUltimaOraCard(); }
 
   const time_t ora      = rtctime_now();
   const time_t oraTonda = ora - (ora % 3600);
