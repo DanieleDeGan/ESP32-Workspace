@@ -51,7 +51,61 @@ sono classificate "costo medio" e non "alto".
 
 ## Da fare
 
-### 0. Togliere la marea barometrica dalla previsione — TARATURA DAL 2026-09-27
+### 41. Il consumo del giorno, dalle tre colonne della batteria — DA DOMANI (2026-09-10)
+**Cosa**: una vista in `/analisi` che legga `b_primo_mv`, `b_ultimo_mv`,
+`b_min_mv` dal riepilogo giornaliero e ne faccia due numeri: **la differenza
+fra prima e ultima è il consumo della giornata**, e `b_min` è il tuffo sotto
+carico, che dice se la cella sta invecchiando.
+**Perché qui**: quelle colonne esistono dalla `v62` e sono sempre state vuote;
+da oggi il partitore c'è (nodo `v19`) e si riempiono. Il consumo giornaliero è
+l'unico numero da cui esce un'autonomia vera — quella stimata dalla pendenza
+della tensione, sul plateau, ha una forbice di settimane (vedi voce 14).
+**Perché non è già fatta**: il primo riepilogo con la batteria dentro nasce la
+mattina del **10/09**. Scrivere la vista prima vorrebbe dire consegnarla senza
+averla mai vista con un dato dentro, e questo è il numero su cui poi si
+deciderà quando andare a cambiare la cella.
+**Costo**: basso — la pagina legge già i riepiloghi, mancano tre colonne.
+
+### 42. Le due previsioni a confronto: la UI e il giudizio
+**Cosa**: leggere `/cielo/AAAA-MM.csv` (`GET /api/cielo/registro`) e
+rispondere con un numero a *«la mia regola empirica vale qualcosa?»*: per ogni
+riga c'è la nostra previsione barometrica, quella del servizio, e — riletta
+tre ore dopo — che tempo ha poi fatto. Serve un tool tipo
+`previsione_verifica.py` e, quando i dati bastano, una vista.
+**Perché qui**: è la ragione per cui il registro esiste (voce 7), e l'unica
+parte davvero interessante dell'aver preso la previsione da fuori. Mostrare
+un'icona presa da internet non insegna niente.
+**Perché non è già fatta**: il file ha tre righe. Ne servono un paio di
+settimane, e soprattutto **il primo peggioramento vero**.
+**Attenzione quando si scrive il tool**: le due righe del 09/09 fra le 10:25 e
+le 10:32 sono un doppione dell'ora 10, scritto prima che la `v69` leggesse
+l'ultima ora dalla card. Tenere l'ultima riga di ciascuna ora.
+
+### 43. Il cutoff di fine scarica sul nodo a batteria
+**Cosa**: fermare il nodo (o allungare il sonno) sotto una tensione di
+sicurezza, invece di scaricare la cella fino all'intervento della sua
+protezione.
+**Perché qui**: la 18650 è **nuda** — il caricatore della XIAO gestisce la
+carica, ma la protezione da sovrascarica dipende dalla cella, non dalla
+scheda. E una Li-ion portata sotto i 2,5 V non torna più quella di prima.
+**Perché non è già fatta**: la soglia va scelta sui dati, non su un manuale.
+Con qualche settimana di letture si vedrà a che tensione il nodo comincia a
+perdere consegne — cosa che era già stata sospettata durante il guasto di fine
+agosto e che allora **non era misurabile**, perché `battery_mv` era 0.
+**Costo**: basso nel firmware; la parte difficile è il numero.
+
+### 0. Togliere la marea barometrica dalla previsione — FATTA (`v63`-`v66`)
+
+**Fatta il 2026-09-08/09, e non come era scritto qui sotto**: la tabella non è
+una costante incollata nel firmware ma la **tara la scheda** ogni notte, sui
+soli giorni completi e quieti, ed è indicizzata in **ora UTC** perché la marea
+segue il sole e l'ora legale la sfaserebbe di un'ora due volte l'anno. Per
+strada sono usciti due difetti che nessun numero esposto mostrava — l'offset
+del fuso ricavato da `mktime` (`v65`) e il giorno del cambio ora (`v66`) — e la
+cura per entrambi è stata **esporre i 24 valori** (`v64`), non ragionarci
+sopra. Il giudizio sul guadagno resta da rifare a fine settembre.
+
+Il testo originale, per il perché lungo:
 
 **Misurato l'8 settembre 2026 con `tools/previsione_verifica.py`: la previsione
 non ha praticamente potere predittivo.** Azzecca il segno di cio' che la
@@ -211,7 +265,15 @@ rimandare):
 3. **in fondo alla pagina dettaglio** — lì lo spazio per un QR da 87 px c'è già,
    ma si vede solo quando quella pagina è in mostra.
 
-### 7. La previsione vera accanto alla tua
+### 7. La previsione vera accanto alla tua — FATTA A METÀ (`v67`-`v69`)
+
+**C'è la previsione** (Open-Meteo in HTTP, icona sul pannello e sezione nella
+dashboard) **e c'è il registro** che mette le due fianco a fianco
+(`/cielo/AAAA-MM.csv`). Manca la parte per cui la voce esisteva: il
+**giudizio**, cioè leggere quel registro e dire con un numero quanto vale la
+regola di casa. È la voce 42, e aspetta qualche settimana di righe.
+
+Il testo originale:
 **Cosa**: previsione a 3 giorni da Open-Meteo su una pagina del pannello.
 **Perché qui**: la parte interessante **non** è mostrarla. È che questo progetto
 ha già una previsione — quella barometrica di `forecast.h` — e nessuno sa
@@ -505,7 +567,15 @@ la cartella di destinazione che **esiste già** (nome riciclato: i due storici
 andrebbero fusi, non sovrascritti) e la **SD assente** proprio in quel momento,
 che lascerebbe il rinominare a metà.
 
-### 14. Il partitore della batteria (hardware)
+### 14. Il partitore della batteria (hardware) — FATTA (2026-09-09, nodo `v19`)
+
+**Cablato il 09/09**: 2×1 MΩ + 100 nF su una millefori **in serie al cavo**
+della batteria (nessuna giunzione volante da isolare, e il pad BAT+ della XIAO
+non si tocca). Rapporto misurato **1,996**; verifica contro il multimetro: nodo
+4,03 V, multimetro 4,04 — 10 mV di scarto, nessuna correzione dell'ADC. La
+trappola: **con la USB collegata si legge il caricatore, non la cella**.
+
+Il testo originale:
 **Cosa**: due resistenze da 1 MΩ su D1/GPIO3 del nodo a batteria, e
 `battery_mv` smette di essere 0.
 **Perché qui**: è l'unico modo di misurare l'autonomia davvero. Oggi la curva
@@ -574,6 +644,11 @@ Solo la riga essenziale: il racconto sta in `docs/Stazione-Meteo.md`.
 
 | feature | quando | dove |
 |---|---|---|
+| Partitore della batteria cablato e letto (voce 14) | 2026-09-09 | `MeteoNode_C3` `v19` |
+| Carica della cella sul pannello, cinque tacche | 2026-09-09 | `MeteoHub_S3` `v71`-`v72` |
+| Previsione vera da Open-Meteo, icona e registro del confronto (voce 7, parte 1) | 2026-09-09 | `v67`-`v69` |
+| Marea barometrica tarata dalla scheda, in UTC (voce 0) | 2026-09-08/09 | `v63`-`v66` |
+| Carica e marea anche nella web UI | 2026-09-09 | `v73` |
 | Ricerca automatica del canale ESP-NOW (Fase 9) | 2026-08-27, confermata sul campo il 28 | `MeteoNode_C3` `v12` |
 | Pagine del pannello configurabili, messaggi, immagini | 2026-08-28 | `MeteoHub_S3` `v4`-`v11` |
 | Testo sopra le foto composto nel browser | 2026-08-30 | `v12`, commit `89698c6` |
