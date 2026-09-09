@@ -3,9 +3,9 @@
  * ---------------------------------------------------------------------------
  * STATO: nodo completo e in funzione a batteria - sensore, WiFi + pagina web
  * + OTA per poterlo seguire SENZA cavo USB, invio ESP-NOW all'hub e deep sleep
- * fra una misura e l'altra (Fase 4). Della Fase 4 manca solo il partitore
- * della batteria, che e' hardware non ancora cablato: battery_mv resta 0 e
- * non c'e' cutoff di fine scarica.
+ * fra una misura e l'altra (Fase 4). Il partitore della batteria e' CABLATO
+ * dal 2026-09-09 sulla XIAO C3, quindi battery_mv e' un dato vero; il cutoff
+ * di fine scarica invece ancora non c'e'.
  *
  * Il bring-up da cui nasce e' rimasto tutto dentro, e serve ancora: sono le
  * quattro cose che questo sketch dimostra prima che ci si costruisca sopra,
@@ -34,8 +34,8 @@
  *
  * NON collegare VCC al pad 5V: e' alimentato solo dalla USB, a batteria e'
  * morto, e molti di questi moduli combo non hanno regolatore a bordo.
- * D1/GPIO3 resta libero apposta: e' riservato al partitore della batteria
- * (vedi BATTERY_ADC_ENABLED sotto, gia' scritto ma spento finche' non c'e').
+ * D1/GPIO3 porta la presa centrale del partitore della batteria (vedi
+ * BATTERY_ADC_ENABLED sotto: acceso sulla XIAO, spento sul nodo a muro).
  *
  * ATTENZIONE, la trappola di questo cablaggio: il sensore e' SPENTO finche'
  * il firmware non alza D3/GPIO5. Uno scanner I2C generico, o qualunque altro
@@ -171,7 +171,7 @@
 //   v2  2026-08-22  storico 24 h in RAM + grafici, previsione dal trend
 //                   barometrico a 3 ore, intervallo e altitudine da pagina web
 //   v1  2026-08-22  bring-up del sensore, web UI, OTA
-static const char FW_VERSION[] = "v18";
+static const char FW_VERSION[] = "v19";
 
 // ---------------------------------------------------------------------
 //  Nome del nodo
@@ -275,11 +275,24 @@ static const uint8_t PIN_SDA        = 6;   // D4
 #endif
 
 // Partitore della batteria: 2x1 MOhm fra + cella e GND, presa centrale su
-// D1/GPIO3, piu' 100 nF verso massa. Non e' ancora cablato, quindi la lettura
-// resta spenta: leggere un pin flottante darebbe una tensione inventata, molto
-// peggio di un "non disponibile" onesto. Quando il partitore ci sara', basta
-// mettere questo a 1.
-#define BATTERY_ADC_ENABLED 0
+// D1/GPIO3, piu' 100 nF X7R verso massa. CABLATO IL 2026-09-09 sulla XIAO C3,
+// su una millefori che il cavo della batteria attraversa (ingresso e uscita
+// sulla stessa piazzola): cosi' non c'e' nessuna giunzione volante da isolare
+// e i pad della scheda non si toccano -- quello di BAT+ ha gia' il suo filo, e
+// riscaldarlo una seconda volta e' il modo classico per sollevare la piazzola.
+//
+// L'INTERRUTTORE E' PER BOARD, e non globale, perche' questo sketch gira su DUE
+// schede: la XIAO C3 a batteria (partitore cablato) e l'ESP32 classico del nodo
+// a muro, che sta attaccato alla rete e il partitore non ce l'ha. Un define
+// unico messo a 1 farebbe leggere all'altro nodo un pin FLOTTANTE, cioe'
+// spedire all'hub una tensione inventata -- che finirebbe nei CSV e nella riga
+// della fiducia del pannello con l'aria di un dato vero. Un "non disponibile"
+// onesto vale molto di piu'.
+#if defined(CONFIG_IDF_TARGET_ESP32)
+#define BATTERY_ADC_ENABLED 0      // nodo a muro: alimentato dalla rete
+#else
+#define BATTERY_ADC_ENABLED 1      // XIAO C3 a batteria: partitore cablato
+#endif
 #if defined(CONFIG_IDF_TARGET_ESP32)
 // Sull'ESP32 classico l'ADC1 e' sui GPIO32-39; il 35 e' solo ingresso, che per
 // un partitore va benissimo. NON usare il GPIO3, che li' e' la RX della UART0.
@@ -908,12 +921,22 @@ static float dewPointC(float tempC, float rhPct) {
   return (b * g) / (a - g);
 }
 
-// Il rapporto del partitore. E' 2,0 con due resistori uguali, ma **si misurano
-// col multimetro e si corregge qui**: al 5% di tolleranza l'errore arriva a
+// Il rapporto del partitore, MISURATO col multimetro sui resistori veri e non
+// dato per buono: (R1+R2)/R2. Al 5% di tolleranza l'errore arriverebbe a
 // +-200 mV su una cella LiPo, cioe' la differenza fra "carica a meta'" e
-// "quasi scarica". Con R1 = 1,02 MOhm e R2 = 0,98 MOhm il rapporto e'
-// (R1+R2)/R2 = 2,041, non 2.
-#define BATTERY_PARTITORE 2.0f
+// "quasi scarica".
+//
+// Misurati il 2026-09-09 sulla millefori: R1 (BAT+ -> presa) = 0,982 MOhm,
+// R2 (presa -> GND) = 0,986 MOhm, quindi 1,968 / 0,986 = 1,996. Lo scarto da
+// 2,000 vale 8 mV su una cella carica: si mette perche' non costa niente, ma
+// il limite vero della misura non e' qui -- e' la calibrazione di fabbrica
+// dell'ADC (+-3% tipici, ~60 mV), e quella si corregge solo confrontando la
+// prima lettura automatica col multimetro.
+//
+// I due resistori si annullano quasi del tutto perche' sono dello STESSO
+// valore nominale: e' il motivo per cui un partitore si fa cosi' e non con un
+// resistore di precisione.
+#define BATTERY_PARTITORE 1.996f
 
 static float readBatteryV() {
 #if BATTERY_ADC_ENABLED
