@@ -556,6 +556,39 @@ def drawFila(t, voci, x, y, xMax, gap):
         x += bw + gap
 
 
+# Le soglie e l'isteresi sono le stesse del firmware (BATT_SOGLIE,
+# BATT_ISTERESI): se un giorno divergono, il mock smette di essere un giudice
+# e diventa una seconda implementazione con opinioni proprie.
+BATT_SOGLIE = (3450, 3600, 3750, 3900, 4050)
+
+
+def battLivello(mv):
+    """Il livello NUDO, senza isteresi: il mock disegna una pagina sola e non
+    ha una storia da cui partire. Per validare basta -- l'isteresi cambia
+    QUANDO il livello si muove, non che aspetto ha."""
+    if not mv:
+        return None
+    liv = 0
+    while liv < 5 and mv >= BATT_SOGLIE[liv]:
+        liv += 1
+    return liv
+
+
+def drawBatteria(t, x, y, livello):
+    W, H = 26, 13
+    t.drawRect(x, y, W, H)
+    t.drawRect(x + 1, y + 1, W - 2, H - 2)
+    t.fillRect(x + W, y + 4, 3, H - 8)
+    if livello == 0:
+        t.fillRect(x + 3, y + 3, 3, H - 6)
+        return
+    utile = W - 6
+    for i in range(livello):
+        # La divisione tronca verso lo zero come in C: e' una delle tre regole
+        # in cima a questo file, ed e' proprio dove si perdono i pixel.
+        t.fillRect(x + 3 + _tronca(utile * i, 5), y + 3, _tronca(utile, 5) - 1, H - 6)
+
+
 def drawTestataNodo(t, n, y, h):
     t.setFont("FreeSansBold9pt7b")
     _bx, by, _bw, bh = t.getTextBounds(n["nome"])
@@ -576,6 +609,10 @@ def drawTestataNodo(t, n, y, h):
         t.setFont("FreeSansBold12pt7b")
         _bx, by2, _bw2, bh2 = t.getTextBounds("!")
         t.drawRight("!", t.width() - 12, y + _tronca(h - bh2, 2) - by2)
+    elif n.get("batteria_mv"):
+        liv = battLivello(n["batteria_mv"])
+        if liv is not None:
+            drawBatteria(t, t.width() - 42, y + _tronca(h - 13, 2), liv)
 
 
 def drawDeltaTemp(t, d, yBase, xMax):

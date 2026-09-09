@@ -170,7 +170,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v70";
+static const char FW_VERSION[] = "v71";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1125,7 +1125,83 @@ static String fmtDelta(float v, int dec)
 // blocco e l'altro ci sono comunque 130 px di bianco -- e libera il nero per
 // l'unica cosa che deve gridare: il badge del nodo muto, che ora e' il solo
 // negativo della pagina e per questo si vede molto piu' di prima.
-static void drawTestataNodo(const RemoteNode& n, int16_t y, int16_t h)
+// --- la carica della cella, in cinque tacche -------------------------------
+// CINQUE LIVELLI E NESSUN NUMERO, ed e' una scelta sul significato prima che
+// sullo spazio: la tensione di una Li-ion non e' una percentuale. Fra 3,9 e
+// 3,7 V la curva di scarica e' quasi piatta, quindi lo stesso "78 %" puo'
+// durare ore o minuti -- un numero credibile e in buona parte inventato. Le
+// tacche dicono cio' che si sa davvero (piena / a meta' / da cambiare), e la
+// tensione esatta resta nella pagina dettaglio, dove c'e' spazio per leggerla.
+//
+// Le soglie sono quelle di una 18650 sotto carico leggero. L'ultima tacca si
+// spegne a 3,45 V, ben prima della fine vera (~3,0): su un nodo che sta su un
+// muro, "vai a cambiarla" deve arrivare mentre c'e' ancora tempo per farlo.
+static const uint16_t BATT_SOGLIE[5] = { 3450, 3600, 3750, 3900, 4050 };
+
+// L'ISTERESI e' la parte che serve al pannello, non alla misura. L'ADC ha
+// +-10 mV di rumore e la cella scende di frazioni di mV all'ora: senza
+// isteresi, nelle ore in cui la tensione sta appoggiata a una soglia il
+// livello oscillerebbe avanti e indietro ad ogni pacchetto -- e ogni
+// oscillazione e' un refresh completo da 2,2 s per ridisegnare una tacca. Con
+// 30 mV di margine il confine si attraversa una volta sola.
+static const uint16_t BATT_ISTERESI = 30;
+static uint8_t s_battLiv[REMOTE_MAX_NODES];   // 0..5, 0xFF = mai calcolato
+
+static uint8_t battLivello(int idx, uint16_t mv)
+{
+  if (mv == 0) return 0xFF;
+
+  uint8_t liv = 0;
+  while (liv < 5 && mv >= BATT_SOGLIE[liv]) liv++;
+
+  // Senza indice non c'e' dove tenere lo stato: si disegna il livello nudo.
+  // Capita solo a chi chiama la testata da fuori dalla pagina nodi, dove il
+  // conto dei refresh non e' in gioco.
+  if (idx < 0 || idx >= REMOTE_MAX_NODES) return liv;
+
+  const uint8_t prec = s_battLiv[idx];
+  if (prec != 0xFF && prec != liv) {
+    // Si cambia livello solo se si e' andati OLTRE la soglia di un margine.
+    // Il confronto e' sulla soglia che si sta attraversando, non su quella
+    // del livello nuovo: sono la stessa cosa solo quando si sale.
+    const uint16_t soglia = BATT_SOGLIE[(liv > prec) ? (prec) : (liv)];
+    const bool sale  = (liv > prec) && (mv >= (uint16_t)(soglia + BATT_ISTERESI));
+    const bool scende = (liv < prec) && (mv + BATT_ISTERESI <= soglia);
+    if (!sale && !scende) liv = prec;
+  }
+  s_battLiv[idx] = liv;
+  return liv;
+}
+
+// Disegnata con le primitive e non presa da icone.h: il riempimento cambia, e
+// cinque bitmap sarebbero cinque volte lo spazio per la stessa forma. E' anche
+// l'unico simbolo del pannello che non ha bisogno di essere riconoscibile a
+// occhi socchiusi -- una batteria e' un rettangolo con un polo, e lo sanno
+// tutti.
+static void drawBatteria(int16_t x, int16_t y, uint8_t livello)
+{
+  const int16_t W = 26, H = 13;
+  tela.drawRect(x, y, W, H, GxEPD_BLACK);
+  tela.drawRect(x + 1, y + 1, W - 2, H - 2, GxEPD_BLACK);   // bordo doppio: a
+                                                            // un pixel, da tre
+                                                            // metri, non c'e'
+  tela.fillRect(x + W, y + 4, 3, H - 8, GxEPD_BLACK);       // il polo
+
+  if (livello == 0) {
+    // Vuota NON e' un rettangolo vuoto -- quello e' anche l'aspetto di un
+    // errore di disegno. E' una barra sola, che si legge come "quasi niente".
+    tela.fillRect(x + 3, y + 3, 3, H - 6, GxEPD_BLACK);
+    return;
+  }
+  const int16_t utile = W - 6;
+  for (uint8_t i = 0; i < livello; i++)
+    tela.fillRect(x + 3 + (utile * i) / 5, y + 3, (utile / 5) - 1, H - 6, GxEPD_BLACK);
+}
+
+// `indice` serve SOLO all'isteresi della batteria (che e' uno stato per nodo)
+// e ha un default: chi disegna una testata senza sapere l'indice non deve
+// inventarselo, e senza indice si perde l'isteresi, non il disegno.
+static void drawTestataNodo(const RemoteNode& n, int16_t y, int16_t h, int indice = -1)
 {
   const int16_t W = tela.width();
 
@@ -1179,6 +1255,21 @@ static void drawTestataNodo(const RemoteNode& n, int16_t y, int16_t h)
     tela.setFont(&FreeSansBold12pt7b);
     tela.getTextBounds("!", 0, 0, &bx, &by, &bw, &bh);
     drawRight("!", W - 12, y + (h - (int16_t)bh) / 2 - by);
+  }
+  // La carica sta nello stesso angolo degli avvisi, ed e' l'ULTIMA della fila:
+  // cede il posto sia al badge MUTO sia al "!" del ritardo. L'ordine e' quello
+  // dell'urgenza -- un nodo che tace o che e' in ritardo ha un problema adesso,
+  // la cella e' un'informazione che puo' aspettare il prossimo pacchetto -- e
+  // due segni nello stesso angolo sarebbero due cose che si contendono
+  // l'occhio.
+  //
+  // `batteria_mv == 0` vuol dire alimentato dalla rete o partitore non
+  // cablato: li' non si disegna niente. Una batteria piena sarebbe una bugia,
+  // una vuota un allarme falso -- e' la stessa regola delle colonne vuote del
+  // riepilogo, dove lo zero non e' un valore.
+  else if (n.hasData && n.batteria_mv > 0) {
+    const uint8_t liv = battLivello(indice, n.batteria_mv);
+    if (liv != 0xFF) drawBatteria(W - 42, y + (h - 13) / 2, liv);
   }
 }
 
@@ -1580,7 +1671,7 @@ static bool nodiLayoutComodo(int quanti, const Message* fascia)
 // --- blocco COMODO: fino a due nodi, con il grafico ------------------------
 static void drawNodoComodo(const RemoteNode& n, int16_t y, int16_t h, int indice)
 {
-  drawTestataNodo(n, y, 21);
+  drawTestataNodo(n, y, 21, indice);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
@@ -1650,7 +1741,7 @@ static void drawNodoComodo(const RemoteNode& n, int16_t y, int16_t h, int indice
 // min/max: il pannello SCEGLIE cosa mostrare, non comprime tutto.
 static void drawNodoCompatto(const RemoteNode& n, int16_t y, int16_t h, int indice)
 {
-  drawTestataNodo(n, y, 20);
+  drawTestataNodo(n, y, 20, indice);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
@@ -3022,7 +3113,7 @@ static void screenDettaglio(const char* nomeNodo)
     return;
   }
 
-  drawTestataNodo(n, 0, 26);
+  drawTestataNodo(n, 0, 26, indice);
 
   if (!n.hasData) {
     tela.setFont(&FreeSans9pt7b);
@@ -3546,6 +3637,13 @@ static uint32_t firmaValori()
     firmaMescola(f, firmaComeScritto(n.value[1], 0));   // umidita': 41%
     firmaMescola(f, firmaComeScritto(n.value[2], 1));   // pressione: 1013,9
     firmaMescola(f, (int32_t)n.trend);
+
+    // La carica, come TACCA e non come tensione (v71): quello che si disegna
+    // sono cinque livelli, quindi un 4,02 -> 4,01 non e' un cambiamento della
+    // pagina. E' la stessa regola dell'umidita' a zero decimali -- con i
+    // millivolt in firma il rumore dell'ADC (+-10 mV) pagherebbe refresh
+    // completi per ridisegnare pixel identici.
+    firmaMescola(f, (int32_t)battLivello(i, n.batteria_mv));
 
     // La rugiada NON entra piu' (v59): il blocco compatto era l'unico a
     // disegnarla e ora al suo posto c'e' la riga delle variazioni. Un valore

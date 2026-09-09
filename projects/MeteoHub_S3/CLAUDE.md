@@ -1196,6 +1196,35 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     riga: un avviso a piena larghezza sarebbe il 5% della pagina di nero fisso,
     e il nero fisso e' cio' che imprime il vetro.
 
+- **La carica della cella in testata, cinque tacche e nessun numero** (`v71`,
+  2026-09-09, appena il partitore del nodo a batteria e' stato cablato).
+  - **Perché non una percentuale**: la tensione di una Li-ion non è una
+    percentuale. Fra 3,9 e 3,7 V la curva di scarica è quasi piatta, quindi lo
+    stesso «78 %» può durare ore o minuti — un numero credibile e in buona
+    parte inventato. Le tacche dicono ciò che si sa davvero (piena / a metà /
+    da cambiare); la tensione esatta sta nella **pagina dettaglio**, dove c'è
+    spazio per leggerla.
+  - **L'ultima tacca si spegne a 3,45 V**, ben prima della fine vera (~3,0):
+    su un nodo appeso a un muro «vai a cambiarla» deve arrivare mentre c'è
+    ancora tempo per farlo.
+  - **L'ISTERESI di 30 mV è la parte che serve al pannello, non alla misura.**
+    L'ADC ha ±10 mV di rumore e la cella scende di frazioni di mV all'ora:
+    senza isteresi, nelle ore in cui la tensione sta appoggiata a una soglia il
+    livello oscillerebbe ad ogni pacchetto, e **ogni oscillazione è un refresh
+    completo da 2,2 s** per ridisegnare una tacca. In firma entra il livello,
+    mai i millivolt: è la stessa regola dell'umidità a zero decimali.
+  - **Disegnata con le primitive, non in `icone.h`**: il riempimento cambia, e
+    cinque bitmap sarebbero cinque volte lo spazio per la stessa forma. È anche
+    l'unico simbolo del pannello che non ha bisogno della prova «si riconosce a
+    occhi socchiusi»: una batteria è un rettangolo con un polo.
+  - **È l'ultima della fila degli avvisi**: cede il posto al badge `MUTO` e al
+    `!` del ritardo, che sono problemi di adesso mentre la cella può aspettare
+    il prossimo pacchetto. E con `batteria_mv == 0` (rete o partitore non
+    cablato) **non si disegna niente**: una batteria piena sarebbe una bugia,
+    una vuota un allarme falso.
+  - `tools/pannello_mock.py` la disegna anche lui, con le stesse soglie: se
+    divergessero, il mock smetterebbe di essere un giudice e diventerebbe una
+    seconda implementazione con opinioni proprie.
 - **La testata del nodo e' nome + filetto, non piu' una barra nera piena**
   (da `v38`). Il nero pieno e' cio' che si vede da piu' lontano, ma e' anche
   cio' che **imprime il vetro**: le due barre da sole facevano meta'
