@@ -171,7 +171,7 @@
 //   v2  2026-08-22  storico 24 h in RAM + grafici, previsione dal trend
 //                   barometrico a 3 ore, intervallo e altitudine da pagina web
 //   v1  2026-08-22  bring-up del sensore, web UI, OTA
-static const char FW_VERSION[] = "v19";
+static const char FW_VERSION[] = "v20";
 
 // ---------------------------------------------------------------------
 //  Nome del nodo
@@ -738,6 +738,13 @@ static void sensorPower(bool on) {
     // qui e non nel setup(), perche' il percorso di risveglio (cicloRisveglio())
     // il setup() non lo esegue.
     gpio_hold_dis((gpio_num_t)PIN_SENSOR_PWR);
+#if BATTERY_ADC_ENABLED
+    // Stessa storia per il pin del partitore, inchiodato prima di dormire per
+    // spegnerne il buffer d'ingresso: se non si rilascia, analogRead legge un
+    // pin bloccato -- una tensione ferma, che su una batteria e' la bugia piu'
+    // credibile di tutte.
+    gpio_hold_dis((gpio_num_t)PIN_BATTERY);
+#endif
     gpio_deep_sleep_hold_dis();
     pinMode(PIN_SENSOR_PWR, OUTPUT);
     digitalWrite(PIN_SENSOR_PWR, HIGH);
@@ -1565,6 +1572,35 @@ static void vaiADormire() {
   // che sia sorvegliata. esp_deep_sleep_start() non torna, quindi da questo
   // punto in poi non c'e' piu' nessun task da sorvegliare.
   wdtDisarma();
+
+  // Il pin del partitore si ISOLA prima di dormire. Non e' flottante -- il
+  // partitore lo tiene a meta' cella -- ed e' proprio quello il problema: ~2,0 V
+  // su un rail da 3,3 cadono nella zona proibita di un ingresso digitale (VIL
+  // ~0,8, VIH ~2,5). Se il buffer d'ingresso restasse acceso nel sonno, i due
+  // transistor condurrebbero insieme e brucerebbero decine di uA -- su un nodo
+  // che in deep sleep ne consuma ~45, sarebbe un raddoppio travestito da
+  // "la cella dura meno del previsto".
+  //
+  // Sul C3 GPIO3 e' un pin RTC e in teoria il buffer e' gia' spento; questa
+  // riga c'e' perche' quel "in teoria" NON E' MISURABILE con gli strumenti che
+  // ci sono: il contributo del pin varrebbe ~0,7 mAh al giorno contro i ~16 dei
+  // risvegli, cioe' 0,2 mV al giorno su una lettura che ha 10 mV di
+  // risoluzione. Quando il rimedio costa una riga e la diagnosi non e' alla
+  // portata, si mette la riga.
+  //
+  // Non serve disfarla al risveglio: il deep sleep finisce con un reset vero, e
+  // analogSetPinAttenuation()/analogReadMilliVolts() riconfigurano comunque il
+  // pin prima di leggerlo.
+#if BATTERY_ADC_ENABLED
+  // Si spegne il BUFFER del pin (GPIO_MODE_DISABLE) e si inchioda con l'hold,
+  // che e' lo stesso meccanismo gia' usato per il VDD del sensore qui sotto --
+  // `rtc_gpio_isolate()` sul C3 non esiste, e' dei chip con RTC IO completo.
+  // Il rilascio sta in cicloRisveglio(), accanto a quello del sensore: senza,
+  // il pin resta inchiodato e l'ADC leggerebbe un valore fermo, cioe' una
+  // batteria che non si scarica mai.
+  gpio_set_direction((gpio_num_t)PIN_BATTERY, GPIO_MODE_DISABLE);
+  gpio_hold_en((gpio_num_t)PIN_BATTERY);
+#endif
 
   esp_sleep_enable_timer_wakeup((uint64_t)secondi * 1000000ULL);
   esp_deep_sleep_start();
