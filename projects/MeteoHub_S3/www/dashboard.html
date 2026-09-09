@@ -149,6 +149,10 @@ header{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin:.4rem 0 1
 .giorni .g .tt{color:var(--tx);min-width:0;overflow:hidden;
                text-overflow:ellipsis;white-space:nowrap}
 .cielo-ko{color:var(--tx3);font-size:.85rem}
+/* --- la carica della cella, le stesse cinque tacche del pannello ------- */
+.batt{display:inline-flex;align-items:center;gap:.35rem;font-size:.78rem;color:var(--tx2)}
+.batt svg{display:block}
+.batt.scarica{color:var(--bad)}
 @media (max-width:480px){
   /* Sul telefono l'icona grande vale meno dello spazio che toglie alle due
      righe di numeri accanto, che sono la parte che si legge. */
@@ -258,6 +262,21 @@ nav{margin:1.6rem 0 .5rem;display:flex;flex-wrap:wrap;gap:.4rem 1rem;font-size:.
     <span class="msg" id="mCielo"></span>
   </div>
   <div class="hint" id="hCieloSrv" style="margin-top:.5rem"></div>
+</section>
+
+<!-- ============ la marea barometrica ============ -->
+<!-- Sta accanto alla previsione perche' e' la ragione per cui quella
+     funziona: il ciclo giornaliero della pressione e' astronomico, e finche'
+     non gli si toglieva di mezzo il barometro cambiava frase due volte al
+     giorno per ragioni che col tempo non c'entrano niente.
+
+     E' anche l'unica cosa che rende CONTROLLABILE la taratura: i tre numeri
+     (giorni, ampiezza, data) dicono che e' viva, la curva dice se ha la fase
+     giusta -- che e' esattamente cio' che il 09/09 non si vedeva, quando la
+     tabella era anticipata di un'ora e nessun numero lo diceva. -->
+<section class="card">
+  <h2>Marea barometrica <span class="hint" id="hMarea">&mdash;</span></h2>
+  <div id="mareaCorpo"><div class="muted">lettura…</div></div>
 </section>
 
 <!-- ============ il pannello adesso ============ -->
@@ -651,6 +670,12 @@ async function caricaStato(){
   $('pNodi').className = 'pill ' + (s.nodi_online===s.nodi && s.nodi>0 ? 'on' : (s.nodi ? 'warn' : ''));
   $('pNodiTx').textContent = (s.nodi_online||0) + '/' + (s.nodi||0);
   $('pSd').className = 'pill ' + (s.sd ? 'on' : 'off');
+
+  // La marea si ridisegna con lo stato, che e' da dove arriva: la tabella
+  // cambia una volta al giorno, ma ridisegnarla costa un SVG da 24 punti e
+  // tenerla in sincrono con `marea_giorni` nell'intestazione vale piu' del
+  // risparmio.
+  renderMarea();
   $('pSdTx').textContent = s.sd ? (Math.round((s.sd_liberi_mb||0)/1024) + ' GB liberi') : 'assente';
   renderHub();
 }
@@ -788,6 +813,29 @@ function estremiDelGiorno(nome){
     '</div>';
 }
 
+// La batteria come la disegna il pannello: cinque tacche, nessuna
+// percentuale. Il LIVELLO arriva dalla scheda (`batteria_livello`), non si
+// ricalcola qui: le soglie e l'isteresi vivono nel firmware, e una seconda
+// tabella in JavaScript divergerebbe il giorno che si ritoccano.
+//
+// La tensione accanto SI, a differenza del vetro: qui lo spazio non manca e
+// chi apre la dashboard di solito vuole il numero.
+function battHtml(n){
+  if (n.batteria_livello == null || !n.batteria_mv) return '';
+  const liv = n.batteria_livello;
+  const W = 22, H = 11, utile = W - 6;
+  let tacche = '';
+  if (liv === 0) tacche = '<rect x="3" y="3" width="3" height="' + (H-6) + '"/>';
+  else for (let i = 0; i < liv; i++)
+    tacche += '<rect x="' + (3 + Math.floor(utile*i/5)) + '" y="3" width="' +
+              (Math.floor(utile/5)-1) + '" height="' + (H-6) + '"/>';
+  const svg = '<svg width="' + (W+3) + '" height="' + H + '" viewBox="0 0 ' + (W+3) + ' ' + H + '" fill="currentColor">' +
+    '<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="none" stroke="currentColor"/>' +
+    '<rect x="' + W + '" y="' + Math.floor(H/2-2) + '" width="3" height="4"/>' + tacche + '</svg>';
+  return '<div class="batt' + (liv <= 1 ? ' scarica' : '') + '">' + svg +
+         fmtC(n.batteria_mv/1000, 2) + ' V</div>';
+}
+
 function renderTiles(){
   const box = $('tiles');
   if (!NODI.length){ box.innerHTML = '<div class="muted">nessun nodo associato — apri la finestra di associazione qui sotto</div>'; return; }
@@ -805,6 +853,10 @@ function renderTiles(){
       '<div class="sub">' + (n.dati ? ('ultimo dato ' + silStr(n.silenzio_s) + ' · ogni ' + (n.intervallo_s||'?') + ' s')
                                     : 'in attesa del primo pacchetto') +
         (n.online ? '' : ' · <span style="color:var(--bad)">MUTO</span>') + '</div>' +
+      // La carica sotto la riga dello stato: e' un dato del NODO, non una
+      // misura dell'aria, e sta con le altre cose che dicono se ci si puo'
+      // fidare di lui.
+      battHtml(n) +
       estremiDelGiorno(n.nome) +
       variazioniTemp(n) +
       // Trend e previsione sono due cose diverse e vanno dette come tali:
@@ -1098,6 +1150,64 @@ async function leggiAnte(){
   }finally{ b.disabled = false; }
 }
 $('bAnte').onclick = leggiAnte;
+
+// La marea, disegnata come curva. I 24 valori arrivano in CENTESIMI di hPa e
+// sono indicizzati per ora UTC (vedi cielo.h/daily.h: la marea segue il sole,
+// non l'orologio civile) -- qui si riportano all'ora del posto, perche' chi
+// guarda vuole sapere a che ora della SUA giornata la pressione tocca il
+// massimo.
+function renderMarea(){
+  const t = STATO.marea_tab;
+  if (!t || !t.length){
+    $('hMarea').textContent = 'non ancora tarata';
+    $('mareaCorpo').innerHTML = '<div class="cielo-ko">nessun giorno in media: ' +
+      'la tabella parte a zeri e si riempie da sé, un giorno quieto per volta</div>';
+    return;
+  }
+  const off = -new Date().getTimezoneOffset()/60;   // ore da UTC, oggi +2
+  $('hMarea').textContent = STATO.marea_giorni + ' giorni · ampiezza ' +
+    fmtC(STATO.marea_ampiezza,2) + ' hPa' +
+    (STATO.marea_ultima ? ' · ultimo ' + STATO.marea_ultima : '');
+
+  const W = 480, H = 130, mx = 30, my = 14;
+  const mn = Math.min(...t), mxv = Math.max(...t);
+  const span = (mxv - mn) || 1;
+  const X = i => mx + (W - mx - 8) * i / 23;
+  const Y = v => my + (H - my*2) * (mxv - v) / span;
+
+  let d = '';
+  for (let i = 0; i < 24; i++) d += (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(t[i]).toFixed(1);
+
+  // Le tacche sono in ora LOCALE: si cerca quale indice UTC corrisponde alle
+  // 00, 06, 12, 18 di qui.
+  let tacche = '';
+  for (const oraLoc of [0,6,12,18]){
+    const i = ((oraLoc - off) % 24 + 24) % 24;
+    tacche += '<line x1="'+X(i).toFixed(1)+'" y1="'+my+'" x2="'+X(i).toFixed(1)+'" y2="'+(H-my)+'" ' +
+              'stroke="currentColor" stroke-opacity=".18"/>' +
+              '<text x="'+X(i).toFixed(1)+'" y="'+(H-2)+'" text-anchor="middle" ' +
+              'font-size="9" fill="currentColor" opacity=".55">'+String(oraLoc).padStart(2,'0')+'</text>';
+  }
+  const zero = Y(0);
+
+  const iMax = t.indexOf(mxv), iMin = t.indexOf(mn);
+  const oraDi = i => String((i + off + 24) % 24).padStart(2,'0');
+
+  $('mareaCorpo').innerHTML =
+    '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;color:var(--tx)">' +
+      tacche +
+      '<line x1="'+mx+'" y1="'+zero.toFixed(1)+'" x2="'+(W-8)+'" y2="'+zero.toFixed(1)+'" ' +
+        'stroke="currentColor" stroke-opacity=".35" stroke-dasharray="3 3"/>' +
+      '<path d="'+d+'" fill="none" stroke="currentColor" stroke-width="2"/>' +
+      '<text x="2" y="'+(my+4)+'" font-size="9" fill="currentColor" opacity=".55">' +
+        fmtC(mxv/100,2)+'</text>' +
+      '<text x="2" y="'+(H-my+4)+'" font-size="9" fill="currentColor" opacity=".55">' +
+        fmtC(mn/100,2)+'</text>' +
+    '</svg>' +
+    '<div class="hint">massimo alle ' + oraDi(iMax) + ':00, minimo alle ' + oraDi(iMin) +
+      ':00 (ora locale) &mdash; la marea vera ha il massimo verso le 10 e il minimo verso le 17: ' +
+      'se questi due si spostano di un’ora, la tabella è sfasata e sta correggendo l’ora sbagliata</div>';
+}
 
 // --- le icone del cielo, disegnate qui ------------------------------
 // SVG inline e non emoji: le emoji cambiano faccia su ogni sistema (e su

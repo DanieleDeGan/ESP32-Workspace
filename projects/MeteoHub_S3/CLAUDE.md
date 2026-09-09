@@ -1226,6 +1226,20 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     il prossimo pacchetto. E con `batteria_mv == 0` (rete o partitore non
     cablato) **non si disegna niente**: una batteria piena sarebbe una bugia,
     una vuota un allarme falso.
+  - **Il livello lo calcola il FIRMWARE anche per il web** (`batteria_livello`
+    in `/api/nodi`, `v73`): la dashboard disegna le stesse cinque tacche senza
+    avere una sua copia delle soglie. Erano già in due posti (firmware e mock);
+    una terza in JavaScript sarebbe divergere in silenzio il giorno che si
+    ritoccano. `null` dove la batteria non c'è — e nella tile del nodo, dove lo
+    spazio non manca, **accanto all'icona c'è anche la tensione**, che sul
+    vetro invece non ci sta.
+  - **La marea si guarda dalla dashboard** (`v73`): card con la curva dei 24
+    valori, ampiezza, giorni e data dell'ultimo aggiornamento. I valori sono
+    in ora **UTC** e la pagina li riporta all'ora del posto, perché chi guarda
+    vuole sapere a che ora della *sua* giornata la pressione tocca il massimo.
+    Sotto la curva c'è scritto dove devono cadere massimo e minimo (10 e 17):
+    è la verifica della **fase** che il 09/09 è costata due script, e che i tre
+    numeri da soli non davano.
   - `tools/pannello_mock.py` la disegna anche lui, con le stesse soglie: se
     divergessero, il mock smetterebbe di essere un giudice e diventerebbe una
     seconda implementazione con opinioni proprie.

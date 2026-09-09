@@ -320,6 +320,17 @@ static void handleApiNodi() {
     // misurato a cavallo di un buco non e' un periodo.
     json += "\"intervallo_campioni\":" + String(r.intervalloCampioni) + ",";
     json += "\"batteria_mv\":"   + String(r.batteria_mv) + ",";
+    // Il livello in tacche, calcolato dal FIRMWARE con le stesse soglie e la
+    // stessa isteresi del pannello: `null` dove la batteria non c'e'. Il web
+    // non deve sapere a che tensione una cella e' scarica -- lo sa gia' chi
+    // disegna il vetro, e una seconda tabella di soglie in JavaScript
+    // divergerebbe il giorno che si ritoccano.
+    {
+      const uint8_t liv = app_batteria_livello(i, r.batteria_mv);
+      json += "\"batteria_livello\":";
+      if (liv == 0xFF) json += "null"; else json += String((int)liv);
+      json += ',';
+    }
     json += "\"seq\":"           + String(r.seq)         + ",";
     json += "\"pacchetti\":"     + String(r.pacchetti)   + ",";
     json += "\"persi\":"         + String(r.persi)       + ",";
