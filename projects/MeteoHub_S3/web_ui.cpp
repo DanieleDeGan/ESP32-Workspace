@@ -1106,7 +1106,9 @@ static void handleApiStato() {
     j += "\"marea_ultima\":"; appendJsonString(j, buf); j += ',';
   }
   // E la tabella intera, 24 scarti orari in CENTESIMI di hPa, indice = ora
-  // locale. I tre numeri qui sopra dicono che la taratura e' VIVA; questi
+  // UTC (da v66: la marea segue il sole, non l'orologio civile -- vedi
+  // daily.h). Chi la guarda con l'ora del posto in testa ricordi lo scarto:
+  // il massimo delle 10 del mattino sta all'indice 8 d'estate e 9 d'inverno. I tre numeri qui sopra dicono che la taratura e' VIVA; questi
   // dicono cosa sta facendo, ed e' l'unico modo di controllarne la FASE: una
   // marea sfasata di un'ora sposta il delta a 3 h dalla parte sbagliata e
   // nessuno degli altri campi se ne accorgerebbe. Costa ~110 byte su una
@@ -2672,7 +2674,7 @@ static const Rotta ROTTE[] = {
   { HTTP_GET,  "/pannello",             handlePannelloPage,          "pagine del pannello, messaggi, immagini (sostituibile)", "" },
   { HTTP_GET,  "/immagini",             handleImmaginiPage,          "composizione di un'immagine per il pannello (sostituibile)", "" },
 
-  { HTTP_GET,  "/api/stato",            handleApiStato,              "stato generale: firmware, rete, ora, card, contatori, taratura della marea (marea_tab: 24 scarti orari in centesimi di hPa)", "" },
+  { HTTP_GET,  "/api/stato",            handleApiStato,              "stato generale: firmware, rete, ora, card, contatori, taratura della marea (marea_tab: 24 scarti orari in centesimi di hPa, indice = ora UTC)", "" },
   { HTTP_GET,  "/api/salute",           handleApiSalute,             "controlli incrociati: pacchetti == righe + scartati + fallite", "" },
   { HTTP_GET,  "/api/elenco",           nullptr,                     "QUESTO elenco, in JSON", "" },
 

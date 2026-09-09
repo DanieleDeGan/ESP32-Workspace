@@ -313,8 +313,12 @@ float remote_temp_delta(int index, int slotIndietro);
 int remote_temp_minmax(int index, float* minC, float* maxC);
 
 // La correzione della marea barometrica: 24 scarti orari in CENTESIMI di hPa,
-// indicizzati per ORA LOCALE. Si sottraggono ai due capi del delta a 3 ore
-// prima di classificare il trend.
+// indicizzati per ORA UTC (da v66; prima erano ora locale). Si sottraggono ai
+// due capi del delta a 3 ore prima di classificare il trend.
+//
+// UTC perche' la marea segue il sole, che non fa l'ora legale: indicizzata per
+// ora civile, la tabella si trovava sfasata di un'ora dalla mattina dopo il
+// cambio, e con il peso a 1/8 ci metteva una settimana e mezza a rimettersi.
 //
 // PERCHE'. Il ciclo giornaliero della pressione e' astronomico, non
 // meteorologico: qui misura ~1,5 hPa da picco a picco, e le soglie del trend

@@ -168,7 +168,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v65";
+static const char FW_VERSION[] = "v66";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1864,7 +1864,12 @@ static void seedForecastDaSD()
 // proprieta' del posto, non del sensore, e due nodi nella stessa casa misurano
 // lo stesso ciclo. Averne una sola la fa anche convergere in meta' tempo.
 static const char* MAREA_NS   = "marea";
-static const uint32_t MAREA_MAGIC = 0x4D415231;   // "MAR1"
+// "MAR2" da v66: la tabella e' passata da ora locale a ora UTC, e una tabella
+// vecchia riletta dalla NVS sarebbe la curva giusta spostata di una o due ore.
+// Il magic cambia apposta: cosi' la scheda riparte da zeri e si ritara sola,
+// invece di applicare per giorni una correzione sfasata che nessun numero
+// esposto distingue da una buona (letteralmente il difetto di v63).
+static const uint32_t MAREA_MAGIC = 0x4D415232;   // "MAR2"
 
 static int8_t   s_mareaTab[24];
 static uint16_t s_mareaGiorni = 0;      // quanti giorni sono entrati nella media
@@ -1917,6 +1922,42 @@ static void mareaSalva() {
   p.putUShort("giorni", s_mareaGiorni);
   p.putUInt("ultima", (uint32_t)s_mareaUltima);
   p.end();
+}
+
+// Il giorno in cui l'orologio civile salta: dura 23 o 25 ore, e non e' un
+// giorno da cui misurare un ciclo di 24.
+//
+// La tabella e' in UTC e quindi NON si sposta al cambio dell'ora (e' il motivo
+// per cui ci sta), ma il giorno resta storto lo stesso: i CSV sono spezzati per
+// giorno LOCALE, quindi a marzo quel file copre 23 ore -- un'ora UTC senza
+// campioni, e daily_marea lo rifiuta gia' da se' -- e a ottobre ne copre 25,
+// con un'ora UTC riempita due volte a distanza di un giorno e la media del
+// giorno sbilanciata su di lei. A ottobre nessuno se ne accorgerebbe: entrerebbe
+// in media un giorno leggermente storto, una volta l'anno, per sempre.
+//
+// Si guardano due istanti VERI (le 01 e le 23 locali circa, presi come
+// mezzogiorno -+ 11 h) e si confronta il loro scarto da UTC: se cambia, dentro
+// quel giorno c'e' la transizione. Non si passa da mktime, che su una tm senza
+// isdst e' proprio cio' che e' costato un'ora di marea in v63.
+static int32_t offsetUtc(time_t ts) {
+  struct tm loc, utc;
+  if (!localtime_r(&ts, &loc) || !gmtime_r(&ts, &utc)) return 0;
+  long diff = (loc.tm_hour * 3600L + loc.tm_min * 60L + loc.tm_sec)
+            - (utc.tm_hour * 3600L + utc.tm_min * 60L + utc.tm_sec);
+  if (diff >  43200) diff -= 86400;   // le due tm possono stare in giorni
+  if (diff < -43200) diff += 86400;   // diversi: e' l'offset, non la data
+  return (int32_t)diff;
+}
+
+static bool giornoCambiaOra(const char* giorno) {
+  struct tm t0 = {};
+  int a = 0, m = 0, g = 0;
+  if (sscanf(giorno, "%d-%d-%d", &a, &m, &g) != 3) return false;
+  t0.tm_year = a - 1900; t0.tm_mon = m - 1; t0.tm_mday = g; t0.tm_hour = 12;
+  t0.tm_isdst = -1;
+  const time_t mezzogiorno = mktime(&t0);
+  if (mezzogiorno <= 0) return false;
+  return offsetUtc(mezzogiorno - 11 * 3600) != offsetUtc(mezzogiorno + 11 * 3600);
 }
 
 // Un giorno chiuso entra nella media. Il peso parte da 1 (il primo giorno E'
@@ -1985,57 +2026,10 @@ static bool riepilogoDaCsv(const RemoteNode* n, const char* giorno, daily_t& d)
 {
   daily_reset(d);
 
-  // Il fuso si guarda UNA VOLTA per giorno e si passa a daily_add come numero.
-  // Chiamare localtime_r a ogni campione costerebbe ~130 us per riga (misurato
-  // in v56 sul controllo del cambio giorno), e su 1440 righe sarebbero due
-  // decimi di secondo dentro un loop() che non deve fermarsi. Ma soprattutto:
-  // daily.h e' header-only e PURO, e una funzione che legge il fuso di sistema
-  // non lo sarebbe piu'.
-  {
-    struct tm t0 = {};
-    int a = 0, m = 0, g = 0;
-    if (sscanf(giorno, "%d-%d-%d", &a, &m, &g) == 3) {
-      t0.tm_year = a - 1900; t0.tm_mon = m - 1; t0.tm_mday = g; t0.tm_hour = 12;
-      t0.tm_isdst = -1;
-      const time_t mezzogiorno = mktime(&t0);
-      struct tm loc, utc;
-      if (mezzogiorno > 0 && localtime_r(&mezzogiorno, &loc) && gmtime_r(&mezzogiorno, &utc)) {
-        // L'offset del fuso, ora legale COMPRESA: si sottraggono le due ORE
-        // DEL GIORNO, quella locale e quella UTC dello stesso istante. Niente
-        // mktime -- e' proprio mktime ad aver introdotto il difetto qui sotto
-        // -- e niente `tm_gmtoff`, che su questo newlib non esiste ('struct tm
-        // has no member named tm_gmtoff', provato).
-        //
-        // COSTATO UN'ORA DI MAREA (trovato il 09/09/2026, corretto in v65). Il
-        // conto di prima era `mktime(&loc) - mktime(&utc)` con `utc` uscita da
-        // gmtime_r: sembra ovvio e non lo e', perche' gmtime_r lascia
-        // `tm_isdst = 0` e mktime prende quella tm per un'ora LOCALE STANDARD.
-        // A settembre l'ora UTC reinterpretata come CET invece che CEST vale
-        // un'ora in meno: l'offset usciva 3600 invece di 7200, ogni campione
-        // finiva nell'accumulatore dell'ora precedente e la tabella della marea
-        // nasceva ANTICIPATA DI UN'ORA -- cioe' proprio la marea sfasata che
-        // mareaHpa() dichiara essere peggio di nessuna marea. Vive SOLO durante
-        // l'ora legale: d'inverno il conto sbagliato da' il numero giusto, ed e'
-        // il genere di cosa che sarebbe tornata da sola a marzo.
-        //
-        // Non lo diceva nessuno dei numeri esposti: `marea_giorni` saliva,
-        // `marea_ultima` si aggiornava, l'ampiezza era 1,62 hPa -- giusta,
-        // perche' la CURVA e' quella vera, solo spostata. Si e' visto
-        // confrontando i 24 valori con la stessa tabella ricalcolata da fuori
-        // sui CSV, ed e' esattamente il motivo per cui `marea_tab` e' finita in
-        // /api/stato in v64.
-        long secLoc = loc.tm_hour * 3600L + loc.tm_min * 60L + loc.tm_sec;
-        long secUtc = utc.tm_hour * 3600L + utc.tm_min * 60L + utc.tm_sec;
-        long diff   = secLoc - secUtc;
-        // Il giorno puo' essere diverso fra le due (a mezzogiorno non capita,
-        // ma il conto non deve dipendere dall'ora scelta come riferimento).
-        if (diff >  43200) diff -= 86400;
-        if (diff < -43200) diff += 86400;
-        d.offLocale = (int32_t)diff;
-      }
-    }
-  }
-
+  // Nessun fuso da guardare, qui: da v66 la marea si accumula per ora UTC
+  // (vedi daily.h), che e' anche il motivo per cui questo blocco non c'e'
+  // piu'. Ricavare l'offset locale era l'unica cosa che lo teneva in vita, ed
+  // era pure sbagliato per meta' dell'anno.
   sd_read_remote_day(n->nome, giorno, riepRiga, &d, 0);
   return d.campioni > 0;
 }
@@ -2233,7 +2227,7 @@ static void riepilogoTick()
     //    giorno per sempre.
     int8_t mareaGiorno[24];
     if (complPct >= 90.0f && fabsf(daily_p_var(d)) <= 5.0f &&
-        daily_marea(d, mareaGiorno))
+        !giornoCambiaOra(giorno) && daily_marea(d, mareaGiorno))
     {
       mareaAggiungiGiorno(mareaGiorno, d.ultimo);
       Serial.printf("[marea] %s %s: giorno %u in media, ampiezza %.2f hPa\n",

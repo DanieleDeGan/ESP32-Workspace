@@ -262,14 +262,18 @@ void remote_set_marea(const int8_t tab[24]) {
   s_mareaAttiva = true;
 }
 
-// Lo scarto della marea all'istante ts, in hPa. L'ora e' quella LOCALE, come
-// la tabella: il fuso e l'ora legale spostano il ciclo di un'ora o due, e una
-// marea sfasata e' peggio di nessuna marea.
+// Lo scarto della marea all'istante ts, in hPa. L'ora e' UTC, come la tabella
+// (v66): una marea sfasata e' peggio di nessuna marea, e l'ora civile si
+// sfasa da sola due volte l'anno. In UTC la notte del cambio non succede
+// niente -- ne' qui ne' dove la tabella si tara.
+//
+// Niente localtime_r nemmeno per comodita': tenere i due lati sulla stessa
+// base oraria e' l'unica cosa che garantisce che restino in fase, e la
+// tentazione di leggere "l'ora giusta" da un lato solo e' esattamente
+// l'errore che v65 ha corretto.
 static float mareaHpa(time_t ts) {
   if (!s_mareaAttiva || ts <= 0) return 0.0f;
-  struct tm tmv;
-  if (localtime_r(&ts, &tmv) == nullptr) return 0.0f;
-  return s_marea[tmv.tm_hour] / 100.0f;
+  return s_marea[(ts / 3600) % 24] / 100.0f;
 }
 
 // Ricalcola pressione al livello del mare, delta a 3 h e trend di un nodo.

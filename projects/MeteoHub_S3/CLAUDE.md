@@ -36,6 +36,7 @@ CDC, deep sleep, OTA, scritture su SD, default NVS) `docs/Trappole-Hardware.md`.
 | `tools/refresh_simula.py` | quanti refresh farebbe il pannello, rigiocando i CSV veri dei nodi |
 | `tools/analisi.py` | cosa dicono davvero i CSV dei nodi: le analisi che a bordo non si possono fare |
 | `tools/previsione_verifica.py` | **la previsione azzecca?** Confronta il trend a 3 h con quello che la pressione ha poi fatto, contro le due previsioni che non costano niente. `--marea` misura il ciclo giornaliero |
+| `tools/cambio_ora.py` | **le due notti all'anno in cui l'orologio salta**: rifà in Python il controllo del firmware e ci fa girare sopra cinque anni di calendario, perché il caso vero capita due volte l'anno e aspettarlo per provarlo vorrebbe dire scoprirlo tardi. Non parla con la scheda |
 
 
 Cresciuto dal bring-up del pannello e-ink, oggi è l'hub vero della stazione:
@@ -760,6 +761,36 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
         tabella sfasata resterebbe a correggere l'ora sbagliata per una
         settimana. Si fa con `POST /api/nodi/riepilogo/rifai`, che dalla
         `v63` azzera anche la marea e riparte dai giorni sulla card.
+    - **La tabella è in ora UTC, non locale** (`v66`), ed è la risposta al
+      cambio dell'ora legale. La marea segue il **sole**, che l'ora legale non
+      la fa: indicizzata per ora civile, la tabella si trovava sfasata di
+      un'ora dalla mattina dopo il cambio, e con il peso ormai fisso a 1/8 ci
+      metteva **una settimana e mezza** a rimettersi — due volte l'anno la
+      correzione avrebbe lavorato sull'ora sbagliata, cioè peggio che non
+      correggere. In UTC non succede niente né in taratura né in
+      applicazione, e lo scarto fra ora UTC e ora solare del posto (~48 min a
+      12° Est) lo assorbe la tabella, che è tarata sui dati. In più toglie di
+      mezzo il fuso: `ts / 3600` non può sbagliare, mentre ricavarlo dal fuso
+      è già costato un'ora di marea (vedi `v65` qui sopra).
+      - **Chi guarda `marea_tab` tenga presente l'indice**: il massimo delle
+        10 del mattino sta all'indice **8** d'estate e **9** d'inverno.
+      - **Il magic della NVS è passato a `MAR2`**: una tabella vecchia riletta
+        sarebbe la curva giusta spostata di un'ora o due, e nessun numero
+        esposto la distinguerebbe da una buona. Così invece la scheda riparte
+        da zeri e si ritara da sola.
+    - **Il giorno in cui l'orologio salta non entra nella taratura**
+      (`giornoCambiaOra()`, `v66`). I CSV sono spezzati per giorno **locale**,
+      quindi quel file copre 23 o 25 ore:
+      - a **marzo** 23 ore, e un'ora UTC resta senza campioni → `daily_marea`
+        lo rifiuta già da sé, senza che nessuno glielo chieda;
+      - a **ottobre** 25 ore, con un'ora UTC riempita due volte a distanza di
+        un giorno e la media del giorno sbilanciata su di lei. Questo **non si
+        vedrebbe da nessuna parte**: entrerebbe in media un giorno storto, una
+        volta l'anno, per sempre.
+      Il controllo confronta l'offset da UTC a mezzogiorno ± 11 h (l'01 e le 23
+      locali): se cambia, la transizione è dentro quel giorno. Verificato su
+      cinque anni di calendario con `tools/cambio_ora.py`: **10 transizioni
+      trovate, zero mancate, zero falsi positivi**.
     - Il tutto vale **+7 punti di previsione**, misurati: vedi
       `tools/previsione_verifica.py` e la voce 0 del backlog.
   - **La batteria non si media** (tre colonne da `v62`: `b_primo_mv`,

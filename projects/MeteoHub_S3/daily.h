@@ -78,18 +78,25 @@ struct daily_t {
   uint16_t bMin;
 
   // --- la marea barometrica (v63) --------------------------------------
-  // Somma e conteggio della pressione per ORA LOCALE. Serve a misurare il
-  // ciclo giornaliero, che e' astronomico e non meteorologico: si accumula
-  // QUI perche' questa passata legge gia' ogni campione del giorno, e farne
-  // una seconda apposta costerebbe una rilettura della card per niente.
+  // Somma e conteggio della pressione per ORA UTC. Serve a misurare il ciclo
+  // giornaliero, che e' astronomico e non meteorologico: si accumula QUI
+  // perche' questa passata legge gia' ogni campione del giorno, e farne una
+  // seconda apposta costerebbe una rilettura della card per niente.
   //
-  // L'ora si ricava per aritmetica da `offLocale`, non con localtime_r a ogni
-  // campione: questo file e' header-only e PURO, e una funzione che dipende
-  // dal fuso di sistema non lo sarebbe piu'. Il fuso lo guarda il chiamante,
-  // una volta per giorno.
+  // UTC E NON ORA LOCALE, ed e' il punto (v66): la marea segue il SOLE, e il
+  // sole non conosce l'ora legale. Indicizzando per ora civile, le due notti
+  // in cui l'orologio salta sposterebbero la tabella di un'ora rispetto al
+  // fenomeno, e con il peso ormai fisso a 1/8 ci vorrebbe una settimana e
+  // mezza perche' si rimetta a posto: due volte l'anno la correzione
+  // lavorerebbe sull'ora sbagliata, che e' peggio di non correggere.
+  //
+  // In UTC non succede niente ne' qui ne' quando la tabella si applica, e lo
+  // scarto fra ora UTC e ora solare del posto (~48 min a 12 gradi Est) lo
+  // assorbe la tabella stessa, che e' tarata sui dati e non su un almanacco.
+  // In piu' toglie di mezzo il fuso: `ts / 3600` non puo' sbagliare, mentre
+  // ricavarlo dal fuso e' gia' costato un'ora di marea in v63 (vedi v65).
   double   mSomma[24];
   uint16_t mN[24];
-  int32_t  offLocale;      // secondi da aggiungere a ts per avere l'ora locale
 
   uint32_t seqPrec;
   bool     seqVisto;
@@ -120,7 +127,6 @@ static inline void daily_reset(daily_t& d) {
   d.pPrimo = NAN; d.pUltimo = NAN;
   d.bPrimo = 0;   d.bUltimo = 0;  d.bMin = 0;
   for (int i = 0; i < 24; i++) { d.mSomma[i] = 0.0; d.mN[i] = 0; }
-  d.offLocale = 0;
   d.seqPrec = 0;  d.seqVisto = false;
   d.tsPrec = 0;   d.nDelta = 0;
 }
@@ -153,10 +159,12 @@ static inline void daily_add(daily_t& d, time_t ts, uint32_t seq,
     if (d.bMin == 0 || battMv < d.bMin) d.bMin = battMv;
   }
 
-  // La pressione per ora locale, per la marea.
+  // La pressione per ora UTC, per la marea (vedi il commento sui campi).
   if (isfinite(pressHpa)) {
-    long ora = (long)(((ts + (time_t)d.offLocale) / 3600) % 24);
-    if (ora < 0) ora += 24;
+    long ora = (long)((ts / 3600) % 24);
+    if (ora < 0) ora += 24;          // ts prima del 1970 non esiste, ma il
+                                     // modulo del C su un negativo si', ed e'
+                                     // un indice di array
     d.mSomma[ora] += pressHpa;
     d.mN[ora]++;
   }
@@ -200,12 +208,14 @@ static inline void daily_add(daily_t& d, time_t ts, uint32_t seq,
   d.campioni++;
 }
 
-// I 24 scarti orari dalla media del giorno, in CENTESIMI di hPa: la marea di
-// quella giornata. Torna false se il giorno non e' utilizzabile.
+// I 24 scarti orari (ORA UTC) dalla media del giorno, in CENTESIMI di hPa: la
+// marea di quella giornata. Torna false se il giorno non e' utilizzabile.
 //
 // Due condizioni, e sono la ragione per cui questa funzione puo' dire di no:
 //  - servono tutte e 24 le ore. Un giorno con un buco di sei ore darebbe una
-//    "media del giorno" spostata, e con lei tutti e 24 gli scarti.
+//    "media del giorno" spostata, e con lei tutti e 24 gli scarti. E' anche
+//    cio' che scarta da se' la domenica di marzo in cui l'ora locale salta:
+//    quel giorno dura 23 ore e un'ora UTC resta senza campioni.
 //  - si sottrae la media DEL GIORNO STESSO, non una costante: senza, una
 //    settimana di alta pressione entrerebbe nel ciclo come se fosse periodica.
 //
