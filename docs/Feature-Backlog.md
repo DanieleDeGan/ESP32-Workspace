@@ -119,6 +119,34 @@ solo il browser — `tools/pannello_mock.py` legge `percepiti` da `/api/nodi`
 confronto pixel per pixel smette di valere.
 **Costo**: basso — e conviene accodarlo a un OTA che serve già per altro.
 
+### 45. Un invio troncato non deve restare un allarme per sempre
+**Cosa**: `s_invii_interrotti` (`web_ui.cpp:55`) è un contatore da avvio, senza
+ora e senza il nome del file. Appena vale 1, `/api/salute` passa a
+`"attenzione"` e **ci resta fino al riavvio**. Servono due cose: scrivere
+*quando* e *quale file* nel diario eventi — che ospita già `boot`, `ota`,
+`nodo_muto`, `card` — e alzare l'attenzione quando la cosa **si ripete**, non
+al primo taglio.
+**Perché qui**: successo il **2026-09-10 alle 12:00:31**. `loop_max_ms` 20792
+su `web`, cioè esattamente `INVIO_BUDGET_MS` (20 s) più il resto del giro: un
+client ha smesso di prendere un file e `streamFileLimitato()` ha tagliato,
+**che è precisamente il suo mestiere** — con `streamFile()` del core quel
+`loop()` restava appeso per minuti. Danno reale: nessuno (393 pacchetti = 393
+righe, 0 persi, CSV senza buchi, `seq` 172 → 173 a cavallo dell'evento), e dal
+PC la stessa scheda serve i 66 kB della dashboard in 0,30 s. Ma per stabilire
+tutto questo è servito incrociare `/api/salute`, `/api/stato`, i CSV dei nodi e
+il sorgente, perché **il messaggio non dice né l'ora né il file**. Il motivo
+esatto lo stampa `invioInterrotto()` (`web_ui.cpp:138`) sulla Serial, che su
+questa scheda **non è leggibile**: è diagnostica scritta dove nessuno la può
+leggere, lo stesso difetto per cui è nato il diario eventi.
+**Il rischio da non prendere**: una riga per ogni taglio no. Un client rotto
+che ritenta in loop riempirebbe la card, e il diario è "una riga per CAMBIO DI
+STATO, mai una riga per campione" (`sd_logger.h`). Tetto per ora, o una riga
+sola con «ripetuto N volte».
+**Perché conta**: un evento isolato e innocuo e un guasto che si ripete oggi si
+leggono **uguali**, ed è il tipo di allarme che si impara a ignorare — cioè il
+modo in cui `/api/salute` smette di servire.
+**Costo**: basso — `sd_log_evento()` c'è già.
+
 ### 0. Togliere la marea barometrica dalla previsione — FATTA (`v63`-`v66`)
 
 **Fatta il 2026-09-08/09, e non come era scritto qui sotto**: la tabella non è
