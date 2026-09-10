@@ -1347,9 +1347,28 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     valori, ampiezza, giorni e data dell'ultimo aggiornamento. I valori sono
     in ora **UTC** e la pagina li riporta all'ora del posto, perché chi guarda
     vuole sapere a che ora della *sua* giornata la pressione tocca il massimo.
-    Sotto la curva c'è scritto dove devono cadere massimo e minimo (10 e 17):
-    è la verifica della **fase** che il 09/09 è costata due script, e che i tre
-    numeri da soli non davano.
+    Sotto la curva c'è la verifica della **fase**, che il 09/09 è costata due
+    script e che i tre numeri da soli non davano.
+    - **I riferimenti «massimo alle 10, minimo alle 17» sono in ORA SOLARE del
+      posto, non in ora civile** — corretto il 2026-09-10, dopo una segnalazione
+      da chi guardava la pagina. Fino a lì erano due numeri **fissi** confrontati
+      con orari mostrati in ora civile, e da fine marzo a fine ottobre la riga
+      invitava a sospettare uno sfasamento inesistente: cioè a **riazzerare una
+      tabella sana** (`/api/nodi/riepilogo/rifai`), che è il danno peggiore che
+      quella riga potesse fare.
+    - **Due cose separano l'orologio dal sole**, e vanno sommate: l'**ora
+      legale** (+1 h da fine marzo) e la **longitudine** (a 13,78° Est il sole
+      è 55 minuti avanti su UTC). Oggi fanno **+1 h 05**, ed è tutto il motivo
+      per cui il massimo cade alle 11 e non alle 10. Verificato sulla tabella
+      vera: massimo all'indice **9 UTC** = 09:55 ora solare, minimo al **16
+      UTC** = 16:55 — cioè le 10 e le 17 di manuale.
+    - Ora la riga calcola gli orari attesi (serve la **longitudine**, che arriva
+      da `/api/cielo`: senza, lo dice invece di indovinare), dà il **verdetto**
+      «in fase» / «sfasata» con **un'ora di tolleranza** — la conca del minimo è
+      larga, le ore intorno differiscono di pochi centesimi di hPa — e quando è
+      sfasata scrive **come si riparte**. Provata con la data simulata a
+      settembre e a gennaio: la stessa tabella risulta in fase in entrambe, con
+      gli orari attesi che si spostano da 11/18 a 10/17.
   - `tools/pannello_mock.py` la disegna anche lui, con le stesse soglie: se
     divergessero, il mock smetterebbe di essere un giudice e diventerebbe una
     seconda implementazione con opinioni proprie.

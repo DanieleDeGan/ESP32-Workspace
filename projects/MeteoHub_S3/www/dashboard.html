@@ -1229,9 +1229,61 @@ function renderMarea(){
       '<text x="2" y="'+(H-my+4)+'" font-size="9" fill="currentColor" opacity=".55">' +
         fmtC(mn/100,2)+'</text>' +
     '</svg>' +
-    '<div class="hint">massimo alle ' + oraDi(iMax) + ':00, minimo alle ' + oraDi(iMin) +
-      ':00 (ora locale) &mdash; la marea vera ha il massimo verso le 10 e il minimo verso le 17: ' +
-      'se questi due si spostano di un’ora, la tabella è sfasata e sta correggendo l’ora sbagliata</div>';
+    '<div class="hint">' + verdettoFase(iMax, iMin, off) + '</div>';
+}
+
+// I riferimenti della marea vera — massimo verso le 10, minimo verso le 17 —
+// sono in ORA SOLARE DEL POSTO, e l'orologio civile non ci coincide quasi mai:
+// d'estate e' avanti di un'ora per l'ora legale, e c'e' anche la longitudine
+// (a 13,8 gradi Est il sole e' 55 minuti avanti su UTC). Sommati fanno +1 h 05,
+// ed e' tutto il motivo per cui oggi il massimo cade alle 11 e non alle 10.
+//
+// Fino al 10/09/2026 qui c'erano un "10" e un "17" scritti fissi, confrontati
+// con orari mostrati in ora CIVILE: da fine marzo a fine ottobre la riga
+// invitava a sospettare uno sfasamento che non c'era, cioe' a riazzerare una
+// tabella sana. E' lo stesso falso allarme dell'invio troncato e del MUTO: un
+// avviso che si accende da solo insegna a ignorare anche quelli veri.
+function verdettoFase(iMax, iMin, off){
+  const oraDi = i => String(((i + off) % 24 + 24) % 24).padStart(2,'0');
+  const testa = 'massimo alle ' + oraDi(iMax) + ':00, minimo alle ' + oraDi(iMin) + ':00 (ora locale)';
+
+  if (LON == null)
+    return testa + ' &mdash; la marea vera ha il massimo verso le <b>10</b> e il minimo verso le ' +
+      '<b>17</b>, ma <b>in ora solare del posto</b>: per convertirle nell’ora dell’orologio serve ' +
+      'la longitudine, che si imposta nella sezione Previsione qui sotto.';
+
+  const avanti = off - LON/15;                 // di quanto l'orologio e' avanti sul sole
+  const att = h => (((h + avanti) % 24) + 24) % 24;
+  const dist = (a,b) => { let d = Math.abs(a-b) % 24; return d > 12 ? 24-d : d; };
+  const hh = v => String(Math.round(((v % 24) + 24) % 24)).padStart(2,'0');
+  const sMax = dist(((iMax+off)%24+24)%24, att(10));
+  const sMin = dist(((iMin+off)%24+24)%24, att(17));
+  const m = Math.round(Math.abs(avanti) * 60);
+
+  // Se siamo in ora legale lo dice il calendario, non l'intuito: l'offset di
+  // adesso confrontato col piu' grande fra gennaio e luglio (in JS un offset
+  // minore vuol dire orologio piu' avanti). Senza il controllo, la frase
+  // «d'inverno cadranno un'ora prima» finiva scritta anche a gennaio.
+  const a = new Date().getFullYear();
+  const std = Math.max(new Date(a,0,1).getTimezoneOffset(), new Date(a,6,1).getTimezoneOffset());
+  const legale = new Date().getTimezoneOffset() < std;
+
+  const scarto = 'L’orologio adesso e’ avanti di <b>' + Math.floor(m/60) + ' h ' +
+    String(m%60).padStart(2,'0') + '</b> sul sole (' + (legale ? 'ora legale piu’ ' : '') +
+    'longitudine), quindi ' + (legale ? 'd’inverno gli stessi valori cadranno un’ora prima.'
+                                      : 'con l’ora legale cadranno un’ora dopo.');
+
+  // Un'ora di tolleranza, e non e' generosita': la conca del minimo e' larga,
+  // e con l'ampiezza vera qui (~1,7 hPa) le ore intorno al minimo differiscono
+  // di pochi centesimi. Due ore invece sono lo sfasamento gia' visto il 09/09.
+  if (sMax <= 1 && sMin <= 1)
+    return testa + ' &mdash; attesi verso le <b>' + hh(att(10)) + '</b> e le <b>' + hh(att(17)) +
+      '</b>: <b>la tabella e’ in fase</b>. ' + scarto;
+
+  return testa + ' &mdash; attesi verso le <b>' + hh(att(10)) + '</b> e le <b>' + hh(att(17)) +
+    '</b>, quindi il massimo e’ fuori di ' + sMax.toFixed(0) + ' h e il minimo di ' + sMin.toFixed(0) +
+    ' h: <b>la tabella e’ sfasata</b> e sta correggendo l’ora sbagliata. Si riparte da capo con ' +
+    '<code>POST /api/nodi/riepilogo/rifai</code>, che azzera anche la marea. ' + scarto;
 }
 
 // --- le icone del cielo, disegnate qui ------------------------------
@@ -1274,11 +1326,16 @@ function svgCielo(classe, piccola){
 // ogni mezz'ora e la scheda pure. Rileggerla ad ogni giro sarebbe traffico
 // verso un server sincrono per far comparire lo stesso identico numero.
 let giriCielo = 0;
+// La longitudine, tenuta da parte per la card della marea: senza, non si puo'
+// dire di quanto l'orologio civile e' avanti sul SOLE, che e' l'unica cosa a
+// cui la marea barometrica obbedisce. Si prende qui perche' e' qui che arriva.
+let LON = null;
 async function caricaCielo(){
   let d;
   try{ d = await api('/api/cielo'); }
   catch(e){ $('cieloCorpo').innerHTML = '<div class="cielo-ko">non leggibile: ' + esc(e.message) + '</div>'; return; }
 
+  if (d.lon != null) LON = d.lon;
   if (!$('inLat').value && d.lat != null) $('inLat').value = d.lat;
   if (!$('inLon').value && d.lon != null) $('inLon').value = d.lon;
 
