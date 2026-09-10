@@ -844,7 +844,7 @@ function renderTiles(){
     const c = coloreNodo(n.nome);
     const v = n.valori || [null,null,null];
     return '<div class="tile">' +
-      '<div class="lbl"><span class="nd '+(n.online?'on':'off')+'"></span>' +
+      '<div class="lbl"><span class="nd '+(n.dati?(n.online?'on':'off'):'')+'"></span>' +
         '<span style="color:'+c+'">■</span> ' + esc(n.nome) + '</div>' +
       '<div class="big num" style="color:'+c+'">' + nv(v[0],1) + '<span class="u">°C</span></div>' +
       '<div class="row2">' +
@@ -853,7 +853,7 @@ function renderTiles(){
       '</div>' +
       '<div class="sub">' + (n.dati ? ('ultimo dato ' + silStr(n.silenzio_s) + ' · ogni ' + (n.intervallo_s||'?') + ' s')
                                     : 'in attesa del primo pacchetto') +
-        (n.online ? '' : ' · <span style="color:var(--bad)">MUTO</span>') + '</div>' +
+        (n.dati && !n.online ? ' · <span style="color:var(--bad)">MUTO</span>' : '') + '</div>' +
       // La carica sotto la riga dello stato: e' un dato del NODO, non una
       // misura dell'aria, e sta con le altre cose che dicono se ci si puo'
       // fidare di lui.
@@ -898,7 +898,7 @@ function renderTabella(){
     const buchi = buchiDelGiorno(righe);
     const batt = n.batteria_mv ? (n.batteria_mv/1000).toFixed(2).replace('.',',')+' V' : '—';
     return '<tr>' +
-      '<td><span class="nd '+(n.online?'on':'off')+'"></span> ' + esc(n.nome) +
+      '<td><span class="nd '+(n.dati?(n.online?'on':'off'):'')+'"></span> ' + esc(n.nome) +
         '<div class="muted">' + esc(n.mac) + '</div></td>' +
       '<td class="num">' + (n.ultimo ? esc(n.ultimo.slice(11)) : '—') +
         '<div class="muted">' + silStr(n.silenzio_s) + '</div></td>' +

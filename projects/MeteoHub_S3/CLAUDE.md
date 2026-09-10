@@ -1184,6 +1184,25 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     disegna sia da chi firma**: due conti copiati divergerebbero, e una firma
     che non corrisponde alla pagina si vede come refresh mancati.
 
+- **`online` e' falso in DUE casi diversi, e uno non e' un guasto** (corretto
+  nella dashboard il 2026-09-10). `remote_nodes` lo calcola come
+  `hasData && silenzio < soglia`: e' falso sia per un nodo che **tace**, sia per
+  uno che da questo avvio dell'hub **non ha ancora trasmesso** — e dopo ogni OTA
+  quella finestra dura fino a cinque minuti, perche' il nodo a batteria dorme.
+  - **Il pannello la distinzione la fa da sempre** (`n.hasData && !n.online`
+    prima di disegnare il badge), la dashboard no: scriveva «in attesa del primo
+    pacchetto **· MUTO**», cioe' due affermazioni incompatibili nella stessa
+    riga, e il pallino di stato era **rosso** su un nodo che nessuno aveva mai
+    sentito. Segnalato guardando la pagina dopo il terzo OTA della giornata.
+  - Ora il badge vuole `n.dati && !n.online`, e il pallino **senza classe resta
+    grigio**: verde «risponde», rosso «tace», grigio «non lo so ancora». Un
+    allarme che si accende da solo dopo ogni aggiornamento e' il modo piu' veloce
+    per insegnare a ignorarlo — la stessa ragione della soglia sugli invii
+    troncati della `v74`.
+  - `/api/salute` era gia' giusta (`!nodo.online && nodo.hasData`), e nel diario
+    `nodo_muto` non e' mai comparso: il firmware non aveva sbagliato niente,
+    l'errore era solo in come la pagina leggeva quel campo.
+
 - **Si mostra l'ORA dell'ultimo pacchetto, non da quanto tempo e' arrivato.** Un
   istante non invecchia: resta vero anche quando il pannello non si ridisegna
   da un pezzo, mentre un "38 s fa" diventa falso dopo trenta secondi — e su un
