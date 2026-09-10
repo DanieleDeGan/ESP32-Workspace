@@ -94,59 +94,6 @@ perdere consegne — cosa che era già stata sospettata durante il guasto di fin
 agosto e che allora **non era misurabile**, perché `battery_mv` era 0.
 **Costo**: basso nel firmware; la parte difficile è il numero.
 
-### 44. Due «percepiti» nella stessa pagina, e non sono la stessa grandezza
-**Cosa**: in `/api/nodi` il campo si chiama `percepiti` ed è l'**humidex**
-(`meteo_calc.h`); nella dashboard, sezione previsione, «percepiti» è invece la
-`apparent_temperature` di Open-Meteo (`percepita_c`, da `cielo.cpp`). Due
-indici diversi, stesso nome, nella stessa pagina — e uno riguarda l'aria di
-casa, l'altro quella di fuori. Rinominare il campo dei nodi in `humidex` e
-dire, dove si mostra, che non sono gradi ma una scala di disagio.
-**Perché qui**: trovato il **2026-09-10** leggendo `/api/nodi` — 32,1 sui nodi
-mentre la previsione ne diceva 22,2, con i sensori a 25,3 °C. La prima ipotesi
-ragionevole è stata «il numero è vecchio», e verificarlo è costato tre prove:
-ricalcolo in Python (32,05 contro i 32,06 dell'hub), due letture a cinque
-minuti (32,06 → 31,92 all'arrivo del DATA nuovo) e il ricalcolo sul CSV della
-notte (33,9 alle 00:04 → 31,9 alle 07:04). **Era giusto**: a 25,3 °C con il
-68 % l'humidex vale davvero 32. Ma un numero corretto che fa sospettare un
-guasto costa quella verifica a chiunque lo guardi, ed è la stessa ragione per
-cui sotto i 20 gradi l'humidex è `null` e non zero.
-**Nota**: sul pannello e-ink il problema **non c'è** — lì la voce si chiama
-«si sentono», che non promette gradi. È la dashboard e il nome del campo JSON
-a non essersi adeguati.
-**Attenzione**: rinominare il campo è un cambio di API, e il consumatore non è
-solo il browser — `tools/pannello_mock.py` legge `percepiti` da `/api/nodi`
-(riga 994) per riprodurre la pagina dettaglio. Vanno cambiati insieme, o il
-confronto pixel per pixel smette di valere.
-**Costo**: basso — e conviene accodarlo a un OTA che serve già per altro.
-
-### 45. Un invio troncato non deve restare un allarme per sempre
-**Cosa**: `s_invii_interrotti` (`web_ui.cpp:55`) è un contatore da avvio, senza
-ora e senza il nome del file. Appena vale 1, `/api/salute` passa a
-`"attenzione"` e **ci resta fino al riavvio**. Servono due cose: scrivere
-*quando* e *quale file* nel diario eventi — che ospita già `boot`, `ota`,
-`nodo_muto`, `card` — e alzare l'attenzione quando la cosa **si ripete**, non
-al primo taglio.
-**Perché qui**: successo il **2026-09-10 alle 12:00:31**. `loop_max_ms` 20792
-su `web`, cioè esattamente `INVIO_BUDGET_MS` (20 s) più il resto del giro: un
-client ha smesso di prendere un file e `streamFileLimitato()` ha tagliato,
-**che è precisamente il suo mestiere** — con `streamFile()` del core quel
-`loop()` restava appeso per minuti. Danno reale: nessuno (393 pacchetti = 393
-righe, 0 persi, CSV senza buchi, `seq` 172 → 173 a cavallo dell'evento), e dal
-PC la stessa scheda serve i 66 kB della dashboard in 0,30 s. Ma per stabilire
-tutto questo è servito incrociare `/api/salute`, `/api/stato`, i CSV dei nodi e
-il sorgente, perché **il messaggio non dice né l'ora né il file**. Il motivo
-esatto lo stampa `invioInterrotto()` (`web_ui.cpp:138`) sulla Serial, che su
-questa scheda **non è leggibile**: è diagnostica scritta dove nessuno la può
-leggere, lo stesso difetto per cui è nato il diario eventi.
-**Il rischio da non prendere**: una riga per ogni taglio no. Un client rotto
-che ritenta in loop riempirebbe la card, e il diario è "una riga per CAMBIO DI
-STATO, mai una riga per campione" (`sd_logger.h`). Tetto per ora, o una riga
-sola con «ripetuto N volte».
-**Perché conta**: un evento isolato e innocuo e un guasto che si ripete oggi si
-leggono **uguali**, ed è il tipo di allarme che si impara a ignorare — cioè il
-modo in cui `/api/salute` smette di servire.
-**Costo**: basso — `sd_log_evento()` c'è già.
-
 ### 0. Togliere la marea barometrica dalla previsione — FATTA (`v63`-`v66`)
 
 **Fatta il 2026-09-08/09, e non come era scritto qui sotto**: la tabella non è
@@ -697,6 +644,8 @@ Solo la riga essenziale: il racconto sta in `docs/Stazione-Meteo.md`.
 
 | feature | quando | dove |
 |---|---|---|
+| «percepiti» dei nodi rinominato `humidex`, con il perche' nel codice (voce 44) | 2026-09-10 | `MeteoHub_S3` `v74` |
+| Un invio troncato si racconta (file, ora, byte inviati) e allarma solo se si ripete: tre nella stessa ora (voce 45) | 2026-09-10 | `v74` |
 | Partitore della batteria cablato e letto (voce 14) | 2026-09-09 | `MeteoNode_C3` `v19` |
 | Carica della cella sul pannello, cinque tacche | 2026-09-09 | `MeteoHub_S3` `v71`-`v72` |
 | Previsione vera da Open-Meteo, icona e registro del confronto (voce 7, parte 1) | 2026-09-09 | `v67`-`v69` |

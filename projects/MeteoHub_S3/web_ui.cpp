@@ -18,7 +18,7 @@
 #include "web_ui.h"
 #include "net_ota.h"
 #include "remote_nodes.h"
-#include "meteo_calc.h"   // rugiada, percepiti, acqua nell'aria in /api/nodi
+#include "meteo_calc.h"   // rugiada, humidex, acqua nell'aria in /api/nodi
 #include <EspNowLink.h>    // Link_Hub_Unknown(): l'ascolto di /api/pairing/ascolto
 #include "forecast.h"
 #include "sd_logger.h"
@@ -52,7 +52,26 @@ static bool paginaGiaPresente(uint8_t tipo, const char* param);
 // ---------------------------------------------------------------------
 static constexpr uint32_t INVIO_BUDGET_MS = 20000;
 
+// Un taglio ISOLATO non e' un guasto: un telefono che si addormenta mentre
+// scarica i 66 kB della dashboard lo produce, e la protezione ha appena fatto
+// il suo mestiere. E' il RIPETERSI che vuol dire qualcosa -- un client rotto
+// che ritenta, una rete che non regge -- quindi /api/salute guarda quanti ne
+// sono capitati nell'ULTIMA ORA, non quanti da quando la scheda e' accesa.
+//
+// Un contatore da avvio che non decade mai tiene la scheda in "attenzione" per
+// sempre dopo un evento innocuo: successo il 2026-09-10, un solo taglio alle
+// 12:00:31, e per stabilire che non era successo niente sono serviti
+// /api/salute, /api/stato, i CSV dei nodi e il sorgente. Un allarme che non
+// distingue il caso isolato dal ripetersi insegna a ignorare l'unico posto che
+// dovrebbe dire se le cose vanno.
+static constexpr uint32_t INVIO_FINESTRA_MS = 3600000UL;  // un'ora
+static constexpr uint32_t INVII_SOGLIA_ORA  = 3;          // sopra: e' un guaio
+
 static uint32_t s_invii_interrotti = 0;   // quante volte e' scattato il taglio
+static uint32_t s_inviiFinestraDa  = 0;   // millis() d'inizio della finestra
+static uint32_t s_inviiFinestraN   = 0;   // quanti dentro la finestra corrente
+static time_t   s_invioUltimoTs    = 0;   // quando e' successo l'ultimo (0 = mai)
+static char     s_invioUltimo[96]  = "";  // quale file, e dove si e' fermato
 
 // Quanti byte occupa la sequenza UTF-8 che comincia con `c`, 0 se `c` non
 // puo' iniziare una sequenza valida.
@@ -134,21 +153,58 @@ static void appendDayCb(const char* isoDate, size_t /*fileSizeBytes*/, void* arg
   appendJsonString(*out, isoDate);
 }
 
-static void invioInterrotto(const char* perche) {
+// Quanti tagli nella finestra che sta correndo, zero se e' scaduta. Il conto
+// va riletto anche quando NON arriva niente di nuovo, o l'episodio di ieri
+// sera resterebbe li' a segnalare un guaio di oggi.
+static uint32_t inviiRecenti() {
+  if (s_inviiFinestraN == 0) return 0;
+  if (millis() - s_inviiFinestraDa > INVIO_FINESTRA_MS) return 0;
+  return s_inviiFinestraN;
+}
+
+// Il taglio si RACCONTA: una riga nel diario sulla card (col tetto per tipo che
+// gia' regge boot/ota/nodo_muto -- dieci l'ora, poi il conto delle soppresse) e
+// l'ora piu' il nome del file in /api/salute. Prima finiva solo sulla Serial,
+// che su questa scheda non e' leggibile: diagnostica scritta dove nessuno la
+// puo' leggere vale quanto non scriverla, ed e' il vuoto da cui e' nato il
+// diario. `inviati di totale` dice la cosa che nessun altro numero dice -- se
+// il client si e' fermato subito o quasi in fondo.
+static void invioInterrotto(const char* perche, const char* file,
+                            size_t inviati, size_t totale, uint32_t durataMs) {
   s_invii_interrotti++;
-  Serial.printf("[web] invio interrotto: %s\n", perche);
+
+  const uint32_t ora = millis();
+  if (s_inviiFinestraN == 0 || ora - s_inviiFinestraDa > INVIO_FINESTRA_MS) {
+    s_inviiFinestraDa = ora;
+    s_inviiFinestraN  = 0;
+  }
+  s_inviiFinestraN++;
+
+  s_invioUltimoTs = rtctime_now();
+  snprintf(s_invioUltimo, sizeof(s_invioUltimo),
+           "%s: %s dopo %u di %u byte in %u s",
+           (file && *file) ? file : "?", perche,
+           (unsigned)inviati, (unsigned)totale, (unsigned)((durataMs + 500) / 1000));
+
+  Serial.printf("[web] invio interrotto: %s\n", s_invioUltimo);
+  app_evento("invio_troncato", s_invioUltimo);
 }
 
 static bool streamFileLimitato(WebServer& srv, File& f, const char* contentType) {
-  srv.setContentLength(f.size());
+  const size_t totale = f.size();
+  srv.setContentLength(totale);
   srv.send(200, contentType, "");
 
   NetworkClient& cli = srv.client();
   uint8_t buf[1024];
   const uint32_t t0 = millis();
+  size_t inviati = 0;
 
   while (f.available()) {
-    if (!cli.connected()) { invioInterrotto("il client ha chiuso"); return false; }
+    if (!cli.connected()) {
+      invioInterrotto("il client ha chiuso", f.path(), inviati, totale, millis() - t0);
+      return false;
+    }
 
     const int letti = f.read(buf, sizeof(buf));
     if (letti <= 0) break;
@@ -157,11 +213,12 @@ static bool streamFileLimitato(WebServer& srv, File& f, const char* contentType)
     // ha preso l'intero chunk non ne prendera' altri, e ogni giro in piu'
     // costa dieci secondi.
     if (cli.write(buf, (size_t)letti) != (size_t)letti) {
-      invioInterrotto("il client non accetta piu' dati");
+      invioInterrotto("il client non accetta piu' dati", f.path(), inviati, totale, millis() - t0);
       return false;
     }
+    inviati += (size_t)letti;
     if (millis() - t0 > INVIO_BUDGET_MS) {
-      invioInterrotto("oltre il budget di tempo");
+      invioInterrotto("oltre il budget di tempo", f.path(), inviati, totale, millis() - t0);
       return false;
     }
   }
@@ -228,7 +285,17 @@ static void handleApiSalute() {
 
   if (!rtctime_isSynced())        guaio("orario mai sincronizzato via NTP", false);
   if (!net_isConnected())         guaio("WiFi non connesso", false);
-  if (s_invii_interrotti > 0) guaio("qualche invio di file e' stato troncato: un client se n'e' andato a meta'", false);
+  // Vedi INVIO_FINESTRA_MS: un taglio isolato si registra ma non allarma --
+  // tre nella stessa ora vogliono dire che qualcuno non prende i dati, e ogni
+  // volta il loop resta fermo fino a venti secondi mentre nessuno preleva i
+  // DATA dei nodi. La String vive fino alla fine della funzione: guaio() ne
+  // copia il contenuto subito, ma il puntatore non deve morire prima.
+  String inviiMsg;
+  const uint32_t inviiOra = inviiRecenti();
+  if (inviiOra >= INVII_SOGLIA_ORA) {
+    inviiMsg = String(inviiOra) + " invii di file troncati nell'ultima ora: un client non prende i dati e il loop si ferma fino a 20 s per volta";
+    guaio(inviiMsg.c_str(), false);
+  }
   if (ESP.getFreeHeap() < 60000)  guaio("memoria libera sotto i 60 kB", false);
   // Un watchdog che non si e' armato non si vede in nessun altro modo: si
   // comporta esattamente come uno armato, fino al giorno in cui servirebbe.
@@ -254,7 +321,23 @@ static void handleApiSalute() {
   j += ",\"nodi_muti\":"         + String(muti);
   j += ",\"sd\":"                + String(sd_mounted() ? "true" : "false");
   j += ",\"orario\":\""          + String(rtctime_source()) + "\"";
+  // Il taglio si vede anche quando NON e' un guaio: quante volte da questo
+  // avvio, quante nell'ultima ora, e -- la parte che prima non c'era -- quando
+  // e' successo l'ultimo e su quale file. E' cio' che distingue "un telefono
+  // se n'e' andato" da "qualcosa non prende i dati", senza dover incrociare
+  // quattro endpoint e il sorgente.
   j += ",\"invii_interrotti\":"  + String(s_invii_interrotti);
+  j += ",\"invii_ultima_ora\":"  + String(inviiOra);
+  {
+    char ibuf[24];
+    if (s_invioUltimoTs > 0 && rtctime_format(s_invioUltimoTs, "%Y-%m-%d %H:%M:%S", ibuf, sizeof(ibuf))) {
+      j += ",\"invio_ultimo_ora\":"; appendJsonString(j, ibuf);
+    } else {
+      j += ",\"invio_ultimo_ora\":null";
+    }
+    j += ",\"invio_ultimo_cosa\":";
+    if (s_invioUltimo[0]) appendJsonString(j, s_invioUltimo); else j += "null";
+  }
   j += ",\"heap\":"              + String((unsigned long)ESP.getFreeHeap());
   j += ",\"reset_reason\":\""  + String(app_reset_reason()) + "\"";
   j += ",\"boot_count\":"       + String(app_boot_count());
@@ -388,6 +471,17 @@ static void handleApiNodi() {
     // L'humidex e' null sotto i 20 gradi: li' non esiste, e uno zero sarebbe
     // una temperatura percepita plausibile.
     //
+    // SI CHIAMA `humidex` E NON `percepiti` DA v74, e il rename e' costato un
+    // OTA per una ragione sola: nella dashboard "percepiti" era gia' preso, ed
+    // era la apparent_temperature di Open-Meteo (`cielo.cpp`) -- un altro
+    // indice, per di piu' riferito all'aria di FUORI. Il 2026-09-10 i due
+    // numeri erano 32,1 e 22,2 nella stessa pagina, e il sospetto ragionevole
+    // e' stato "il dato dei nodi e' vecchio". Non lo era. L'humidex non e' una
+    // temperatura: e' la scala canadese del disagio, e a 25,3 gradi con il 68 %
+    // vale davvero 32. Un nome che promette gradi fa sospettare un guasto ogni
+    // volta che qualcuno lo guarda, ed e' lo stesso motivo per cui sul pannello
+    // la voce si chiama "si sentono" e non "percepiti".
+    //
     // E `hasData` PRIMA delle formule, non e' pedanteria: i valori non si
     // persistono, quindi prima del primo DATA value[] vale ZERO -- e l'acqua
     // nell'aria a 0 gradi con 0% di umidita' fa 0,0 g/m3, che e' un numero
@@ -397,7 +491,7 @@ static void handleApiNodi() {
     const float tD = r.hasData ? r.value[0] : NAN;
     const float hD = r.hasData ? r.value[1] : NAN;
     json += ",\"rugiada\":";   appendJsonFloat(json, meteo_dewpoint_c(tD, hD), 2);
-    json += ",\"percepiti\":"; appendJsonFloat(json, meteo_humidex_c(tD, hD), 2);
+    json += ",\"humidex\":";   appendJsonFloat(json, meteo_humidex_c(tD, hD), 2);
     json += ",\"acqua_gm3\":"; appendJsonFloat(json, meteo_umidita_assoluta_gm3(tD, hD), 2);
     json += '}';
   }

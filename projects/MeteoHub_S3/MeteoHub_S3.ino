@@ -170,7 +170,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v73";
+static const char FW_VERSION[] = "v74";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -2735,6 +2735,12 @@ static void evento(const char* tipo, const char* dettaglio)
   if (t->scritti < EV_MAX_ORA) { t->scritti++; eventoScrivi(tipo, dettaglio); }
   else if (t->soppressi < 0xFFFF) t->soppressi++;
 }
+
+// L'unica porta dal resto dello sketch al diario: passa da evento() e non da
+// eventoScrivi(), cioe' prende anche il tetto per tipo. Un chiamante che
+// scrivesse dritto sulla card potrebbe riempirla da solo -- ed e' esattamente
+// il rischio del web server, dove un client rotto ritenta quanto vuole.
+void app_evento(const char* tipo, const char* dettaglio) { evento(tipo, dettaglio); }
 
 // Nodi che tacciono e nodi che tornano. Lo stato precedente si tiene PER MAC,
 // non per posizione: remote_forget() compatta il registro, e un array

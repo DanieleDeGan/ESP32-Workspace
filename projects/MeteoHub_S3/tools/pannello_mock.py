@@ -496,7 +496,7 @@ def dati_prova(quanti=2, buchi=False, muto=False):
          "d": [0.1, 0.5, 0.6], "dp3h": -0.82, "trend": 4,
          "trend_parola": "in lieve discesa",
          "previsione": "bel tempo confermato", "press_sea": 1020.4,
-         "rugiada": 15.6, "percepiti": 30.0, "acqua": 13.0,
+         "rugiada": 15.6, "humidex": 30.0, "acqua": 13.0,
          "ultimo": "16:47", "silenzio_s": 92, "intervallo_s": 299,
          "pacchetti": 425, "persi": 0, "riavvii": 1, "batteria_mv": 0,
          "online": True, "ritardo": False, "ora_ultimo": 16.5, "serie": a},
@@ -504,7 +504,7 @@ def dati_prova(quanti=2, buchi=False, muto=False):
          "d": [0.2, 0.5, 0.6], "dp3h": -0.81, "trend": 4,
          "trend_parola": "in lieve discesa",
          "previsione": "bel tempo confermato", "press_sea": 1021.5,
-         "rugiada": 15.5, "percepiti": 30.0, "acqua": 12.9,
+         "rugiada": 15.5, "humidex": 30.0, "acqua": 12.9,
          "ultimo": "16:45" if not muto else "14:02",
          "silenzio_s": 214 if not muto else 9840, "intervallo_s": 299,
          "pacchetti": 424, "persi": 0, "riavvii": 0, "batteria_mv": 0,
@@ -513,7 +513,7 @@ def dati_prova(quanti=2, buchi=False, muto=False):
          "d": [-0.1, -0.2, 0.0], "dp3h": -0.8, "trend": 4,
          "trend_parola": "in lieve discesa",
          "previsione": "bel tempo confermato", "press_sea": 1020.6,
-         "rugiada": 10.7, "percepiti": None, "acqua": 9.6,
+         "rugiada": 10.7, "humidex": None, "acqua": 9.6,
          "ultimo": "16:44", "silenzio_s": 310, "intervallo_s": 300,
          "pacchetti": 288, "persi": 3, "riavvii": 0, "batteria_mv": 3980,
          "online": True, "ritardo": False, "ora_ultimo": 16.5,
@@ -521,7 +521,7 @@ def dati_prova(quanti=2, buchi=False, muto=False):
         {"nome": "Serra", "t": 31.8, "rh": 30.0, "p": None,
          "d": [1.2, 2.4, 3.1], "dp3h": None, "trend": 0,
          "trend_parola": "", "previsione": "", "press_sea": None,
-         "rugiada": 11.9, "percepiti": 34.0, "acqua": 9.5,
+         "rugiada": 11.9, "humidex": 34.0, "acqua": 9.5,
          "ultimo": "16:40", "silenzio_s": 620, "intervallo_s": 300,
          "pacchetti": 96, "persi": 12, "riavvii": 2, "batteria_mv": 3610,
          "online": True, "ritardo": True, "ora_ultimo": 16.5,
@@ -823,7 +823,7 @@ def scena_nodi(t, nodi, allarme=""):
 #  La scena della pagina DETTAGLIO (com'e' alla v59)
 # ---------------------------------------------------------------------------
 # Stessa regola della pagina nodi: traduzione fedele di screenDettaglio(), non
-# "la stessa idea". I valori derivati (rugiada, percepiti, acqua) NON si
+# "la stessa idea". I valori derivati (rugiada, humidex, acqua) NON si
 # ricalcolano qui -- arrivano da /api/nodi, che li espone apposta: rifare le
 # formule in Python vorrebbe dire due implementazioni che divergono al primo
 # arrotondamento, e il confronto pixel per pixel non varrebbe piu'.
@@ -902,8 +902,8 @@ def scena_dettaglio(t, n):
     t.setFont("FreeSans9pt7b")
     if n.get("rugiada") is not None:
         x = drawGradiPiccoli(t, "rugiada ", n["rugiada"], 1, x, 112) + 14
-    if n.get("percepiti") is not None:
-        x = drawGradiPiccoli(t, "si sentono ", n["percepiti"], 0, x, 112) + 14
+    if n.get("humidex") is not None:
+        x = drawGradiPiccoli(t, "si sentono ", n["humidex"], 0, x, 112) + 14
     if n.get("acqua") is not None:
         s_a = "acqua " + fmtNum(n["acqua"], 1) + " g/m3"
         _bx, _by, bw, _bh = t.getTextBounds(s_a)
@@ -991,7 +991,7 @@ def _nodi_da_api(host):
             "d": [n["delta_t_1h"], n["delta_t_2h"], n["delta_t_3h"]],
             "dp3h": n["delta_3h"], "trend": TREND_DA_PAROLA.get(n["trend"], 0),
             "trend_parola": n["trend"], "online": n["online"], "ritardo": False,
-            "rugiada": n.get("rugiada"), "percepiti": n.get("percepiti"),
+            "rugiada": n.get("rugiada"), "humidex": n.get("humidex"),
             "acqua": n.get("acqua_gm3"),
             # La pagina dettaglio vuole anche questi. Dimenticarli non da'
             # errore: il mock semplicemente non li disegna, e il confronto col

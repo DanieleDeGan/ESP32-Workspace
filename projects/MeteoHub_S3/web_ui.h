@@ -43,6 +43,13 @@ const char* app_loop_max_dove();
 time_t      app_loop_max_ts();
 uint32_t    app_loop_lenti();
 
+// Una riga nel diario degli eventi su card, con il tetto per tipo che sta in
+// MeteoHub_S3.ino (dieci l'ora, poi il conto delle soppresse). Serve al web
+// server: un invio troncato e' una transizione come un nodo che tace, e finche'
+// finiva solo sulla Serial -- che su questa scheda non e' leggibile -- era
+// diagnostica scritta dove nessuno la puo' leggere.
+void        app_evento(const char* tipo, const char* dettaglio);
+
 // Il watchdog del loop e' iscritto? Un watchdog configurato male e uno giusto
 // sono indistinguibili da fuori finche' non serve, e allora e' tardi.
 bool        app_wdt_armato();

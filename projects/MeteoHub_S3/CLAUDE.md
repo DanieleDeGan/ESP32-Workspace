@@ -467,6 +467,18 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     numeri derivati al posto delle misure, e un errore di formula finirebbe
     dentro lo storico su card **per sempre**, mentre così bastano i CSV di ieri
     per rifare i conti. È la stessa ragione per cui la pressione viaggia grezza.
+  - **In `/api/nodi` il campo si chiama `humidex`, non `percepiti`** (rinominato
+    in `v74`, 2026-09-10). Il nome vecchio era già preso nella dashboard, dove
+    «percepiti» è la `apparent_temperature` di Open-Meteo (`cielo.cpp`): un
+    altro indice, per di più riferito all'aria di **fuori**. Il 2026-09-10 i due
+    numeri erano 32,1 e 22,2 nella stessa pagina, e il sospetto ragionevole è
+    stato «il dato dei nodi è vecchio» — non lo era: ricalcolato dà 32,05, e a
+    cinque minuti si muoveva col DATA nuovo. **L'humidex non è una
+    temperatura**: è la scala canadese del disagio, e a 25,3 °C con il 68 % vale
+    davvero 32. Sul pannello il problema non c'era mai stato, perché lì la voce
+    si chiama «si sentono». Il rename tocca anche `tools/pannello_mock.py`, che
+    legge quel campo per riprodurre la pagina dettaglio: cambiarli separati fa
+    fallire il confronto pixel per pixel senza che ci sia un guasto.
   - **Una riga che non c'è dice qualcosa**: sotto i 20 gradi l'humidex non
     esiste e la riga **non compare affatto**, invece di mostrare un numero senza
     significato. Un valore non finito si disegna `--`, mai zero.
@@ -571,6 +583,29 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     di loro "pacchetti diversi da righe" non distingue una perdita reale da uno
     scarto voluto (i DATA arrivati prima del primo sync NTP), e un controllo che
     si allarma da solo non lo guarda piu' nessuno.
+
+- **Un invio troncato si racconta, e non allarma da solo** (da `v74`,
+  2026-09-10). `streamFileLimitato()` taglia un invio quando il client smette di
+  prendere i dati (vedi `docs/Trappole-Hardware.md`): fin qui il fatto finiva in
+  un contatore da avvio, e bastava **uno** per tenere `/api/salute` in
+  `attenzione` fino al riavvio successivo.
+  - **Il caso che l'ha mostrato**: il 2026-09-10 alle 12:00:31 un solo taglio —
+    `loop_max_ms` 20792 su `web`, cioè `INVIO_BUDGET_MS` più il resto del giro.
+    Danno reale nessuno (393 pacchetti = 393 righe, `seq` consecutivi a cavallo,
+    CSV senza buchi), ma per stabilirlo sono serviti quattro endpoint e il
+    sorgente, perché il messaggio non diceva **né quando né quale file**.
+  - **Adesso**: `invio_troncato` nel diario con il file, il perché e `inviati di
+    totale` byte — che è il numero che dice se il client si è fermato subito o
+    quasi in fondo — più `invii_ultima_ora`, `invio_ultimo_ora` e
+    `invio_ultimo_cosa` in `/api/salute`.
+  - **L'attenzione si alza sul RIPETERSI, non sul primo**: tre nella stessa ora
+    (`INVII_SOGLIA_ORA`, finestra `INVIO_FINESTRA_MS`). Un telefono che si
+    addormenta mentre scarica i 66 kB della dashboard produce un taglio isolato,
+    e un allarme che non lo distingue da un client rotto che ritenta insegna a
+    ignorare l'unico posto che dovrebbe dire se le cose vanno.
+  - **La riga passa da `app_evento()`, non da `sd_log_evento()`**: così prende
+    il tetto per tipo (dieci l'ora). Un client rotto ritenta quanto vuole, e
+    scrivere dritto sulla card vorrebbe dire lasciargli riempire il diario.
 
 - **`reset_reason` e `boot_count` anche sull'hub** (da `v13`, gia' su
   `MeteoNode_C3` da `v5`). Tutti gli altri contatori vivono in RAM e ripartono
@@ -913,7 +948,9 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     campione. `nodo_muto` si scrive quando il nodo *diventa* muto, non finché
     lo è; la card che rifiuta scrive una riga per serie e una quando riprende.
   - **Tetto per tipo** (dieci righe l'ora) con le soppressioni **dichiarate** in
-    una riga a fine finestra: mai un silenzio.
+    una riga a fine finestra: mai un silenzio. È anche la ragione per cui il web
+    server ci scrive tramite `app_evento()` (da `v74`, tipo `invio_troncato`) e
+    non dritto sulla card: un client rotto ritenta quanto vuole.
   - **L'ora dev'essere vera** (`orario_registrabile()`). Il boot capita *prima*
     del primo sync NTP, quindi non si può datare quando succede: si tiene da
     parte e si scrive appena l'orologio è vero, portandosi dietro da quanti
