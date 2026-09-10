@@ -36,12 +36,13 @@ import sys
 BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 
 # Le voci che ogni piede deve avere.
-VOCI = ['/pannello', '/analisi', '/immagini', '/pagine', '/api', '/update']
+VOCI = ['/pannello', '/analisi', '/batteria', '/immagini', '/pagine', '/api', '/update']
 
 # Dove vivono le pagine: sorgenti C++ con blocchi PROGMEM, piu' i file .html
 # che stanno sulla card (e da cui si rigenerano gli header).
 SORGENTI_CPP = ['web_ui.cpp', 'net_ota.cpp']
-SORGENTI_HTML = ['www/dashboard.html', 'www/dither.html', 'www/analisi.html']
+SORGENTI_HTML = ['www/dashboard.html', 'www/dither.html', 'www/analisi.html',
+                 'www/batteria.html']
 
 
 def blocchi_progmem(testo, nomefile):

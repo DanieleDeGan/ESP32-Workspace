@@ -51,21 +51,6 @@ sono classificate "costo medio" e non "alto".
 
 ## Da fare
 
-### 41. Il consumo del giorno, dalle tre colonne della batteria — DA DOMANI (2026-09-10)
-**Cosa**: una vista in `/analisi` che legga `b_primo_mv`, `b_ultimo_mv`,
-`b_min_mv` dal riepilogo giornaliero e ne faccia due numeri: **la differenza
-fra prima e ultima è il consumo della giornata**, e `b_min` è il tuffo sotto
-carico, che dice se la cella sta invecchiando.
-**Perché qui**: quelle colonne esistono dalla `v62` e sono sempre state vuote;
-da oggi il partitore c'è (nodo `v19`) e si riempiono. Il consumo giornaliero è
-l'unico numero da cui esce un'autonomia vera — quella stimata dalla pendenza
-della tensione, sul plateau, ha una forbice di settimane (vedi voce 14).
-**Perché non è già fatta**: il primo riepilogo con la batteria dentro nasce la
-mattina del **10/09**. Scrivere la vista prima vorrebbe dire consegnarla senza
-averla mai vista con un dato dentro, e questo è il numero su cui poi si
-deciderà quando andare a cambiare la cella.
-**Costo**: basso — la pagina legge già i riepiloghi, mancano tre colonne.
-
 ### 42. Le due previsioni a confronto: la UI e il giudizio
 **Cosa**: leggere `/cielo/AAAA-MM.csv` (`GET /api/cielo/registro`) e
 rispondere con un numero a *«la mia regola empirica vale qualcosa?»*: per ogni
@@ -644,6 +629,8 @@ Solo la riga essenziale: il racconto sta in `docs/Stazione-Meteo.md`.
 
 | feature | quando | dove |
 |---|---|---|
+| **`/batteria`**: la cella dei nodi in una pagina — adesso, giornata in corso, consumo giorno per giorno, tuffo sotto carico, curva SVG e due stime di autonomia (voce 41) | 2026-09-10 | `MeteoHub_S3` `v75` |
+| `/api/nodi/serie` decima anche la **batteria** (`v=3`), e `/api/nodi` esporta le soglie delle tacche | 2026-09-10 | `v75` |
 | «percepiti» dei nodi rinominato `humidex`, con il perche' nel codice (voce 44) | 2026-09-10 | `MeteoHub_S3` `v74` |
 | Un invio troncato si racconta (file, ora, byte inviati) e allarma solo se si ripete: tre nella stessa ora (voce 45) | 2026-09-10 | `v74` |
 | Partitore della batteria cablato e letto (voce 14) | 2026-09-09 | `MeteoNode_C3` `v19` |

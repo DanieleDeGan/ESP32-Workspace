@@ -4,7 +4,7 @@
 //  GENERATO DA www/gen_page.py - NON MODIFICARE A MANO.
 //  La sorgente e' www/analisi.html: si modifica quella e si
 //  rilancia  python www/gen_page.py analisi  prima di ricompilare.
-//  (38314 byte di pagina, serviti su /analisi)
+//  (38348 byte di pagina, serviti su /analisi)
 // ============================================================
 
 static const char ANALISI_PAGE[] PROGMEM = R"ANALISIPAGE(
@@ -133,6 +133,7 @@ un minimo calcolato sul 40&nbsp;% dei campioni ha lo stesso aspetto di un minimo
 
 <nav>
  <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/analisi">Analisi</a>
+ <a href="/batteria">Batteria</a>
  <a href="/immagini">Componi immagine</a><a href="/pagine">Pagine</a>
  <a href="/api">API</a><a href="/update">Aggiorna firmware</a>
 </nav>

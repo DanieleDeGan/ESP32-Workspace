@@ -170,7 +170,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v74";
+static const char FW_VERSION[] = "v75";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1187,6 +1187,11 @@ static uint8_t battLivello(int idx, uint16_t mv)
 // Lo stesso livello, per il web: cosi' la dashboard disegna le stesse tacche
 // del vetro senza avere una sua copia delle soglie.
 uint8_t app_batteria_livello(int indice, uint16_t mv) { return battLivello(indice, mv); }
+
+// E le soglie stesse, per chi disegna la carica altrove (la pagina
+// /batteria): la curva di scarica sta scritta in un posto solo.
+const uint16_t* app_batteria_soglie()   { return BATT_SOGLIE; }
+uint16_t        app_batteria_isteresi() { return BATT_ISTERESI; }
 
 // Disegnata con le primitive e non presa da icone.h: il riempimento cambia, e
 // cinque bitmap sarebbero cinque volte lo spazio per la stessa forma. E' anche

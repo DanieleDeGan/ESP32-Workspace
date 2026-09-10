@@ -24,6 +24,7 @@ CDC, deep sleep, OTA, scritture su SD, default NVS) `docs/Trappole-Hardware.md`.
 | `web_ui.h/.cpp` | pagine servite dalla scheda, tabella delle rotte e API — gli stessi endpoint di `EnvNode_C3`, più quelli del pannello |
 | `secrets.h.example` | credenziali: si copia in `secrets.h`, **gitignorato** |
 | `www/dashboard.html` | dashboard personalizzata dell'hub: confronto fra nodi, storico dai CSV, pressione/trend, salute della rete. **Non compilata**: si carica sulla card da `/pagine` (o dal vecchio `/dashboard-upload`) |
+| `www/batteria.html` | pagina della batteria dei nodi: adesso, giornata in corso, autonomia, curva SVG (**senza CDN**) e tabella dei giorni. **Sorgente unica**, da cui `batteria_page.h` si rigenera con `python www/gen_page.py batteria` |
 | `www/analisi.html` | pagina di analisi dei riepiloghi: sei viste, grafici **ECharts** dal CDN con la riserva SVG scritta a mano. **Sorgente unica**, da cui `analisi_page.h` si rigenera con `python www/gen_page.py analisi` |
 | `analisi_page.h` | generato dalla precedente, servito su `/analisi` — non si modifica a mano |
 | `www/dither.html` | ritaglio + dithering nel browser: produce i `.bin` da 15.000 byte e li manda all'hub. Da `v8` è anche **servita dalla scheda** su `/immagini` |
@@ -704,6 +705,15 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
   Misurato: 4 giorni, 1015 righe, **395 ms** e **5,6 kB** invece di ~83 kB.
   Tetto di **14 giorni**, perche' ogni giorno e' una lettura dentro un handler.
   Un cesto vuoto e' `null`, mai uno zero.
+  - **`v=3` e' la BATTERIA** (da `v75`, 2026-09-10), accanto a T/RH/pressione.
+    E' una colonna del CSV e non uno dei tre valori del nodo, e li' **uno zero
+    non e' una misura**: vuol dire «questo nodo non la legge» (il nodo a muro,
+    che sta alla rete) oppure «campione anteriore al partitore» — il CSV del
+    nodo a batteria ha quella colonna vuota fino al 2026-09-09. In entrambi i
+    casi diventa un buco, mai zero volt. Decimare la batteria a bordo conta
+    ancora piu' che per la temperatura: la cella si guarda su **settimane**, e
+    settimane di campioni ogni 300 s sono centinaia di kB da far uscire da un
+    server sincrono.
 - **`sd_read_remote_day()` e' l'UNICO posto dove si interpreta il CSV dei
   nodi** (da `v53`), e legge **a blocchi di 512 byte**: prima `leggiRiga()`
   chiamava `File::read()` un byte alla volta, e su SPI ogni chiamata attraversa
@@ -786,6 +796,41 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     con `python www/gen_page.py analisi` — parametrico da `v52`, prima
     serviva solo dither. **Un hook di Claude Code lo fa da solo** quando il
     file viene modificato; a mano va rilanciato prima di ricompilare.
+- **`/batteria` — la cella dei nodi, tutta in una pagina** (da `v75`,
+  2026-09-10, `www/batteria.html`). Nasce dalla voce 41 del backlog: le tre
+  colonne `b_primo_mv`/`b_ultimo_mv`/`b_min_mv` esistevano dalla `v62` ed erano
+  sempre state **vuote**, perche' il partitore e' stato cablato solo il 09/09.
+  - **Cinque riquadri, tre fonti**: «adesso» dall'ultimo pacchetto, «la giornata
+    in corso» dalla serie di oggi (il riepilogo del giorno corrente non esiste:
+    nasce a mezzanotte), «quanto dura», la curva, e la tabella dei giorni
+    chiusi con **consumo** (prima − ultima) e **tuffo** (ultima − minimo, la
+    caduta sotto carico: se cresce nel tempo la resistenza interna sta salendo,
+    ed e' l'unico modo che abbiamo di vedere invecchiare la cella).
+  - **Due stime di autonomia, apposta diverse**: la media dei consumi dei giorni
+    chiusi, e la pendenza ai minimi quadrati sulla curva. Non devono coincidere
+    — sul **plateau** (3,73-3,88 V) la tensione quasi non si muove e la pendenza
+    proietta un'autonomia lunghissima. Mostrarne una sola sarebbe darle
+    un'autorevolezza che non ha.
+  - **Nessuna delle due compare finche' i giorni non bastano** (tre giornate
+    piene): al posto del numero c'e' quante ne mancano. E' la stessa regola dei
+    `null` nel JSON — una media su due giorni non e' una media, e dirlo vale
+    piu' che mostrarla.
+  - **I giorni in cui la tensione SALE restano fuori dalle medie** e si vedono
+    in azzurro: e' una ricarica, non un consumo, e mediarla insieme alle altre
+    abbasserebbe il consumo medio proprio nei giorni in cui la cella e' stata
+    staccata.
+  - **Le soglie delle tacche arrivano dall'hub** (`batteria_soglie_mv` in
+    `/api/nodi`, da `app_batteria_soglie()`), non sono ricopiate nel
+    JavaScript: la curva di scarica sta scritta in un posto solo, ed e' gia'
+    cambiata una volta fra `v71` e `v72`.
+  - **Grafico in SVG e nessun CDN**, al contrario di `/analisi`: questa pagina
+    si guarda in LAN, spesso da un telefono che in quel momento non ha
+    internet, e un grafico che sparisce quando manca la rete e' peggio di uno
+    brutto.
+  - Sorgente unica `www/batteria.html`, `batteria_page.h` da
+    `python www/gen_page.py batteria` (e l'hook lo fa da solo), sostituibile
+    dalla card come le altre.
+
 - **Il riepilogo giornaliero** (da `v50`-`v51`, 2026-09-04):
   `/nodi/<NOME>/riepilogo.csv`, una riga per giorno **chiuso**, con
   `GET /api/nodi/riepilogo?nodo=X` per leggerla e

@@ -30,8 +30,9 @@ QUI = os.path.dirname(os.path.abspath(__file__))
 
 # nome -> (simbolo PROGMEM, rotta su cui viene servita)
 PAGINE = {
-    'dither':  ('DITHER_PAGE',  '/immagini'),
-    'analisi': ('ANALISI_PAGE', '/analisi'),
+    'dither':   ('DITHER_PAGE',   '/immagini'),
+    'analisi':  ('ANALISI_PAGE',  '/analisi'),
+    'batteria': ('BATTERIA_PAGE', '/batteria'),
 }
 
 

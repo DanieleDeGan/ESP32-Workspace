@@ -27,7 +27,8 @@
 #include "messages.h"
 #include "cielo.h"        // la previsione vera, in /api/cielo
 #include "dither_page.h"
-#include "analisi_page.h"   // GENERATO da www/gen_page.py, servito su /immagini
+#include "analisi_page.h"   // GENERATO da www/gen_page.py, servito su /analisi
+#include "batteria_page.h"  // GENERATO da www/gen_page.py, servito su /batteria
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -363,6 +364,17 @@ static void handleApiNodi() {
   // L'altitudine sta qui e non fra le impostazioni del nodo locale: serve ai
   // nodi REMOTI, che trasmettono la pressione grezza (vedi remote_nodes.h).
   json += "\"altitudine_m\":" + String(remote_altitude_m(), 0) + ",";
+  // Le soglie delle cinque tacche, ESPORTATE e non ricopiate: la pagina
+  // /batteria disegna le stesse bande del vetro senza tenersene una copia,
+  // che divergerebbe il giorno che si correggono qui (e' successo con la
+  // curva di scarica fra v71 e v72). Stessa ragione per cui `humidex` lo
+  // calcola l'hub e non il browser.
+  {
+    const uint16_t* sog = app_batteria_soglie();
+    json += "\"batteria_soglie_mv\":[";
+    for (int k = 0; k < 5; k++) { if (k) json += ','; json += String(sog[k]); }
+    json += "],\"batteria_isteresi_mv\":" + String(app_batteria_isteresi()) + ",";
+  }
   json += "\"nodi\":[";
 
   bool primo = true;
@@ -620,6 +632,7 @@ static void handleApiNodiRiepilogoRicalcola() {
 }
 
 static void handleAnalisi() { servePagina("analisi", ANALISI_PAGE); }
+static void handleBatteria() { servePagina("batteria", BATTERIA_PAGE); }
 
 // ---------------------------------------------------------------------
 //  Serie concatenata su piu' giorni, DECIMATA A BORDO
@@ -655,17 +668,23 @@ struct SerieCtx {
   time_t   t0;
   uint32_t passo;       // secondi per cesto
   uint32_t righe;
-  int      quale;       // 0=temp 1=umidita 2=pressione
+  int      quale;       // 0=temp 1=umidita 2=pressione 3=batteria (mV)
 };
 
 static void serieRiga(time_t ts, uint32_t seq, const float v[3],
                       uint16_t battMv, void* arg)
 {
-  (void)battMv;              // la serie decimata porta T, RH e pressione
   (void)seq;
   SerieCtx* x = (SerieCtx*)arg;
   x->righe++;
-  const float val = v[x->quale];
+  // La batteria (quale == 3) sta in una colonna a parte, e uno ZERO non e' una
+  // misura: e' "questo nodo non la legge" (il nodo a muro, che sta alla rete)
+  // oppure "questo campione e' anteriore al partitore" -- il CSV del nodo a
+  // batteria ha la colonna vuota fino al 2026-09-09. In entrambi i casi
+  // dev'essere un buco nel grafico, mai zero volt.
+  const float val = (x->quale == 3)
+                    ? (battMv ? (float)battMv : NAN)
+                    : v[x->quale];
   if (!isfinite(val)) return;                 // un buco resta un buco
   if (ts < x->t0) return;
   const uint32_t i = (uint32_t)(ts - x->t0) / x->passo;
@@ -724,8 +743,12 @@ static void handleApiNodiSerie() {
   if (punti < 10) punti = 10;
   if (punti > SERIE_PUNTI_MAX) punti = SERIE_PUNTI_MAX;
 
+  // v=3 e' la BATTERIA (mV), da v75: e' una colonna del CSV e non uno dei tre
+  // valori del nodo, ma decimarla qui invece che nel browser vale ancora di
+  // piu' -- la cella si guarda su SETTIMANE, e settimane di campioni ogni
+  // 300 s sono centinaia di kB da far uscire da un server sincrono.
   int quale = srv.hasArg("v") ? srv.arg("v").toInt() : 0;
-  if (quale < 0 || quale > 2) quale = 0;
+  if (quale < 0 || quale > 3) quale = 0;
 
   // Quanti giorni, con il tetto. Il tetto non e' prudenza generica: ogni
   // giorno e' una lettura di CSV dentro un handler HTTP, e il loop() sta
@@ -1127,7 +1150,7 @@ static const char HUB_PAGE[] PROGMEM = R"HTML(
  stanno molto piu' vicini di cosi'.</p>
 </div>
 <div id="lista"></div>
-<p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/analisi">analisi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/pagine">pagine</a> &mdash; <a href="/api">API</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
+<p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/analisi">analisi</a> &mdash; <a href="/batteria">batteria</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/pagine">pagine</a> &mdash; <a href="/api">API</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
 <p class="muted">I registri dei nodi stanno su microSD, un file per giorno per nodo.</p>
 <script>
 const E=document.getElementById.bind(document);
@@ -2040,7 +2063,7 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
 </div>
 
 <nav>
- <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/analisi">Analisi</a>
+ <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/analisi">Analisi</a><a href="/batteria">Batteria</a>
  <a href="/immagini">Componi immagine</a><a href="/pagine">Pagine</a>
  <a href="/api">API</a><a href="/update">Aggiorna firmware</a>
 </nav>
@@ -2804,7 +2827,7 @@ static const char DASH_UPLOAD_PAGE[] PROGMEM = R"HTML(
  <progress id="p" value="0" max="100" hidden></progress></form>
  <p class="muted" id="s"></p>
  <button id="br" class="dan">Ripristina dashboard di default</button>
- <p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/analisi">analisi</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/pagine">pagine</a> &mdash; <a href="/api">API</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
+ <p class="muted"><a href="/">nodi</a> &mdash; <a href="/pannello">pannello e messaggi</a> &mdash; <a href="/analisi">analisi</a> &mdash; <a href="/batteria">batteria</a> &mdash; <a href="/immagini">componi immagine</a> &mdash; <a href="/pagine">pagine</a> &mdash; <a href="/api">API</a> &mdash; <a href="/update">aggiornamento firmware</a></p>
 <script>
 const f=document.getElementById('f'),b=document.getElementById('b'),p=document.getElementById('p'),s=document.getElementById('s'),br=document.getElementById('br');
 f.addEventListener('submit',e=>{e.preventDefault();const fd=new FormData(f),x=new XMLHttpRequest();
@@ -2962,6 +2985,7 @@ static const Rotta ROTTE[] = {
 
   { HTTP_GET,  "/api",                  nullptr,                     "questo elenco, impaginato (sostituibile)", "" },
   { HTTP_GET,  "/analisi",             handleAnalisi,               "pagina di analisi dei riepiloghi giornalieri (sostituibile dalla card)", "" },
+  { HTTP_GET,  "/batteria",            handleBatteria,              "la cella dei nodi a batteria: tensione adesso, consumo giorno per giorno, curva e autonomia (sostituibile dalla card)", "" },
   { HTTP_GET,  "/pagine",               nullptr,                     "gestione delle pagine sostituibili (sempre nel firmware)", "" },
   { HTTP_POST, "/api/pagine/carica",    nullptr,                     "carica una pagina sulla card (multipart, campo 'pagina')", "nome=dashboard|pannello|immagini|api" },
   { HTTP_POST, "/api/pagine/ripristina",nullptr,                     "toglie la pagina dalla card: torna quella del firmware", "nome=..." },
@@ -3028,7 +3052,7 @@ scriverla. Serve a chi si costruisce le proprie pagine &mdash; vedi
 del resto dell&rsquo;interfaccia.</p>
 <div id="l">lettura&hellip;</div>
 <nav>
- <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/analisi">Analisi</a>
+ <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/analisi">Analisi</a><a href="/batteria">Batteria</a>
  <a href="/immagini">Componi immagine</a><a href="/pagine">Pagine</a>
  <a href="/api">API</a><a href="/update">Aggiorna firmware</a>
 </nav>
@@ -3067,6 +3091,7 @@ static const PaginaSost PAGINE_SOST[] = {
   { "immagini",  "/immagini", "Composizione immagini",  DITHER_PAGE   },
   { "api",       "/api",      "Elenco delle API",       API_PAGE      },
   { "analisi",   "/analisi",  "Analisi dei riepiloghi", ANALISI_PAGE  },
+  { "batteria",  "/batteria", "Batteria dei nodi",      BATTERIA_PAGE },
 };
 static const int PAGINE_SOST_N = sizeof(PAGINE_SOST) / sizeof(PAGINE_SOST[0]);
 
@@ -3249,7 +3274,7 @@ la tua pagina &egrave; rotta, l&rsquo;interfaccia continua a funzionare.<br>
 Le rotte disponibili sono elencate in <a href="/api">API</a>.</p>
 <div id="l">lettura&hellip;</div>
 <nav>
- <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/analisi">Analisi</a>
+ <a href="/">Nodi</a><a href="/pannello">Pannello</a><a href="/analisi">Analisi</a><a href="/batteria">Batteria</a>
  <a href="/immagini">Componi immagine</a><a href="/pagine">Pagine</a>
  <a href="/api">API</a><a href="/update">Aggiorna firmware</a>
 </nav>

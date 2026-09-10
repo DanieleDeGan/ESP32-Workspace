@@ -107,6 +107,12 @@ float    app_marea_ampiezza();
 // silenziosamente il giorno che si ritoccano.
 uint8_t app_batteria_livello(int indice, uint16_t mv);
 
+// E le soglie stesse (mV, crescenti) con il margine d'isteresi, per la
+// stessa ragione: /api/nodi le esporta e la pagina /batteria ci disegna le
+// bande del grafico invece di ricopiarsi la curva di scarica.
+const uint16_t* app_batteria_soglie();
+uint16_t app_batteria_isteresi();
+
 // La tabella intera, 24 scarti orari in CENTESIMI di hPa (indice = ora
 // locale). L'ampiezza dice se la taratura e' viva; questa dice cosa sta
 // facendo, ed e' l'unica con cui si puo' controllare la FASE.
