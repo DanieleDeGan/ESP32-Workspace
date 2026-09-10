@@ -606,6 +606,15 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
   - **La riga passa da `app_evento()`, non da `sd_log_evento()`**: così prende
     il tetto per tipo (dieci l'ora). Un client rotto ritenta quanto vuole, e
     scrivere dritto sulla card vorrebbe dire lasciargli riempire il diario.
+  - **Nella dashboard il dettaglio sta sotto la tile «invii interrotti»** della
+    card Hub (`dettaglioInvii()` in `www/dashboard.html`), non nella card «Da
+    guardare»: quella compare solo quando c'è qualcosa da guardare, e un taglio
+    isolato non lo è. Il contatore secco viene da `/api/stato`, i dettagli da
+    `/api/salute` — che la pagina rilegge **un giro su tre**, quindi finché non
+    è arrivata resta il sottotitolo generico invece di una riga vuota.
+    Attenzione: quella pagina la scheda la serve **dalla card**, quindi va
+    ricaricata da `/pagine` dopo ogni modifica al file nel repo — un OTA non
+    basta e non serve.
 
 - **`reset_reason` e `boot_count` anche sull'hub** (da `v13`, gia' su
   `MeteoNode_C3` da `v5`). Tutti gli altri contatori vivono in RAM e ripartono

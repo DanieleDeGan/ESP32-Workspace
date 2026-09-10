@@ -941,7 +941,25 @@ function renderHub(){
     t('refresh pannello', (s.epd_refresh||0), 'ultimo ' + (s.epd_ultimo_ms||0) + ' ms · orologio ' + (s.epd_orologio_ms||0) + ' ms') +
     t('memoria libera', Math.round((s.heap||0)/1024) + ' <span class="u">kB</span>', 'heap') +
     t('segnale', (s.rssi||0) + ' <span class="u">dBm</span>', 'canale ' + (s.canale!=null?s.canale:'?')) +
-    t('invii interrotti', (s.invii_interrotti||0), 'client andati via a metà');
+    t('invii interrotti', (s.invii_interrotti||0), dettaglioInvii(s));
+}
+
+// Il sottotitolo della tile degli invii interrotti. Un contatore da solo non
+// distingue «un telefono se n'è andato una volta» da «qualcosa non prende i
+// dati»: servono l'ora, il file, e quanti ce ne sono stati nell'ultima ora —
+// che è anche la finestra su cui /api/salute decide se allarmarsi (tre).
+// Finché /api/salute non è ancora arrivata (si rilegge un giro su tre) resta il
+// sottotitolo generico, invece di una riga vuota che sembrerebbe un guasto.
+function dettaglioInvii(s){
+  if (!(s.invii_interrotti||0)) return 'client andati via a metà';
+  if (!SALUTE || !SALUTE.invio_ultimo_ora) return 'client andati via a metà';
+  const q     = String(SALUTE.invio_ultimo_ora);
+  const oggi  = String(s.ora||'').slice(0,10);
+  const primo = 'ultimo alle ' + esc(q.slice(0,10) === oggi ? q.slice(11) : q);
+  const nel   = (SALUTE.invii_ultima_ora||0);
+  const cosa  = String(SALUTE.invio_ultimo_cosa||'');
+  return primo + (nel ? ' · ' + nel + " nell'ultima ora" : '') +
+         (cosa ? '<br>' + esc(cosa) : '');
 }
 
 // ====================================================================
@@ -1091,9 +1109,15 @@ let timer = null;
 // non ogni cinque secondi. Su un cambiamento vero si aspetta al massimo 15 s.
 let giriSalute = 0;
 
+// L'ultima /api/salute letta. La tiene da parte la tile degli invii interrotti
+// (renderHub): i dettagli del taglio — quando, su quale file, quanti nell'ultima
+// ora — stanno solo qui, mentre il contatore secco arriva da /api/stato.
+let SALUTE = null;
+
 async function caricaSalute(){
   let d;
   try{ d = await api('/api/salute'); }catch(e){ return; }
+  SALUTE = d;
 
   const grave = d.stato === 'guasto';
   $('pSal').className   = 'pill ' + (grave ? 'off' : (d.stato === 'attenzione' ? 'warn' : 'on'));
