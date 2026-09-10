@@ -94,6 +94,31 @@ perdere consegne — cosa che era già stata sospettata durante il guasto di fin
 agosto e che allora **non era misurabile**, perché `battery_mv` era 0.
 **Costo**: basso nel firmware; la parte difficile è il numero.
 
+### 44. Due «percepiti» nella stessa pagina, e non sono la stessa grandezza
+**Cosa**: in `/api/nodi` il campo si chiama `percepiti` ed è l'**humidex**
+(`meteo_calc.h`); nella dashboard, sezione previsione, «percepiti» è invece la
+`apparent_temperature` di Open-Meteo (`percepita_c`, da `cielo.cpp`). Due
+indici diversi, stesso nome, nella stessa pagina — e uno riguarda l'aria di
+casa, l'altro quella di fuori. Rinominare il campo dei nodi in `humidex` e
+dire, dove si mostra, che non sono gradi ma una scala di disagio.
+**Perché qui**: trovato il **2026-09-10** leggendo `/api/nodi` — 32,1 sui nodi
+mentre la previsione ne diceva 22,2, con i sensori a 25,3 °C. La prima ipotesi
+ragionevole è stata «il numero è vecchio», e verificarlo è costato tre prove:
+ricalcolo in Python (32,05 contro i 32,06 dell'hub), due letture a cinque
+minuti (32,06 → 31,92 all'arrivo del DATA nuovo) e il ricalcolo sul CSV della
+notte (33,9 alle 00:04 → 31,9 alle 07:04). **Era giusto**: a 25,3 °C con il
+68 % l'humidex vale davvero 32. Ma un numero corretto che fa sospettare un
+guasto costa quella verifica a chiunque lo guardi, ed è la stessa ragione per
+cui sotto i 20 gradi l'humidex è `null` e non zero.
+**Nota**: sul pannello e-ink il problema **non c'è** — lì la voce si chiama
+«si sentono», che non promette gradi. È la dashboard e il nome del campo JSON
+a non essersi adeguati.
+**Attenzione**: rinominare il campo è un cambio di API, e il consumatore non è
+solo il browser — `tools/pannello_mock.py` legge `percepiti` da `/api/nodi`
+(riga 994) per riprodurre la pagina dettaglio. Vanno cambiati insieme, o il
+confronto pixel per pixel smette di valere.
+**Costo**: basso — e conviene accodarlo a un OTA che serve già per altro.
+
 ### 0. Togliere la marea barometrica dalla previsione — FATTA (`v63`-`v66`)
 
 **Fatta il 2026-09-08/09, e non come era scritto qui sotto**: la tabella non è
