@@ -1,5 +1,49 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-14 — la cella sopra la curva tipica, e una frase sbagliata
+
+**`/batteria` ha una sezione nuova, «Sulla curva tipica di una Li-ion»**
+(solo pagina sulla card, nessun OTA: l'hub resta `v75`). La curva della cella
+del nodo a batteria è disegnata sopra **due** curve di scarica tipiche delle
+18650 (tensione a riposo contro carica residua): una col tratto piatto a metà,
+una quasi lineare. Sono due apposta, perché fra loro differiscono più di quanto
+i nostri dati sappiano distinguere.
+
+- **Come si allineano**: ogni media da 6 ore del partitore diventa una carica
+  stimata su ciascuna curva, e su quella si fa una retta. Ne escono **dove sta
+  la cella oggi** e **a che ritmo scende**, e la curva si prolunga fino
+  all'ultima tacca. La retta si fa sulla carica e non sui millivolt: una retta
+  sulla tensione proietterebbe il tratto di adesso dritto attraverso il piatto
+  e il ginocchio, cioè proprio quello che la curva tipica sa e noi no.
+- **Primo risultato, 14/09** (19 medie, 4,5 giorni di partitore): cella in
+  servizio da **21,5 giorni** (dal 23/08 alle 21:12 a 4,18 V, mai ricaricata),
+  carica stimata **83–84 %**, ritmo **0,17–0,18 % al giorno ±0,03**, ultima
+  tacca (3,35 V) fra **13 e 18 mesi**. Con 1500–2200 mAh reali sono
+  2,6–3,9 mAh al giorno, cioè 0,11–0,16 mA medi, **meno** dei ~6,5 mAh stimati
+  a tavolino il 24/08. Scarto medio delle curve dai dati: 0,6 mV.
+- **Il ritmo di oggi non spiega l'inizio**. Riportate indietro al 23/08, le
+  curve fanno partire la cella da ~4,045 V, mentre il multimetro diceva 4,18.
+  Il resto l'hanno consumato la prima settimana (cadenza a 60 s, riavvii di
+  sicurezza) e l'assestamento di una cella appena carica.
+- **Le letture al multimetro sono scritte nella pagina** (`DIARIO_CELLE`,
+  legate al MAC): sulla card non ci sono. Si disegnano ma non entrano nella
+  retta, perché lo strumento è un altro e la risoluzione è 10 mV. Una
+  **ricarica** (salita di almeno 30 mV fra un giorno e l'altro o dentro un
+  giorno) fa ripartire la scarica e mette da parte il diario.
+- **Quello che la renderebbe una misura** è la capacità vera della cella: si
+  può ricavare alla prima ricarica, contando i mAh con un tester USB (il
+  caricatore della XIAO è lineare, quindi la corrente in ingresso è circa
+  quella che entra nella cella).
+
+**CORREZIONE**: qui sotto è scritto due volte (30/08 e 01/09) che il dato utile
+arriverà «sotto i 3,9 V, dove la curva torna a pendere». Sulle curve tipiche
+di queste celle vale il contrario: il tratto **piatto** sta fra circa 3,87 e
+3,74 V, dove la tensione dice meno che mai, e la discesa ripida arriva solo
+sotto ~3,7 V. La zona 4,1–3,95 V in cui sta la cella oggi vale 8–12 mV per
+punto di carica, quindi è **più** informativa dei prossimi mesi. La pagina
+`/batteria` e le soglie del firmware lo dicevano già giusto: il testo sbagliato
+era solo in questo diario.
+
 ## Aggiornamento del 2026-09-04 (7) — `v57`: la pagina di analisi con ECharts, e la riserva che resta
 
 Sei viste al posto di tre, grafici interattivi, e una libreria vera al posto

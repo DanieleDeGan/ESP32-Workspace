@@ -4,7 +4,7 @@
 //  GENERATO DA www/gen_page.py - NON MODIFICARE A MANO.
 //  La sorgente e' www/batteria.html: si modifica quella e si
 //  rilancia  python www/gen_page.py batteria  prima di ricompilare.
-//  (26614 byte di pagina, serviti su /batteria)
+//  (46158 byte di pagina, serviti su /batteria)
 // ============================================================
 
 static const char BATTERIA_PAGE[] PROGMEM = R"BATTERIAPAGE(
@@ -103,6 +103,19 @@ partitore &egrave; stato cablato, e prima non c&rsquo;&egrave; nessuna misura da
 </section>
 
 <section class="card">
+ <h2>Sulla curva tipica di una Li-ion <span class="sub" id="qTipica" style="margin:0"></span></h2>
+ <div class="barra" style="margin-bottom:.7rem">
+  <label>vista <select id="vista">
+    <option value="fin" selected>da quando è in servizio</option>
+    <option value="tutta">fino all’ultima tacca</option>
+  </select></label>
+ </div>
+ <div class="rec" id="tipica"><div class="sub">lettura&hellip;</div></div>
+ <div id="grafTip" style="margin-top:.7rem"></div>
+ <div class="lg" id="tipLg"></div>
+</section>
+
+<section class="card">
  <h2>Giorno per giorno <span class="sub" id="qTab" style="margin:0"></span></h2>
  <div class="tw"><table id="tab">
   <thead><tr><th>giorno</th><th>completezza</th><th>prima</th><th>ultima</th>
@@ -122,10 +135,23 @@ partitore &egrave; stato cablato, e prima non c&rsquo;&egrave; nessuna misura da
  <ul class="note">
   <li><b>La tensione non &egrave; una percentuale.</b> Fra 3,9 e 3,7 V la curva di scarica di
    una 18650 &egrave; quasi piatta: 150 mV coprono circa un quinto della capacit&agrave;, e lo
-   stesso &laquo;78 %&raquo; pu&ograve; durare ore o settimane. Per questo qui non c&rsquo;&egrave;
-   nessuna percentuale, e le tacche sono cinque &mdash; le stesse del pannello, con le
-   <b>stesse soglie</b>, che arrivano dall&rsquo;hub (<code>batteria_soglie_mv</code>) invece
-   di essere ricopiate qui dentro.</li>
+   stesso &laquo;78 %&raquo; pu&ograve; durare ore o settimane. Per questo le tacche sono
+   cinque &mdash; le stesse del pannello, con le <b>stesse soglie</b>, che arrivano
+   dall&rsquo;hub (<code>batteria_soglie_mv</code>) invece di essere ricopiate qui dentro.
+   L&rsquo;unica percentuale della pagina sta nella sezione della curva tipica, ed &egrave;
+   una <b>forchetta</b> fra due curve di riferimento, non una misura.</li>
+  <li><b>Le curve tipiche non sono quelle della nostra cella.</b> Sono due tabelle di
+   tensione a riposo contro carica residua fra le tante che circolano per le 18650: una
+   col tratto piatto ben marcato a met&agrave;, una quasi lineare. La cella vera &egrave; una
+   &laquo;3000 mAh&raquo; economica senza scheda tecnica, probabilmente 1500&ndash;2200 mAh
+   reali, e pu&ograve; stare fuori da entrambe. Le curve si <b>allineano</b> ai dati del
+   partitore (una retta sulla carica stimata: dove sta oggi, e a che ritmo scende) e poi si
+   prolungano. La <b>capacit&agrave; vera</b> &egrave; il dato che le renderebbe una misura:
+   si pu&ograve; ricavare alla prima ricarica, contando i mAh con un tester USB.</li>
+  <li><b>Le letture al multimetro prima del partitore</b> (dal 23 agosto al 9 settembre) non
+   stanno sulla card: sono scritte in questa pagina, dal diario della stazione, e valgono
+   solo per il nodo a cui sono state prese. Risoluzione 10 mV e uno strumento diverso
+   dall&rsquo;ADC, quindi si disegnano ma <b>non entrano nella retta</b>.</li>
   <li><b>Il partitore &egrave; cablato dal 9 settembre 2026</b> sulla XIAO C3, con rapporto
    misurato al multimetro (1,996, non 2,000) e 100 nF verso massa; la lettura &egrave; la
    media di otto conversioni. Il nodo a muro non ne ha uno e non manda niente: la sua
@@ -302,6 +328,7 @@ async function caricaTutto(){
  renderAdesso();
  await caricaGiorni();
  await caricaCurva();
+ await caricaTipica();
 }
 
 function renderAdesso(){
@@ -511,9 +538,329 @@ async function caricaCurva(){
  renderDurata();
 }
 
+// --- la curva tipica ----------------------------------------------------------
+// La domanda: la curva della nostra cella, messa sopra quella di scarica di una
+// Li-ion, dove sta e dove va? Le curve di riferimento sono DUE, apposta. Sono
+// tabelle di tensione a riposo contro carica residua (OCV) fra le tante che
+// circolano per le 18650, e fra loro differiscono piu' di quanto i nostri dati
+// sappiano distinguere: la forchetta fra le due e' parte della risposta. Una
+// sola sarebbe una precisione che nessuno ha misurato.
+const CURVE_TIPICHE=[
+ {nome:'A', desc:'col tratto piatto a metà', tratto:'',
+  punti:[[100,4200],[90,4060],[80,3980],[70,3920],[60,3870],[50,3820],[40,3790],
+         [30,3770],[20,3740],[10,3680],[5,3450],[0,3000]]},
+ {nome:'B', desc:'quasi lineare', tratto:'7 5',
+  punti:[[100,4200],[95,4130],[90,4080],[85,4030],[80,3990],[75,3950],[70,3910],
+         [65,3870],[60,3840],[55,3810],[50,3790],[45,3760],[40,3740],[35,3710],
+         [30,3680],[25,3650],[20,3620],[15,3580],[10,3520],[5,3450],[0,3000]]}
+];
+
+// Il diario della cella PRIMA del partitore: letture al multimetro sui pad BAT,
+// cella collegata e nodo in deep sleep (docs/Stazione-Meteo.md). Sulla card non
+// ci sono, e senza di loro la pagina non saprebbe da quando la cella lavora.
+// Legate al MAC e non al nome: un nome si cambia, e le letture di una cella
+// attribuite a un'altra sarebbero la bugia peggiore di questa pagina. Il 03/09
+// manca apposta: era presa col nodo sveglio, sotto carico, e non sta sulla
+// stessa curva. Le ore del 25, 26 e 27 agosto sono quelle annotate "circa".
+const DIARIO_CELLE={
+ 'AC:27:6E:7E:AE:0C':{inizio:'2026-08-23T21:12:00+02:00', letture:[
+  ['2026-08-23T21:12:00+02:00',4180],['2026-08-24T17:37:00+02:00',4120],
+  ['2026-08-25T21:00:00+02:00',4100],['2026-08-26T20:30:00+02:00',4080],
+  ['2026-08-27T20:00:00+02:00',4070],['2026-08-30T07:00:00+02:00',4060],
+  ['2026-08-30T20:04:00+02:00',4060],['2026-09-01T07:17:00+02:00',4060],
+  ['2026-09-04T08:57:00+02:00',4050],['2026-09-08T17:30:00+02:00',4050],
+  ['2026-09-09T19:00:00+02:00',4040]]}
+};
+const RICARICA_MV=30;       // una salita cosi' non e' rumore dell'ADC: e' una ricarica
+const FIT_GIORNI_MAX=14;    // il tetto di /api/nodi/serie
+const CAPACITA_MAH=[1500,2200];  // quanto fa di solito una "3000 mAh" economica
+const TRE_ANNI=3*365;
+let TIP=null;
+
+// Tensione -> carica e ritorno: interpolazione lineare a tratti sulla tabella,
+// estremi bloccati. Le due funzioni devono essere l'una l'inversa dell'altra,
+// o la curva disegnata non passerebbe per i punti con cui e' stata allineata.
+function caricaDa(c,mv){
+ const p=c.punti;
+ if(mv>=p[0][1]) return 100;
+ if(mv<=p[p.length-1][1]) return 0;
+ for(let i=1;i<p.length;i++) if(mv>=p[i][1])
+  return p[i][0]+(p[i-1][0]-p[i][0])*(mv-p[i][1])/(p[i-1][1]-p[i][1]);
+ return 0;
+}
+function tensioneDa(c,soc){
+ const p=c.punti;
+ if(soc>=100) return p[0][1];
+ if(soc<=0) return p[p.length-1][1];
+ for(let i=1;i<p.length;i++) if(soc>=p[i][0])
+  return p[i][1]+(p[i-1][1]-p[i][1])*(soc-p[i][0])/(p[i-1][0]-p[i][0]);
+ return p[p.length-1][1];
+}
+// Il giorno del riepilogo e' in ora locale (come i file sulla card), quindi la
+// mezzanotte si prende locale. toISOString() darebbe il giorno UTC: a mezzanotte
+// e mezza di qui sarebbe ancora ieri.
+const mezzanotte=g=>Math.floor(new Date(g+'T00:00:00').getTime()/1000);
+const isoLocale=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+
+                   String(d.getDate()).padStart(2,'0');
+const giornoMese=d=>d.getDate()+'/'+(d.getMonth()+1);
+const oraMin=d=>String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+
+// Da quando la cella lavora senza ricariche. Tre fonti, in quest'ordine: una
+// ricarica vista nei giorni chiusi (e' la piu' recente, quindi vince sul diario),
+// il diario qui sopra, e in mancanza di tutto il primo giorno col partitore -
+// dichiarandolo, perche' li' la cella lavorava gia' da chissa' quanto.
+function inizioScarica(){
+ let ric=null;
+ for(let i=0;i<RIGHE.length;i++){
+  const r=RIGHE[i], p=i?RIGHE[i-1]:null;
+  if(p&&p.ultimo!=null&&r.primo!=null&&r.primo-p.ultimo>=RICARICA_MV)
+   ric={t:mezzanotte(r.giorno),g:r.giorno};
+  if(r.primo!=null&&r.ultimo!=null&&r.ultimo-r.primo>=RICARICA_MV)
+   ric={t:mezzanotte(r.giorno)+86400,g:r.giorno};
+ }
+ const dia=NODO?DIARIO_CELLE[NODO.mac]:null;
+ const tDia=dia?Math.floor(new Date(dia.inizio).getTime()/1000):null;
+ if(ric&&(!dia||ric.t>tDia)) return {t:ric.t,come:'ricarica',g:ric.g,diario:null};
+ if(dia) return {t:tDia,come:'diario',diario:dia};
+ const primo=RIGHE.find(r=>r.primo!=null);
+ return primo?{t:mezzanotte(primo.giorno),come:'partitore',g:primo.giorno,diario:null}:null;
+}
+
+// La retta si fa sulla CARICA stimata, non sulla tensione: una retta sui
+// millivolt proietterebbe il tratto di adesso dritto attraverso il piatto e il
+// ginocchio, che sono proprio le cose che la curva tipica sa e noi no. Ogni
+// curva ha la sua retta: dove mette la cella oggi, e a che ritmo la fa scendere.
+function allinea(c,pts,t0,adesso){
+ const xs=pts.map(p=>(p[0]-t0)/86400), ys=pts.map(p=>caricaDa(c,p[1])), n=xs.length;
+ const mx=xs.reduce((a,b)=>a+b,0)/n, my=ys.reduce((a,b)=>a+b,0)/n;
+ let sxy=0,sxx=0;
+ for(let i=0;i<n;i++){ sxy+=(xs[i]-mx)*(ys[i]-my); sxx+=(xs[i]-mx)*(xs[i]-mx); }
+ const b=sxy/sxx, a=my-b*mx;
+ let sse=0,sseV=0;
+ for(let i=0;i<n;i++){
+  const s=a+b*xs[i]; sse+=(ys[i]-s)*(ys[i]-s);
+  const ev=pts[i][1]-tensioneDa(c,s); sseV+=ev*ev;
+ }
+ const seb=Math.sqrt(sse/(n-2)/sxx);
+ const socNow=a+b*(adesso-t0)/86400, socFondo=caricaDa(c,SOGLIE[0]);
+ // giorni da oggi alla soglia dell'ultima tacca, con una pendenza data: una
+ // pendenza che non scende non arriva mai, e Infinity lo dice senza inventare
+ const giorni=bb=>bb<0?(socFondo-socNow)/bb:Infinity;
+ return {c,a,b,seb,socNow,rmsMv:Math.sqrt(sseV/n),
+  giorni:giorni(b),gCorti:giorni(b-2*seb),gLunghi:giorni(b+2*seb),v0:tensioneDa(c,a)};
+}
+
+async function caricaTipica(){
+ TIP=null;
+ const ini=NODO?inizioScarica():null;
+ if(!ini){
+  q('qTipica','');
+  $('tipica').innerHTML='<div class="sub">Nessun dato della cella: '+VUOTO+'</div>';
+  $('grafTip').innerHTML=''; $('tipLg').textContent=''; return;
+ }
+ const adesso=(STATO&&STATO.ora)?Math.floor(new Date(STATO.ora.replace(' ','T')).getTime()/1000)
+                                :Math.floor(Date.now()/1000);
+ // La finestra della retta: dal primo dato del partitore dentro questa scarica
+ // fino a oggi, al massimo gli ultimi 14 giorni. Cesti da 6 ore: la media di
+ // ~72 letture toglie il rumore dell'ADC, e sono pochi byte da un server sincrono.
+ const oggi=oggiISO();
+ const primoADC=RIGHE.find(r=>r.primo!=null);
+ let da=new Date(Math.max(ini.t*1000, primoADC?mezzanotte(primoADC.giorno)*1000:0));
+ const minimo=new Date(oggi+'T00:00:00'); minimo.setDate(minimo.getDate()-(FIT_GIORNI_MAX-1));
+ if(da<minimo) da=minimo;
+ const daISO=isoLocale(da);
+ const giorni=Math.round((mezzanotte(oggi)-mezzanotte(daISO))/86400)+1;
+ let S;
+ try{ S=await chiedi('/api/nodi/serie?nodo='+encodeURIComponent(NODO.nome)+
+      '&da='+daISO+'&a='+oggi+'&v=3&punti='+(giorni*4),'json'); }
+ catch(e){ $('tipica').innerHTML='<div class="sub">'+esc(e.message)+'</div>';
+  $('grafTip').innerHTML=''; $('tipLg').textContent=''; return; }
+
+ let pts=[];
+ S.s.forEach((c,i)=>{ if(!c) return;
+  const t=Math.min(S.t0+(i+0.5)*S.passo, adesso);
+  if(t>=ini.t) pts.push([t,c[0]]); });
+ // Una ricarica di OGGI il riepilogo non la conosce ancora: se la serie sale di
+ // colpo, la scarica ricomincia li', e quello che c'era prima non e' questa cella.
+ for(let i=pts.length-1;i>0;i--) if(pts[i][1]-pts[i-1][1]>=RICARICA_MV){
+  pts=pts.slice(i); ini.t=pts[0][0]; ini.come='ricarica'; ini.g=oggi; ini.diario=null; break; }
+
+ const span=pts.length>1?(pts[pts.length-1][0]-pts[0][0])/86400:0;
+ const fit=(pts.length>=4&&span>=GIORNI_MIN)?CURVE_TIPICHE.map(c=>allinea(c,pts,ini.t,adesso)):null;
+ TIP={ini,pts,fit,adesso,span,daISO,oggi};
+ q('qTipica','· retta dal '+daISO+' a '+oggi+', '+pts.length+' medie da 6 h');
+ renderTipica();
+}
+
+function renderTipica(){
+ if(!TIP) return;
+ const {ini,pts,fit,adesso,span}=TIP;
+ const inizio=new Date(ini.t*1000);
+ const servizio=(adesso-ini.t)/86400;
+ const l0=ini.diario?ini.diario.letture[0][1]:null;
+ const descServ = ini.come==='diario'
+   ? 'dal '+giornoMese(inizio)+' alle '+oraMin(inizio)+', a '+(l0/1000).toFixed(3)+
+     ' V (diario al multimetro) · nessuna ricarica vista da allora'
+   : ini.come==='ricarica'
+   ? 'dalla ricarica vista il '+esc(ini.g)+' · il diario precedente non vale più'
+   : 'dal primo giorno col partitore ('+esc(ini.g)+'): la cella lavorava già prima, da quanto non si sa';
+ const forchetta=(x,y,d,u)=>{ const a=Math.min(x,y).toFixed(d), b=Math.max(x,y).toFixed(d);
+  return (a===b?a:a+'–'+b)+' <span class="sub">'+u+'</span>'; };
+ const durata=g=>{
+  if(!isFinite(g)||g>TRE_ANNI) return null;
+  return g<60?Math.round(g)+' giorni':Math.round(g/30.44)+' mesi';
+ };
+ let tiles=rq('in servizio', (ini.come==='partitore'?'≥ ':'')+servizio.toFixed(1)+
+              ' <span class="sub">giorni</span>', descServ);
+ if(!fit){
+  const manca='servono '+GIORNI_MIN+' giorni di partitore dentro questa scarica: finora '+span.toFixed(1);
+  tiles+=rq('carica, stimata',VUOTO,manca)+rq('ritmo',VUOTO,manca)+rq('all’ultima tacca',VUOTO,manca);
+  $('tipica').innerHTML=tiles;
+ } else {
+  const socs=fit.map(f=>f.socNow), ritmi=fit.map(f=>-f.b);
+  const corti=Math.min.apply(null,fit.map(f=>f.gCorti)), lunghi=Math.max.apply(null,fit.map(f=>f.gLunghi));
+  const dc=durata(corti), dl=durata(lunghi);
+  const unita=x=>x.replace(/^[0-9]+ /,'');
+  const fondo = dc==null ? 'oltre 3 anni'
+              : dl==null ? 'da '+dc+' in su'
+              : dc===dl ? dc
+              : unita(dc)===unita(dl) ? dc.replace(/ (giorni|mesi)$/,'')+'–'+dl
+              : dc+' – '+dl;
+  const mahLo=Math.min.apply(null,ritmi)*CAPACITA_MAH[0]/100, mahHi=Math.max.apply(null,ritmi)*CAPACITA_MAH[1]/100;
+  const seMax=Math.max.apply(null,fit.map(f=>2*f.seb));
+  tiles+=
+   rq('carica, stimata', forchetta(socs[0],socs[1],0,'%'),
+      'dove cade la tensione di oggi sulle due curve tipiche · una forchetta, non una misura')+
+   rq('ritmo', forchetta(ritmi[0],ritmi[1],2,'% al giorno'),
+      '±'+seMax.toFixed(2)+' · retta su '+pts.length+' medie da 6 h, '+span.toFixed(1)+' giorni di partitore')+
+   rq('all’ultima tacca', fondo.replace(/ (giorni|mesi)$/,' <span class="sub">$1</span>'),
+      'a '+(SOGLIE[0]/1000).toFixed(2)+' V, se il ritmo resta questo · la forchetta somma le due curve '+
+      'e l’incertezza della retta')+
+   rq('consumo equivalente', forchetta(mahLo,mahHi,1,'mAh al giorno'),
+      '≈ '+(mahLo/24).toFixed(2)+'–'+(mahHi/24).toFixed(2)+' mA medi, se la cella ha '+
+      CAPACITA_MAH[0]+'–'+CAPACITA_MAH[1]+' mAh reali: la capacità è l’incognita che manca');
+  $('tipica').innerHTML=tiles;
+ }
+ disegnaTipica();
+}
+
+function disegnaTipica(){
+ const {ini,pts,fit,adesso}=TIP;
+ const inizio=new Date(ini.t*1000);
+ const tutta=$('vista').value==='tutta'&&fit;
+ const W2=920,H2=280, t0=ini.t;
+ let tFine;
+ if(tutta){
+  const g=Math.max.apply(null,fit.map(f=>isFinite(f.giorni)?Math.min(f.giorni,TRE_ANNI):TRE_ANNI));
+  tFine=adesso+g*86400*1.06;
+ } else tFine=adesso+Math.max((adesso-t0)*0.05,43200);
+ const tx=t=>ML+(W2-ML-MR)*(t-t0)/(tFine-t0);
+ const curvaIn=(f,t)=>tensioneDa(f.c,f.a+f.b*(t-t0)/86400);
+
+ // La scala: nella vista corta i dati e le curve nel periodo, in quella lunga
+ // tutta la discesa fino a sotto l'ultima tacca.
+ const dia=ini.diario?ini.diario.letture.map(l=>[Math.floor(new Date(l[0]).getTime()/1000),l[1]])
+                            .filter(l=>l[0]>=t0):[];
+ const primiGiorni=RIGHE.filter(r=>mezzanotte(r.giorno)>=mezzanotte(isoLocale(new Date(t0*1000)))&&
+                                  r.giorno<TIP.daISO);
+ let lo,hi;
+ if(tutta){ lo=SOGLIE[0]-80; hi=4220; }
+ else {
+  const v=[]; pts.forEach(p=>v.push(p[1])); dia.forEach(l=>v.push(l[1]));
+  primiGiorni.forEach(r=>{ if(r.primo!=null) v.push(r.primo); if(r.ultimo!=null) v.push(r.ultimo); });
+  if(fit) fit.forEach(f=>{ v.push(curvaIn(f,t0),curvaIn(f,tFine)); });
+  if(!v.length){ $('grafTip').innerHTML=''; $('tipLg').textContent=''; return; }
+  lo=Math.min.apply(null,v)-12; hi=Math.max.apply(null,v)+12;
+ }
+ const s={lo,hi}, ty=mv=>MT+(H2-MT-MB)*(1-(mv-s.lo)/(s.hi-s.lo));
+
+ let g='';
+ for(let k=0;k<=4;k++){
+  const v=lo+(hi-lo)*k/4, y=ty(v);
+  g+='<line x1="'+ML+'" y1="'+y.toFixed(1)+'" x2="'+(W2-MR)+'" y2="'+y.toFixed(1)+'" stroke="#26262b"/>'+
+     '<text x="'+(ML-6)+'" y="'+(y+3.5).toFixed(1)+'" fill="#8e8e96" font-size="10" text-anchor="end">'+
+     (v/1000).toFixed(3)+'</text>';
+ }
+ const giorniVista=(tFine-t0)/86400;
+ for(let k=0;k<=7;k++){
+  const t=t0+(tFine-t0)*k/7, d=new Date(t*1000);
+  g+='<text x="'+tx(t).toFixed(1)+'" y="'+(H2-8)+'" fill="#8e8e96" font-size="10" text-anchor="'+
+     (k===7?'end':'middle')+'">'+
+     giornoMese(d)+(giorniVista>200?'/'+String(d.getFullYear()).slice(2):'')+'</text>';
+ }
+ // Le etichette stanno dalla parte opposta ai dati: nella vista corta i dati
+ // sono a destra, in quella lunga tutti schiacciati a sinistra.
+ SOGLIE.forEach((sg,k)=>{ if(sg<lo||sg>hi) return;
+  const y=ty(sg);
+  g+='<line x1="'+ML+'" y1="'+y.toFixed(1)+'" x2="'+(W2-MR)+'" y2="'+y.toFixed(1)+
+     '" stroke="'+(k===0?'#e05252':'#3a3a42')+'" stroke-dasharray="4 4"/>'+
+     '<text x="'+(tutta?W2-MR-4:ML+4)+'" y="'+(y-4).toFixed(1)+'" fill="'+(k===0?'#e05252':'#6e6e78')+
+     '" font-size="10"'+(tutta?' text-anchor="end"':'')+'>'+(k+1)+(k?' tacche':' tacca')+'</text>';
+ });
+ // oggi: il confine fra quello che e' stato misurato e quello che e' proiettato
+ const xo=tx(adesso);
+ g+='<line x1="'+xo.toFixed(1)+'" y1="'+MT+'" x2="'+xo.toFixed(1)+'" y2="'+(H2-MB)+
+    '" stroke="#8e8e96" stroke-dasharray="2 3"/>'+
+    '<text x="'+(tutta?xo+4:xo-4).toFixed(1)+'" y="'+(MT+10)+'" fill="#8e8e96" font-size="10" text-anchor="'+
+    (tutta?'start':'end')+'">'+(tutta?'oggi · da qui è proiezione':'oggi')+'</text>';
+ // tutto quello che segue resta dentro l'area del grafico: in fondo alla vista
+ // lunga le curve scendono oltre la scala, e uscirebbero sopra le date
+ g+='<defs><clipPath id="clipTip"><rect x="'+ML+'" y="'+MT+'" width="'+(W2-ML-MR)+'" height="'+
+    (H2-MT-MB)+'"/></clipPath></defs><g clip-path="url(#clipTip)">';
+
+ if(fit){
+  const N=180, camp=[];
+  for(let i=0;i<=N;i++) camp.push(t0+(tFine-t0)*i/N);
+  const linea=f=>camp.map((t,i)=>(i?'L':'M')+tx(t).toFixed(1)+' '+ty(curvaIn(f,t)).toFixed(1)).join(' ');
+  let banda=camp.map((t,i)=>(i?'L':'M')+tx(t).toFixed(1)+' '+ty(curvaIn(fit[0],t)).toFixed(1)).join(' ');
+  for(let i=N;i>=0;i--) banda+=' L'+tx(camp[i]).toFixed(1)+' '+ty(curvaIn(fit[1],camp[i])).toFixed(1);
+  g+='<path d="'+banda+' Z" fill="#79c0ff" fill-opacity=".10"/>';
+  fit.forEach(f=>{ g+='<path d="'+linea(f)+'" fill="none" stroke="#79c0ff" stroke-width="1.6"'+
+                     (f.c.tratto?' stroke-dasharray="'+f.c.tratto+'"':'')+'/>'; });
+ }
+ // i giorni chiusi prima della finestra della retta: primo e ultimo del giorno
+ primiGiorni.forEach(r=>{ const m=mezzanotte(r.giorno);
+  [[m+1800,r.primo],[m+84600,r.ultimo]].forEach(p=>{ if(p[1]==null) return;
+   g+='<circle cx="'+tx(p[0]).toFixed(1)+'" cy="'+ty(p[1]).toFixed(1)+'" r="2" fill="#7ee787"/>'; }); });
+ // le medie da 6 ore: la linea si interrompe sui buchi, come nell'altro grafico
+ let lin='', prec=null;
+ pts.forEach(p=>{ lin+=(prec==null||p[0]-prec>12*3600?'M':' L')+tx(p[0]).toFixed(1)+' '+ty(p[1]).toFixed(1);
+                  prec=p[0]; });
+ if(lin) g+='<path d="'+lin+'" fill="none" stroke="#7ee787" stroke-width="2.2"/>';
+ dia.forEach(l=>{ g+='<circle cx="'+tx(l[0]).toFixed(1)+'" cy="'+ty(l[1]).toFixed(1)+
+                    '" r="3.5" fill="#1a1a1d" stroke="#e5a13a" stroke-width="1.6"/>'; });
+ g+='</g>';
+
+ $('grafTip').innerHTML='<svg viewBox="0 0 '+W2+' '+H2+'" preserveAspectRatio="none">'+g+'</svg>';
+
+ let lg='La linea <b style="color:#7ee787">verde</b> sono le medie da 6 ore del partitore'+
+  (primiGiorni.length?', i punti verdi primo e ultimo valore dei giorni chiusi più vecchi':'')+
+  (dia.length?', i cerchi <b style="color:#e5a13a">arancioni</b> le letture al multimetro (10 mV, fuori dalla retta)':'')+'. ';
+ if(!fit){ $('tipLg').innerHTML=lg+'Le curve tipiche compaiono quando ci sono abbastanza giorni per allinearle.'; return; }
+ lg+='In <b style="color:#79c0ff">azzurro</b> le due curve tipiche allineate ai dati: '+
+  fit.map(f=>'<b>'+f.c.nome+'</b> '+f.c.desc+' ('+(f.c.tratto?'tratteggiata':'piena')+
+   ', '+f.rmsMv.toFixed(1)+' mV di scarto medio dai dati)').join(' e ')+
+  '. Ciascuna è messa dove la retta sulla carica stimata dice che la cella sta, e fatta scendere a quel ritmo.';
+ if(dia.length){
+  const v0lo=Math.min.apply(null,fit.map(f=>f.v0)), v0hi=Math.max.apply(null,fit.map(f=>f.v0));
+  if(dia[0][1]-v0hi>=10)
+   lg+=' <b>Riportate indietro al '+giornoMese(inizio)+'</b> col ritmo di adesso, le curve fanno partire la '+
+    'cella da '+(v0lo/1000).toFixed(3)+(v0hi-v0lo>=1?'–'+(v0hi/1000).toFixed(3):'')+' V, ma il multimetro '+
+    'diceva '+(dia[0][1]/1000).toFixed(3)+' V: la differenza è la prima settimana, che ha consumato di più '+
+    '(cadenza a 60 s, riavvii di sicurezza) più l’assestamento di una cella appena carica. '+
+    'Il ritmo di oggi non vale per il passato, e non è detto che valga per il futuro.';
+ }
+ if(tutta)
+  lg+=' <b>Oltre la linea di oggi è una proiezione.</b> Sul tratto piatto (circa 3,87–3,74 V sulla curva A) '+
+   'la tensione dirà meno che mai, e il ginocchio vero arriva sotto i 3,7 V: le due curve si separano '+
+   'proprio lì, ed è quanto le tabelle generiche non sanno di questa cella.';
+ $('tipLg').innerHTML=lg;
+}
+
 $('nodo').onchange=async()=>{ NODO=NODI.find(n=>n.nome===$('nodo').value)||NODO;
-  renderAdesso(); await caricaGiorni(); await caricaCurva(); };
+  renderAdesso(); await caricaGiorni(); await caricaCurva(); await caricaTipica(); };
 $('giorni').onchange=()=>caricaCurva();
+$('vista').onchange=()=>renderTipica();
 $('bRic').onclick=()=>caricaTutto();
 caricaTutto();
 </script></body></html>

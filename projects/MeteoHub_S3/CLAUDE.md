@@ -830,6 +830,27 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
   - Sorgente unica `www/batteria.html`, `batteria_page.h` da
     `python www/gen_page.py batteria` (e l'hook lo fa da solo), sostituibile
     dalla card come le altre.
+  - **La sezione «Sulla curva tipica di una Li-ion»** (2026-09-14, solo pagina
+    sulla card, firmware invariato). Due tabelle OCV di 18650
+    (`CURVE_TIPICHE`), **allineate** ai dati. Le medie da 6 ore di
+    `/api/nodi/serie?v=3` diventano carica stimata e su quella si fa la
+    retta, **non sui millivolt**: una retta sulla tensione attraverserebbe
+    dritta il tratto piatto e il ginocchio. Ne escono carica, ritmo, ultima
+    tacca (con ±2 errori standard della pendenza) e consumo equivalente per
+    1500–2200 mAh. Due viste: da quando la cella è in servizio, e fino
+    all'ultima tacca.
+    - **L'inizio della scarica** si prende, in quest'ordine, da una ricarica
+      vista nei riepiloghi (salita di almeno `RICARICA_MV` = 30 mV), dal
+      diario `DIARIO_CELLE`, o dal primo giorno col partitore (dichiarato
+      «≥»). Il diario sono le letture al multimetro dal 23/08 al 09/09, che
+      sulla card non ci sono: **legato al MAC**, disegnato ma fuori dalla
+      retta.
+    - **È l'unica percentuale della pagina**, ed è mostrata come
+      forchetta fra le due curve. La nota «Come si misura» è stata aggiornata
+      per dirlo, perché prima diceva «nessuna percentuale».
+    - Provata come le altre: script eseguito in node contro l'hub vero, più
+      Chrome headless su un'istantanea statica (nessun NaN in nessuna delle
+      due viste).
 
 - **Il riepilogo giornaliero** (da `v50`-`v51`, 2026-09-04):
   `/nodi/<NOME>/riepilogo.csv`, una riga per giorno **chiuso**, con
