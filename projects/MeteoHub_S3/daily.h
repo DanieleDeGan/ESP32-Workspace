@@ -63,6 +63,8 @@ struct daily_t {
 
   float    pPrimo;     // pressione del primo e dell'ultimo campione:
   float    pUltimo;    // la loro differenza e' la variazione sulle 24 h
+  time_t   tpPrimo;    // ...e quando sono stati presi: la retta fra i due e'
+  time_t   tpUltimo;   // cio' che daily_marea toglie prima delle medie (v76)
 
   // La batteria non si media (da v62). Di una cella interessano tre cose e
   // nessuna e' una media: com'era al mattino, com'era a sera -- la differenza
@@ -97,6 +99,10 @@ struct daily_t {
   // ricavarlo dal fuso e' gia' costato un'ora di marea in v63 (vedi v65).
   double   mSomma[24];
   uint16_t mN[24];
+  // La somma degli ISTANTI, per ora: da' l'istante medio di ogni cesto, cioe'
+  // il punto in cui la retta del giorno va valutata (v76). Double e non
+  // time_t: 1440 epoch sommati stanno ben dentro i 53 bit esatti.
+  double   mTSomma[24];
 
   uint32_t seqPrec;
   bool     seqVisto;
@@ -125,8 +131,9 @@ static inline void daily_reset(daily_t& d) {
   daily_stat_reset(d.p);  daily_stat_reset(d.td);
   d.campioni = 0; d.buchi = 0; d.primo = 0; d.ultimo = 0;
   d.pPrimo = NAN; d.pUltimo = NAN;
+  d.tpPrimo = 0;  d.tpUltimo = 0;
   d.bPrimo = 0;   d.bUltimo = 0;  d.bMin = 0;
-  for (int i = 0; i < 24; i++) { d.mSomma[i] = 0.0; d.mN[i] = 0; }
+  for (int i = 0; i < 24; i++) { d.mSomma[i] = 0.0; d.mN[i] = 0; d.mTSomma[i] = 0.0; }
   d.seqPrec = 0;  d.seqVisto = false;
   d.tsPrec = 0;   d.nDelta = 0;
 }
@@ -167,6 +174,7 @@ static inline void daily_add(daily_t& d, time_t ts, uint32_t seq,
                                      // un indice di array
     d.mSomma[ora] += pressHpa;
     d.mN[ora]++;
+    d.mTSomma[ora] += (double)ts;
   }
   // Il tetto sul salto e' quello di remote_nodes (PERSI_SALTO_MAX): il seq
   // attraversa il deep sleep passando dalla RTC memory, e un valore sporco
@@ -199,8 +207,9 @@ static inline void daily_add(daily_t& d, time_t ts, uint32_t seq,
     daily_stat_add(d.td, meteo_dewpoint_c(tempC, humPct), ts);
 
   if (isfinite(pressHpa)) {
-    if (!isfinite(d.pPrimo)) d.pPrimo = pressHpa;
+    if (!isfinite(d.pPrimo)) { d.pPrimo = pressHpa; d.tpPrimo = ts; }
     d.pUltimo = pressHpa;
+    d.tpUltimo = ts;
   }
 
   if (d.primo == 0) d.primo = ts;
@@ -219,15 +228,54 @@ static inline void daily_add(daily_t& d, time_t ts, uint32_t seq,
 //  - si sottrae la media DEL GIORNO STESSO, non una costante: senza, una
 //    settimana di alta pressione entrerebbe nel ciclo come se fosse periodica.
 //
+// E PRIMA DELLA MEDIA SI TOGLIE LA RETTA DEL GIORNO (v76), che fino alla v75
+// mancava. La media toglie il livello, non la pendenza: in un giorno in cui la
+// pressione scende di 4 hPa le prime ore escono "alte" e le ultime "basse", un
+// dente di sega che la tabella scambiava per marea. E il dente ha il gradino
+// sempre nello stesso posto -- fra le ore UTC 21 e 22, cioe' la mezzanotte
+// LOCALE dove i CSV si spezzano -- quindi con qualche giorno in discesa di fila
+// non si media via: si accumula. Trovato il 17/09/2026 su `marea_tab`: -22 alle
+// 21, +51 alle 22, e la correzione del delta a 3 h fra mezzanotte e le tre
+// spostata di -0,6..-0,8 hPa, oltre la soglia della "lieve discesa". Il filtro
+// dei giorni quieti non basta: 4 hPa sono "quieti", e da soli fanno un dente di
+// +-2 hPa, piu' della marea intera. Replicato sui CSV veri, la tabella della
+// scheda esce IDENTICA; togliendo la retta (e contando ogni data una volta
+// sola, vedi mareaGiornoNuovo nel .ino) il gradino sparisce, compare il
+// secondo massimo delle 23 locali che la marea vera ha, e il residuo ciclico
+// del delta a 3 h corretto scende da 0,41 a 0,12 hPa.
+//
+// LA RETTA PASSA PER IL PRIMO E L'ULTIMO CAMPIONE, NON E' UNA REGRESSIONE, ed
+// e' la scelta che conta. Il primo e l'ultimo distano 24 h meno un periodo, e
+// una funzione periodica di 24 h (la marea, S1 e S2) vale lo stesso ai due
+// estremi: la loro retta vede SOLO il sinottico. Una regressione sulla
+// giornata invece si mangia un pezzo di ciclo, perche' la retta ai minimi
+// quadrati per una sinusoide su un periodo intero non e' piatta. Misurato su
+// una marea sintetica: -1,34 hPa/giorno di pendenza inventata con la
+// regressione, -0,04 con gli estremi; e sui dati veri la regressione lascia
+// un gradino di 0,38 hPa dove gli estremi ne lasciano 0,07. Il prezzo e' che
+// due campioni singoli pesano sulla retta: il rumore del BMP280 e' un paio di
+// centesimi, cioe' niente accanto ai decimi che si tolgono.
+//
 // Chi chiama deve gia' aver scartato i giorni MOSSI (vedi daily_p_var): una
-// burrasca infila il sinottico dentro quello che deve restare astronomico.
+// burrasca infila il sinottico dentro quello che deve restare astronomico, e
+// una burrasca non e' una retta.
 static inline bool daily_marea(const daily_t& d, int8_t out[24]) {
+  // La pendenza sinottica, in hPa al secondo. Zero se il giorno non ha due
+  // estremi distinti -- ma un giorno cosi' non ha nemmeno 24 ore piene, e
+  // viene rifiutato qui sotto.
+  double k = 0.0;
+  if (isfinite(d.pPrimo) && isfinite(d.pUltimo) && d.tpUltimo > d.tpPrimo)
+    k = ((double)d.pUltimo - (double)d.pPrimo) / (double)(d.tpUltimo - d.tpPrimo);
+
   double somma = 0.0;
   int    ore   = 0;
   double media[24];
   for (int h = 0; h < 24; h++) {
     if (d.mN[h] == 0) return false;
-    media[h] = d.mSomma[h] / d.mN[h];
+    // La retta si valuta nell'istante MEDIO del cesto, non a meta' dell'ora:
+    // un'ora con un buco ha il baricentro spostato, e il conto resta giusto.
+    const double tMedio = d.mTSomma[h] / d.mN[h];
+    media[h] = d.mSomma[h] / d.mN[h] - k * (tMedio - (double)d.tpPrimo);
     somma += media[h];
     ore++;
   }

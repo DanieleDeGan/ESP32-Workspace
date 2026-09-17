@@ -216,16 +216,27 @@ def ciclo_giornaliero(serie):
     Si toglie la media di CIASCUN GIORNO prima di accumulare, o la deriva
     sinottica (una settimana di alta pressione) entrerebbe nel ciclo e lo
     sporcherebbe con qualcosa che non e' periodico.
+
+    E prima della media si toglie la RETTA fra il primo e l'ultimo punto del
+    giorno, come fa il firmware dalla v76 (vedi daily_marea in daily.h): la
+    media toglie il livello ma non la pendenza, e un giorno in discesa diventa
+    un dente di sega col gradino sempre a mezzanotte. Gli estremi e non una
+    regressione, perche' una funzione di periodo 24 h vale lo stesso ai due
+    capi del giorno, mentre la retta ai minimi quadrati se ne mangia un pezzo.
     """
     import time as _t
     per_giorno = {}
     for ts, p in serie:
         g = _t.strftime("%Y-%m-%d", _t.localtime(ts))
-        per_giorno.setdefault(g, []).append((_t.localtime(ts).tm_hour, p))
+        per_giorno.setdefault(g, []).append((ts, _t.localtime(ts).tm_hour, p))
     acc = {}
     for _g, v in per_giorno.items():
         if len(v) < 18:                 # un giorno mezzo vuoto non fa media
             continue
+        v.sort()
+        (t0, _h0, p0), (t1, _h1, p1) = v[0], v[-1]
+        k = (p1 - p0) / (t1 - t0) if t1 > t0 else 0.0
+        v = [(h, p - k * (ts - t0)) for ts, h, p in v]
         m = sum(p for _h, p in v) / len(v)
         for h, p in v:
             acc.setdefault(h, []).append(p - m)

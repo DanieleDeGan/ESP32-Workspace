@@ -38,6 +38,7 @@ CDC, deep sleep, OTA, scritture su SD, default NVS) `docs/Trappole-Hardware.md`.
 | `tools/refresh_simula.py` | quanti refresh farebbe il pannello, rigiocando i CSV veri dei nodi |
 | `tools/analisi.py` | cosa dicono davvero i CSV dei nodi: le analisi che a bordo non si possono fare |
 | `tools/previsione_verifica.py` | **la previsione azzecca?** Confronta il trend a 3 h con quello che la pressione ha poi fatto, contro le due previsioni che non costano niente. `--marea` misura il ciclo giornaliero |
+| `tools/marea_simula.py` | **la taratura della marea rifatta fuori dalla scheda**, con gli algoritmi della `v75` e della `v76`, sui CSV scaricati. `--confronta <ip>` legge `marea_tab` e dice se la scheda coincide col modello: è la verifica dopo ogni OTA che tocchi la marea |
 | `tools/cambio_ora.py` | **le due notti all'anno in cui l'orologio salta**: rifà in Python il controllo del firmware e ci fa girare sopra cinque anni di calendario, perché il caso vero capita due volte l'anno e aspettarlo per provarlo vorrebbe dire scoprirlo tardi. Non parla con la scheda |
 
 
@@ -893,6 +894,35 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
       del giorno e con lei tutti e 24 gli scarti; una burrasca infila il
       sinottico dentro quello che deve restare astronomico. Di giorni ce n'è
       uno al giorno per sempre: si può essere schizzinosi.
+    - **Prima delle medie si toglie la RETTA del giorno** (`v76`), che fino
+      alla `v75` mancava. La media toglie il livello, non la pendenza: un
+      giorno che scende di 4 hPa è «quieto» per il filtro, e da solo fa un
+      dente di sega da ±2 hPa col gradino **sempre fra le 21 e le 22 UTC** (la
+      mezzanotte locale dove i CSV si spezzano). Con qualche giorno in
+      discesa di fila non si media via, si accumula: il 17/09/2026
+      `marea_tab` aveva −22 alle 21 e +51 alle 22, e il Δ3h fra mezzanotte e
+      le tre era spostato di −0,6…−0,8 hPa.
+      - **La retta passa per il primo e l'ultimo campione, non è una
+        regressione**: una marea di periodo 24 h vale lo stesso ai due capi del
+        giorno, la retta ai minimi quadrati no (su una marea sintetica inventa
+        −1,34 hPa/giorno). Si valuta nell'**istante medio** di ogni cesto
+        orario (`mTSomma`), così un'ora con un buco resta giusta.
+      - **Provato con una replica esatta**: `tools/marea_simula.py` rifà la
+        taratura sui CSV veri e il 17/09 ha dato la tabella della scheda
+        (`v75`) identica, 24 valori su 24. Dopo un OTA e un `rifai`,
+        `--confronta <ip>` dice se la scheda coincide col modello `v76`:
+        fatto il 17/09 subito dopo l'OTA, **identica**, e i riepiloghi rifatti
+        uguali byte per byte a quelli di prima. Con la cura il residuo ciclico del Δ3h
+        corretto scende da 0,41 a 0,12 hPa e il gradino da +0,73 a −0,07.
+    - **Una data entra UNA volta sola** (`v76`, `mareaGiornoNuovo()`), dal primo
+      nodo che la chiude buona, e solo se viene **dopo** l'ultima entrata
+      (`data` in NVS, AAAAMMGG). Fino alla `v75` entrava una volta per nodo:
+      due sensori a pochi metri non fanno due prove della stessa giornata, e
+      col peso a 1/8 la tabella ricordava quattro giorni invece di otto. La
+      condizione «dopo» tiene anche i giorni in ordine in un `rifai` con storici
+      di lunghezza diversa; il prezzo è che i giorni più vecchi del secondo
+      nodo restano fuori. Se il primo nodo ha la giornata incompleta o mossa,
+      la data resta libera e la porta il secondo.
     - **Media mobile con peso da 1 a 1/8**: il primo giorno *è* la tabella, poi
       si muove piano. Un ciclo che cambia con la stagione non deve inseguire la
       giornata.
@@ -958,6 +988,10 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
         sarebbe la curva giusta spostata di un'ora o due, e nessun numero
         esposto la distinguerebbe da una buona. Così invece la scheda riparte
         da zeri e si ritara da sola.
+      - **E a `MAR3` nella `v76`**, per la stessa ragione: la tabella di prima
+        conteneva il dente di sega dei giorni in discesa. Dopo quell'OTA va
+        lanciato `POST /api/nodi/riepilogo/rifai`, o la tabella ripartirebbe
+        da zero e si riempirebbe un giorno per notte.
     - **Il giorno in cui l'orologio salta non entra nella taratura**
       (`giornoCambiaOra()`, `v66`). I CSV sono spezzati per giorno **locale**,
       quindi quel file copre 23 o 25 ore:

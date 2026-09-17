@@ -1,5 +1,63 @@
 # Stazione meteo e-ink — piano di lavoro
 
+## Aggiornamento del 2026-09-17 — la marea aveva un gradino a mezzanotte (hub `v76`), e la cella rallenta
+
+**La tabella della marea conteneva un falso.** `daily_marea()` toglieva a ogni
+ora la media del giorno, ma non la **pendenza** del giorno. Un giorno in cui
+la pressione scende di 4 hPa passa il filtro dei giorni quieti (≤ 5 hPa), e
+le sue prime ore escono «alte» e le ultime «basse»: un dente di sega col
+gradino sempre fra le 21 e le 22 UTC, cioè alla mezzanotte locale dove i CSV
+si spezzano. Sulla scheda: `marea_tab` −22 alle 21, **+51 alle 22**. Fra
+mezzanotte e le tre la correzione del Δ3h valeva −0,6…−0,8 hPa, oltre la
+soglia di 0,5 della «lieve discesa».
+
+- **Come si è visto**: guardando i 24 valori, che è il motivo per cui la `v64`
+  li espone. Un gradino da 0,73 hPa in un'ora non è un fenomeno fisico.
+- **Replica esatta prima di correggere**: `tools/marea_simula.py` rifà il
+  firmware passo per passo (ordine dei nodi, filtri, `float`, aritmetica
+  intera) sui CSV veri dal 27/08 dà la tabella della scheda **identica**, 24
+  valori su 24, 33 giorni, 1,76 hPa. Solo dopo lo si è usato per provare la
+  cura.
+- **La cura (`v76`)**: prima delle medie orarie si toglie la **retta fra il
+  primo e l'ultimo campione**. Non una regressione: una marea di periodo 24 h
+  vale lo stesso ai due capi del giorno, mentre la retta ai minimi quadrati se
+  ne mangia un pezzo (su una marea sintetica pura inventa −1,34 hPa/giorno di
+  pendenza; gli estremi −0,04).
+- **Secondo difetto, trovato leggendo il codice**: ogni data entrava **una
+  volta per nodo**. Due sensori a pochi metri non sono due prove della stessa
+  giornata: col peso a 1/8 la tabella ricordava quattro giorni invece di otto.
+  Ora una data entra una volta sola, dal primo nodo che la chiude buona, e solo
+  se viene dopo l'ultima entrata.
+- **Risultato sui dati**: gradino da +0,73 a −0,07 hPa; ricompare il secondo
+  massimo delle 23 locali (la S2 da manuale, già vista a mano l'8/09); residuo
+  ciclico del Δ3h corretto da **0,41 a 0,12 hPa**; previsione, calcolata
+  giorno per giorno con la tabella che la scheda avrebbe avuto, **+1,6 punti**
+  sul nodo a muro e **+2,1** su quello a batteria (dal 01/09, ~4500 casi
+  ciascuno). Poco, ma nello stesso verso su entrambi.
+- **Il magic NVS passa a `MAR3`**: la tabella vecchia non si distingue da una
+  buona se non guardando i valori uno per uno, quindi si butta. Dopo l'OTA va
+  lanciato `POST /api/nodi/riepilogo/rifai`, che la ricostruisce dai giorni
+  sulla card. **Tabella attesa dal simulatore** (18 giorni, 1,73 hPa, ultimo
+  16/09): `1 -8 -25 -32 -26 9 23 53 83 88 58 27 -4 -37 -61 -76 -85 -69 -25 10
+  23 27 20 13`. Se la scheda dà altro, il C e il modello non coincidono.
+- **Provato sulla scheda lo stesso giorno**: OTA alle 07:58 (9 s), `rifai`
+  finito in meno di 20 s, e `marea_simula.py --confronta` ha detto
+  **IDENTICA** contro il modello `v76`, 24 valori su 24. I riepiloghi rifatti
+  sono identici byte per byte a quelli di prima: la retta tocca solo la marea.
+
+**La cella del nodo a batteria rallenta.** Dal 14/09 verso le 20 la tensione
+scendeva di **−12,9 mV/giorno** contro i −1,5 dei cinque giorni prima; dal
+16/09 mattina **−6,1**, e −5,8 nelle ultime 12 ore (3978 mV, livello 4/5, il
+17/09 alle 07). Escluse come cause, sui campioni grezzi: risvegli in più
+(nessun salto di `seq`), veglia più lunga (il periodo misurato dall'hub, che è
+veglia + 300 s, non si è mosso di più di 30 ms), sensori accesi nel sonno (ΔT
+col nodo a muro fermo a −0,07…−0,10 °C), temperatura e umidità. Restavano due
+letture: la cella che attraversa un tratto più ripido della sua curva, o un
+carico nuovo da ~0,6 mA sulla millefori. Un carico continuo darebbe una
+**retta**; una pendenza che si dimezza da sola è ciò che prevedeva la prima.
+Sono solo 24 ore, e i blocchi da 12 h oscillano molto: da ricontrollare il
+18-19/09 prima di chiudere la questione.
+
 ## Aggiornamento del 2026-09-14 — la cella sopra la curva tipica, e una frase sbagliata
 
 **`/batteria` ha una sezione nuova, «Sulla curva tipica di una Li-ion»**

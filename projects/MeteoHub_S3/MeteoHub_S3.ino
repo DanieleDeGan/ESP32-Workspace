@@ -170,7 +170,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v75";
+static const char FW_VERSION[] = "v76";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -2081,18 +2081,29 @@ static void seedForecastDaSD()
 //
 // UNA TABELLA SOLA per tutti i nodi, non una per nodo: la marea e' una
 // proprieta' del posto, non del sensore, e due nodi nella stessa casa misurano
-// lo stesso ciclo. Averne una sola la fa anche convergere in meta' tempo.
+// lo stesso ciclo.
+//
+// E PER LO STESSO MOTIVO OGNI DATA ENTRA UNA VOLTA SOLA (v76), dal primo nodo
+// che la chiude buona. Fino alla v75 entrava una volta per nodo, con l'idea che
+// due nodi facessero convergere in meta' tempo: non e' cosi', perche' due
+// sensori a pochi metri non fanno due prove indipendenti della stessa giornata
+// -- ne fanno una sola, contata due volte. Col peso a 1/8 la tabella ricordava
+// quattro giorni invece di otto, e `marea_giorni` contava giorni-nodo.
 static const char* MAREA_NS   = "marea";
 // "MAR2" da v66: la tabella e' passata da ora locale a ora UTC, e una tabella
 // vecchia riletta dalla NVS sarebbe la curva giusta spostata di una o due ore.
 // Il magic cambia apposta: cosi' la scheda riparte da zeri e si ritara sola,
 // invece di applicare per giorni una correzione sfasata che nessun numero
 // esposto distingue da una buona (letteralmente il difetto di v63).
-static const uint32_t MAREA_MAGIC = 0x4D415232;   // "MAR2"
+// "MAR3" da v76, per la stessa ragione: la tabella di prima conteneva il dente
+// di sega dei giorni in discesa (vedi daily_marea), e nessun numero esposto la
+// distingue da una buona tranne i 24 valori guardati uno per uno.
+static const uint32_t MAREA_MAGIC = 0x4D415233;   // "MAR3"
 
 static int8_t   s_mareaTab[24];
 static uint16_t s_mareaGiorni = 0;      // quanti giorni sono entrati nella media
 static time_t   s_mareaUltima = 0;      // quando e' stata aggiornata l'ultima volta
+static uint32_t s_mareaData   = 0;      // l'ultima DATA entrata, come AAAAMMGG (v76)
 
 uint16_t app_marea_giorni()  { return s_mareaGiorni; }
 time_t   app_marea_ultima()  { return s_mareaUltima; }
@@ -2128,6 +2139,7 @@ static void mareaCarica() {
       p.getBytes("tab", s_mareaTab, sizeof(s_mareaTab)) == sizeof(s_mareaTab)) {
     s_mareaGiorni = p.getUShort("giorni", 0);
     s_mareaUltima = (time_t)p.getUInt("ultima", 0);
+    s_mareaData   = p.getUInt("data", 0);
   }
   p.end();
   if (s_mareaGiorni > 0) remote_set_marea(s_mareaTab);
@@ -2140,7 +2152,33 @@ static void mareaSalva() {
   p.putBytes("tab", s_mareaTab, sizeof(s_mareaTab));
   p.putUShort("giorni", s_mareaGiorni);
   p.putUInt("ultima", (uint32_t)s_mareaUltima);
+  p.putUInt("data", s_mareaData);
   p.end();
+}
+
+// "2026-09-16" -> 20260916, 0 se la stringa non e' una data. Un intero cosi'
+// si confronta con < e >, che e' tutto quello che serve qui.
+static uint32_t mareaDataNum(const char* giorno) {
+  int a = 0, m = 0, g = 0;
+  if (sscanf(giorno, "%4d-%2d-%2d", &a, &m, &g) != 3) return 0;
+  return (uint32_t)(a * 10000 + m * 100 + g);
+}
+
+// Una data entra solo se viene DOPO l'ultima entrata (v76). Due effetti con una
+// regola sola:
+//  - il secondo nodo che chiude la stessa giornata non la rimette in media
+//    (il perche' sta sopra, accanto a MAREA_NS);
+//  - la media mobile vede i giorni in ordine. Il riepilogo alterna i nodi un
+//    giorno per giro, quindi con due storici di lunghezza diversa un `rifai`
+//    proporrebbe un 20/08 dopo un 27/08, e con il peso fisso un giorno vecchio
+//    conterebbe come uno di ieri. Quei giorni vecchi restano fuori: meglio
+//    fuori che dentro nell'ordine sbagliato.
+// Se il primo nodo non ha la giornata buona (incompleta, o mossa), la data
+// resta libera e il secondo la puo' portare: e' il caso in cui avere due nodi
+// serve davvero.
+static bool mareaGiornoNuovo(const char* giorno) {
+  const uint32_t n = mareaDataNum(giorno);
+  return n != 0 && n > s_mareaData;
 }
 
 // Il giorno in cui l'orologio civile salta: dura 23 o 25 ore, e non e' un
@@ -2183,7 +2221,8 @@ static bool giornoCambiaOra(const char* giorno) {
 // la tabella) e scende fino a 1/8: cosi' converge subito e poi si muove piano,
 // che e' quello che serve a un ciclo che cambia con la stagione e non con la
 // giornata.
-static void mareaAggiungiGiorno(const int8_t giorno[24], time_t quando) {
+static void mareaAggiungiGiorno(const int8_t giorno[24], time_t quando,
+                                uint32_t data) {
   const uint16_t peso = (s_mareaGiorni < 8) ? (s_mareaGiorni + 1) : 8;
   for (int h = 0; h < 24; h++) {
     const long vecchio = s_mareaTab[h];
@@ -2194,6 +2233,7 @@ static void mareaAggiungiGiorno(const int8_t giorno[24], time_t quando) {
   }
   if (s_mareaGiorni < 0xFFFF) s_mareaGiorni++;
   s_mareaUltima = quando;
+  s_mareaData   = data;
   mareaSalva();
   remote_set_marea(s_mareaTab);
 }
@@ -2552,11 +2592,14 @@ static void riepilogoTick()
     //    di variazione in 24 h e' gia' un passaggio frontale, e quel giorno la
     //    marea non si misura -- se ne misurera' un altro, ce n'e' uno al
     //    giorno per sempre.
+    // E una data entra una volta sola, dal primo nodo che la porta buona
+    // (v76, vedi mareaGiornoNuovo).
     int8_t mareaGiorno[24];
     if (complPct >= 90.0f && fabsf(daily_p_var(d)) <= 5.0f &&
+        mareaGiornoNuovo(giorno) &&
         !giornoCambiaOra(giorno) && daily_marea(d, mareaGiorno))
     {
-      mareaAggiungiGiorno(mareaGiorno, d.ultimo);
+      mareaAggiungiGiorno(mareaGiorno, d.ultimo, mareaDataNum(giorno));
       Serial.printf("[marea] %s %s: giorno %u in media, ampiezza %.2f hPa\n",
                     n.nome, giorno, (unsigned)app_marea_giorni(), app_marea_ampiezza());
     }
@@ -2615,6 +2658,7 @@ bool app_riepilogo_ricalcola(const char* nodo)
     memset(s_mareaTab, 0, sizeof(s_mareaTab));
     s_mareaGiorni = 0;
     s_mareaUltima = 0;
+    s_mareaData   = 0;      // o nessun giorno ricostruito rientrerebbe (v76)
     mareaSalva();
     remote_set_marea(nullptr);
   }

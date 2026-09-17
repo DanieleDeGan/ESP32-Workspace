@@ -90,6 +90,15 @@ del fuso ricavato da `mktime` (`v65`) e il giorno del cambio ora (`v66`) — e l
 cura per entrambi è stata **esporre i 24 valori** (`v64`), non ragionarci
 sopra. Il giudizio sul guadagno resta da rifare a fine settembre.
 
+**Terzo difetto, `v76` (2026-09-17)**: la taratura toglieva la media del
+giorno ma non la **pendenza**, e i giorni in discesa lasciavano nella tabella
+un gradino a mezzanotte locale (+0,73 hPa fra le 21 e le 22 UTC); in più ogni
+data entrava una volta per nodo. Ora si toglie la retta fra primo e ultimo
+campione e una data entra una volta sola. Visto, anche questo, **solo dai 24
+valori**; provato prima con `tools/marea_simula.py`, che rifà la taratura sui
+CSV e aveva dato la tabella della scheda identica. Residuo ciclico del Δ3h da
+0,41 a 0,12 hPa, previsione +1,6/+2,1 punti sulle due settimane di dati.
+
 Il testo originale, per il perché lungo:
 
 **Misurato l'8 settembre 2026 con `tools/previsione_verifica.py`: la previsione
