@@ -531,6 +531,36 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     driver, che ne tiene **uno solo**. La richiesta ha una **fase sua**
     (`loop_max_dove="cielo"`) e la durata dell'ultima sta in `/api/cielo`: un
     servizio diventato lento si deve vedere, non nascondere.
+  - **E quel tetto non copriva il DNS, che è l'unico pezzo senza** (`v77`,
+    2026-09-19). `setConnectTimeout()`/`setTimeout()` valgono per connessione e
+    lettura; la risoluzione del nome passa da `getaddrinfo()` di lwIP, che
+    **riprova da sé** e non prende timeout. Misurato con la rete di casa giù la
+    sera del 18/09: `loop_max_ms` **9503** in fase `cielo`, quasi il doppio dei
+    5 s che questo file credeva di poter costare al massimo.
+    - **L'indirizzo si risolve UNA VOLTA e si tiene** (`s_ip`): dal secondo
+      tentativo in poi si connette per IP e il DNS esce dal giro del `loop()`.
+      Si butta quando il connect fallisce o quando `GET` torna un codice
+      **negativo** (errore di trasporto, non una risposta): un CDN cambia IP, e
+      restare appesi a quello di ieri sarebbe un guasto permanente che si
+      ripara solo riavviando. Un 4xx/5xx invece è una risposta vera e l'IP
+      resta buono.
+    - **L'host si dichiara per NOME anche connettendosi per IP**, e non è un
+      dettaglio: provato il 19/09 contro il server vero, `Host: 94.130.142.35`
+      risponde **404 nginx**, `Host: api.open-meteo.com` risponde 200. Funziona
+      perché `HTTPClient::connect()` trova il client già connesso e lo usa
+      com'è (`HTTPClient.cpp:1074`), quindi il nome serve solo all'intestazione.
+    - **La durata si scrive anche quando il tentativo FALLISCE.** Fino alla
+      `v76` `ultimaDurataMs` si aggiornava solo in fondo al percorso riuscito:
+      `/api/cielo` mostrava per sempre l'ultimo tempo **buono** mentre il loop
+      restava fermo, e l'episodio si vedeva solo di rimbalzo in `loop_max_ms`,
+      che però non dice **quante volte** è successo. La richiesta che si pianta
+      è esattamente quella la cui durata interessa.
+    - **Dopo tre errori di fila l'attesa raddoppia** (5 → 10 → 20 minuti, e
+      torna a 5 al primo successo): un'interruzione di rete dura ore, e
+      insistere ogni 5 minuti vuol dire un timeout di connessione — cioè un
+      buco nel prelievo dei DATA — dodici volte l'ora per tutta la durata del
+      guasto. Il tetto sta **sotto** i 90 minuti di scadenza del dato, così
+      quando la rete torna l'icona si riprende prima di sparire dal pannello.
   - **Sul pannello: due icone quando il tempo cambia entro tre ore**, una sola
     quando non cambia — ed è la seconda a valere i 24 px che la riga costa. Un
     pannello che dice «sereno» mentre fra due ore piove non serve a decidere se

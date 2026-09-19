@@ -32,12 +32,35 @@ static const uint32_t CIELO_SCADE_S = 90UL * 60UL;
 // loop), cosi' un servizio diventato lento si vede invece di nascondersi.
 static const uint16_t CIELO_TIMEOUT_MS = 2500;
 
+// ...ma quel tetto copriva CONNESSIONE e LETTURA, non la risoluzione del nome,
+// che e' l'unico pezzo senza timeout: `hostByName()` passa da `getaddrinfo()`
+// di lwIP, che riprova da se' e con il DNS irraggiungibile tiene fermo il
+// chiamante per una decina di secondi. Misurato il 2026-09-18 con la rete di
+// casa giu' (router o ISP): `loop_max_ms` **9503** in fase "cielo", cioe' quasi
+// il doppio del tetto che questo file credeva di avere. Per questo l'indirizzo
+// si risolve UNA VOLTA e si tiene: dal secondo tentativo in poi si connette
+// all'IP e il DNS non entra piu' nel giro del loop().
+static const char*    CIELO_HOST  = "api.open-meteo.com";
+static const uint16_t CIELO_PORTA = 80;
+
+// Un'interruzione di rete vera dura ore, non minuti: insistere ogni 5 minuti
+// vuol dire un timeout di connessione — cioe' un buco nel prelievo dei DATA —
+// dodici volte l'ora per tutta la durata del guasto. Dopo tre errori di fila
+// l'attesa raddoppia fino a 20 minuti, e torna a 5 al primo successo. Il tetto
+// sta **sotto** i 90 minuti di scadenza del dato: quando la rete torna,
+// l'icona si riprende prima di sparire dal pannello.
+static const uint8_t  CIELO_ERRORI_LENTI   = 3;
+static const uint32_t CIELO_RIPROVA_MAX_MS = 20UL * 60UL * 1000UL;
+
 static const char* CIELO_NS = "cielo";
 
 static CieloStato s_st;
 static float      s_lat = NAN, s_lon = NAN;
 static uint32_t   s_prossimaMs = 0;
 static bool       s_subito     = true;   // il primo giro utile, non fra mezz'ora
+static IPAddress  s_ip;                  // l'indirizzo risolto, finche' risponde
+static bool       s_ipValido    = false;
+static uint8_t    s_erroriDiFila = 0;
 
 // ---------------------------------------------------------------------
 //  WMO -> le sette classi
@@ -171,6 +194,14 @@ static int jsonArray(const String& s, const char* oggetto, const char* campo,
 static void erroreCon(const char* testo) {
   snprintf(s_st.errore, sizeof(s_st.errore), "%s", testo);
   s_st.fallite++;
+  // **Anche un tentativo fallito ha una durata, ed e' quella che interessa**:
+  // la richiesta che va bene costa 140 ms, quella che si pianta costa secondi.
+  // Fino alla v76 `ultimaDurataMs` si scriveva solo in fondo al percorso
+  // riuscito, quindi `/api/cielo` mostrava per sempre l'ultimo tempo BUONO
+  // mentre il loop restava fermo — e l'episodio si vedeva solo di rimbalzo, in
+  // `loop_max_ms`, che pero' non dice quante volte e' successo. `ultimaMs` e'
+  // gia' l'istante d'inizio di questo tentativo.
+  if (s_st.ultimaMs) s_st.ultimaDurataMs = (uint16_t)(millis() - s_st.ultimaMs);
   // `valido` NON si spegne qui: un dato di dieci minuti fa resta buono anche
   // se l'ultimo tentativo e' andato storto. A spegnerlo e' la scadenza, che
   // e' l'unica cosa capace di distinguere "vecchio" da "andato male una
@@ -188,9 +219,9 @@ static void aggiorna() {
   // timezone=UTC di proposito: le ore tornano in UTC e restano confrontabili
   // con tutto il resto della scheda senza passare dal fuso, che su questo
   // progetto ha gia' fatto danni una volta (v65).
-  char url[420];
-  snprintf(url, sizeof(url),
-           "http://api.open-meteo.com/v1/forecast"
+  char path[420];
+  snprintf(path, sizeof(path),
+           "/v1/forecast"
            "?latitude=%.2f&longitude=%.2f"
            "&current=weather_code,temperature_2m,apparent_temperature,"
            "relative_humidity_2m,precipitation,wind_speed_10m,wind_gusts_10m"
@@ -201,12 +232,41 @@ static void aggiorna() {
            "&timezone=UTC",
            s_lat, s_lon, CIELO_ORE_MAX, CIELO_GIORNI_MAX);
 
+  // Il nome si risolve solo quando non si ha gia' un indirizzo: e' l'unica
+  // parte del giro senza un tetto, e pagarla 48 volte al giorno per un dato
+  // che non cambia e' proprio il rischio che si vuole togliere dal loop().
+  if (!s_ipValido) {
+    if (WiFi.hostByName(CIELO_HOST, s_ip) != 1 || s_ip == IPAddress((uint32_t)0)) {
+      erroreCon("nome non risolto");
+      return;
+    }
+    s_ipValido = true;
+  }
+
+  // Ci si connette all'IP — `connect(IPAddress,...)` non passa dal DNS — e il
+  // tetto qui c'e'. Se il connect fallisce l'indirizzo si butta: un CDN cambia
+  // IP, e restare appesi a quello di ieri sarebbe un guasto permanente che si
+  // ripara solo riavviando.
   WiFiClient client;
+  if (!client.connect(s_ip, CIELO_PORTA, CIELO_TIMEOUT_MS)) {
+    s_ipValido = false;
+    erroreCon("connessione fallita");
+    return;
+  }
+
   HTTPClient http;
   http.setConnectTimeout(CIELO_TIMEOUT_MS);
   http.setTimeout(CIELO_TIMEOUT_MS);
   http.setReuse(false);
-  if (!http.begin(client, url)) { erroreCon("URL rifiutato"); return; }
+  // L'host si dichiara per NOME anche se si e' connessi per indirizzo:
+  // dall'altra parte c'e' un CDN, e `Host: 1.2.3.4` non e' un sito che
+  // conosce. `HTTPClient::connect()` trova il client gia' connesso e lo usa
+  // com'e' (HTTPClient.cpp:1074), quindi il nome serve solo all'intestazione.
+  if (!http.begin(client, CIELO_HOST, CIELO_PORTA, path)) {
+    client.stop();
+    erroreCon("URL rifiutato");
+    return;
+  }
 
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
@@ -214,6 +274,12 @@ static void aggiorna() {
     snprintf(buf, sizeof(buf), "HTTP %d", code);
     erroreCon(buf);
     http.end();
+    // Un codice NEGATIVO non viene dal server ma dal trasporto (connessione
+    // caduta, lettura scaduta): l'indirizzo potrebbe non essere piu' quello
+    // buono, quindi si butta e il prossimo tentativo ririsolve. Un 4xx/5xx
+    // invece e' una risposta vera — l'IP e' giusto e ririsolvere non
+    // cambierebbe niente.
+    if (code < 0) s_ipValido = false;
     return;
   }
 
@@ -323,7 +389,20 @@ void cielo_loop() {
 
   s_subito = false;
   aggiorna();
-  s_prossimaMs = millis() + (s_st.errore[0] ? CIELO_RIPROVA_MS : CIELO_PERIODO_MS);
+
+  uint32_t attesa = CIELO_PERIODO_MS;
+  if (s_st.errore[0]) {
+    if (s_erroriDiFila < 255) s_erroriDiFila++;
+    attesa = CIELO_RIPROVA_MS;
+    if (s_erroriDiFila > CIELO_ERRORI_LENTI) {
+      const uint8_t raddoppi = s_erroriDiFila - CIELO_ERRORI_LENTI;
+      attesa <<= (raddoppi > 2 ? 2 : raddoppi);       // 5 -> 10 -> 20 min
+      if (attesa > CIELO_RIPROVA_MAX_MS) attesa = CIELO_RIPROVA_MAX_MS;
+    }
+  } else {
+    s_erroriDiFila = 0;
+  }
+  s_prossimaMs = millis() + attesa;
 }
 
 bool cielo_get(CieloStato* out) {

@@ -170,7 +170,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v76";
+static const char FW_VERSION[] = "v77";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW

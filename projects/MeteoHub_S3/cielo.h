@@ -99,7 +99,9 @@ struct CieloStato {
   uint16_t prese;          // richieste riuscite da quando la scheda e' su
   uint16_t fallite;
   uint32_t ultimaMs;       // millis() dell'ultimo tentativo, 0 = mai
-  uint16_t ultimaDurataMs; // quanto e' costata al loop(): si misura, non si stima
+  uint16_t ultimaDurataMs; // quanto e' costata al loop() l'ULTIMO TENTATIVO,
+                           // riuscito o no (da v77): si misura, non si stima —
+                           // e quello che si pianta e' proprio quello che costa
   uint16_t ultimiByte;
   char     errore[48];     // vuoto se l'ultima e' andata bene
 };
