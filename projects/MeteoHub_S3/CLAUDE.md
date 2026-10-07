@@ -33,7 +33,7 @@ CDC, deep sleep, OTA, scritture su SD, default NVS) `docs/Trappole-Hardware.md`.
 | `tools/controlla_piedi.py` | verifica che ogni pagina porti il piede di navigazione completo. Con `--host <ip>` controlla quelle che la **scheda** serve davvero e confronta `fw_caricata` col firmware che gira |
 | `tools/larghezza_testo.py` | quanto è largo un testo sul pannello **prima** di disegnarlo: somma gli `xAdvance` dei glifi nei `.h` veri dei font |
 | `tools/pannello_png.py` | scarica `/api/pannello/anteprima` e ne fa un PNG, senza dipendenze: il pannello si guarda da riga di comando |
-| `tools/pannello_mock.py` | **Adafruit_GFX rifatto in Python**: disegna una pagina del pannello senza la scheda, con i font e le icone veri. `--valida <ip>` e `--valida-dettaglio <ip>` lo confrontano col vetro pixel per pixel. **Tre regole in cima al file** (cast nello stesso posto, divisione che tronca verso lo zero, aritmetica in `float`): ognuna e stata una differenza da un pixel |
+| `tools/pannello_mock.py` | **Adafruit_GFX rifatto in Python**: disegna una pagina del pannello senza la scheda, con i font e le icone veri. `--valida <ip>` e `--valida-dettaglio <ip>` lo confrontano col vetro pixel per pixel. **Quattro regole in cima al file** (cast nello stesso posto, divisione che tronca verso lo zero, aritmetica in `float`, e una riga nuova sul pannello va aggiunta anche qui **il giorno stesso**): ognuna e stata una differenza da un pixel, tranne l'ultima che e' stata il 12 % |
 | `tools/icone.py` | disegna le icone e le mostra a schermo per giudicarle; con `--c` genera `icone.h` |
 | `tools/refresh_simula.py` | quanti refresh farebbe il pannello, rigiocando i CSV veri dei nodi |
 | `tools/analisi.py` | cosa dicono davvero i CSV dei nodi: le analisi che a bordo non si possono fare |
@@ -500,6 +500,33 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     **mostra a schermo prima di generarle**: a 14-20 px e 1 bit si vede la
     silhouette, non il dettaglio, quindi quelle che funzionano sono pochissime e
     l'unico modo di accorgersene è guardarle — non immaginarsele.
+
+- **Il mock ha imparato la riga del cielo con un mese di ritardo** (2026-10-05).
+  La riga esiste dalla `v68`; `tools/pannello_mock.py` non la conosceva, quindi
+  calcolava i blocchi **24 px piu' alti** e `--valida` dava **12 % di pixel
+  diversi**. Non un'etichetta fuori posto: un layout sfalsato sbaglia tutto, e
+  nel diff ogni elemento appare **sdoppiato in verticale** — e' quello il
+  segnale che dice "altezza", non "disegno". Nel frattempo il file era stato
+  toccato due volte (`v72`, `v74`) senza che nessuno rilanciasse `--valida`:
+  **lo strumento era fermo mentre sembrava vivo**, ed e' il modo peggiore in
+  cui un verificatore si rompe.
+  - **Una riga nuova sul pannello va aggiunta ANCHE al mock, il giorno stesso.**
+    E' la quarta regola in cima a quel file, e l'unica costata piu' di un pixel.
+  - **Resta fuori una cifra, per costruzione**: `/api/nodi` espone due decimali
+    ma quella che il pannello mostra la decide la **terza**. La scheda formatta
+    un `float` vero; il mock riparte da `"23.55"`, che come float32 vale
+    23,549999 — se il valore della scheda era 23,5505 lei scrive `23,6` e lui
+    `23,5`. Sono ~160 pixel, capita a ogni paio di validazioni, e **nessuno dei
+    due ha sbagliato**. `valida()` non lo tollera in silenzio — maschererebbe un
+    difetto vero proprio li' — ma lo **prova**: rende di nuovo la scena con
+    l'altra resa possibile e, se torna a zero, dichiara quale valore era al
+    limite. Se non torna a zero, il conto resta quello che era: provato
+    introducendo apposta uno spostamento da **un pixel**, che infatti continua a
+    essere segnalato (uscita 1).
+  - Tre casi di prova nuovi (`cielo`, `cielo_cambia`, `cielo_pieno`) coprono i
+    due rami della riga — una icona, e due con la freccia quando il tempo cambia
+    entro tre ore — piu' il peggiore per la larghezza: `SD NON MONTATA` accanto
+    a due icone e alla parola `temporale`.
 
 - **La previsione VERA, e perché non la fa il barometro** (`cielo.*`, `v67`-`v68`,
   2026-09-09). Sul pannello e nella dashboard c'è un'icona del cielo — sole,
@@ -1310,6 +1337,29 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
   piede.
   - **Le due etichette (min e max) stanno all'ALTEZZA a cui stanno i valori**,
     quindi sono anche l'asse verticale e non costano una riga.
+    - **Finche' c'e' posto** (`v78`, 2026-10-05). Sotto i 2 gradi di escursione
+      lo `span` resta fisso a 24 decimi, quindi i valori veri occupano solo la
+      parte centrale e le due baseline distano `escursione/24 * altezza`: con
+      0,6 gradi su 36 px fanno **nove pixel**, mentre `24,0` ne misura
+      **sedici** (da baseline-12 a baseline+4, la virgola scende sotto). Il
+      minimo finiva scritto **dentro** al massimo. Sotto gli **0,8 gradi** di
+      escursione si toccano, e in casa l'escursione sta sotto quella soglia da
+      ottobre a marzo: un difetto che d'estate non esiste.
+    - Quando non ci stanno **si allontanano dal punto medio fino alla distanza
+      minima e non oltre**, col tetto a `y0` (sopra c'e' la riga delle
+      variazioni) e il fondo a `y1 + 5`. E' la deviazione piu' piccola che
+      risolve il caso: restano nell'ordine giusto e si perde solo la
+      corrispondenza esatta fra la quota dell'etichetta e quella del punto, che
+      a nove pixel non era leggibile comunque.
+    - **La distanza minima si MISURA** con `getTextBounds()` sulle due stringhe
+      vere (fondo di quella sopra contro cima di quella sotto, piu' un pixel),
+      non e' una costante: con un font diverso si aggiorna da se'.
+    - **A giornata esattamente piatta se ne scrive UNA**: due volte lo stesso
+      numero non e' un asse. Stessa regola dello zero sui persi.
+    - Trovato il **2026-10-05 sull'anteprima**, non sul vetro, e il caso di
+      prova `fermo` di `tools/pannello_mock.py` ora lo fabbrica: tutte le altre
+      serie di prova fanno due gradi, cioe' stavano **esattamente** sopra la
+      soglia. Gli altri sei casi dopo la correzione sono identici bit per bit.
   - **La scala verticale e' propria del nodo**, con almeno 2 gradi di respiro
     piu' un margine: senza il minimo, una giornata ferma diventerebbe una linea
     che ondeggia di dieci pixel per due decimi di grado.

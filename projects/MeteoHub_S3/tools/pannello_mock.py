@@ -43,10 +43,28 @@ DUE REGOLE PER CHI LO TOCCA:
    Trovato dopo tre validazioni a zero: quelle erano state fatte con il
    barometro a -15 gradi, dove il troncamento non cade su un mezzo.
 
+QUATTRO REGOLE, non tre: la quarta e' del 2026-10-05. **Una riga nuova sul
+pannello va aggiunta ANCHE qui, il giorno stesso.** La riga del cielo esiste
+dalla `v68` e questo file non l'ha saputa per quasi un mese: senza di lei i
+blocchi gli venivano 24 px piu' alti e `--valida` dava il 12 % di pixel
+diversi — non su un'etichetta, su TUTTO, perche' un layout sfalsato sbaglia
+ogni cosa. Nel frattempo ci si e' passati sopra due volte (`v72`, `v74`)
+senza accorgersene, e lo strumento era fermo mentre sembrava vivo. Il segnale
+da riconoscere nel diff: ogni elemento **sdoppiato in verticale** vuol dire
+spostamento, cioe' altezza, non disegno.
+
 FINO A DOVE CI SI PUO' FIDARE. `--valida` fa ridisegnare la scheda, ne scarica
 l'anteprima e la confronta pixel per pixel con la stessa scena disegnata qui:
 e' la prova che il mock non stia mentendo, e va rifatta quando si tocca il
-codice di disegno del `.ino`. Restano fuori due cose, per costruzione: il mock
+codice di disegno del `.ino`. E resta fuori **una cifra**: `/api/nodi` espone due decimali, ma quella che il
+pannello mostra la decide la terza. La scheda formatta un `float` vero, qui si
+riparte da "23.55" — che come float32 vale 23,549999 — e se il valore suo era
+23,5505 lei scrive "23,6" e il mock "23,5": ~160 pixel e nessuno dei due ha
+sbagliato. Succede a ogni paio di validazioni, quindi `valida()` non lo tollera
+in silenzio (maschererebbe un difetto vero proprio li') ma lo **prova**: rende
+di nuovo la scena con l'altra resa possibile, in tutte le combinazioni, e se
+una torna a zero dichiara quale valore era al limite. Se non torna a zero, il
+conto resta quello che era. Restano fuori due cose, per costruzione: il mock
 non sa **quali dati** avra' il pannello (glieli si danno) e non sa niente del
 **vetro** -- contrasto, aloni, refresh parziali.
 """
@@ -418,7 +436,13 @@ class Tela(object):
 def fmtNum(v, dec):
     if v is None:
         return "--"
-    return ("%%.%df" % dec % v).replace(".", ",")
+    # Il .ino scrive `String(v, dec)` su un `float`, cioe' arrotonda il valore
+    # in SINGOLA precisione -- e' la regola 3 in cima a questo file, applicata
+    # qui. Caso vero del 2026-10-05: 23,55 da /api/nodi vale 23,549999... per
+    # la scheda, che scrive "23,5"; in doppia precisione sta appena SOPRA il
+    # mezzo e darebbe "23,6". Una cifra, 164 pixel, e un confronto che non
+    # torna a zero senza che ci sia niente di rotto.
+    return ("%%.%df" % dec % _f32(v)).replace(".", ",")
 
 
 def fmtDelta(v, dec):
@@ -482,11 +506,22 @@ SERIE_B = [27.4, 27.4, 27.4, 27.4, 27.4, 27.4, 27.4, 27.4, 27.4, 27.4, 27.4,
            27.2, 27.4, 27.4, 27.5]
 
 
-def dati_prova(quanti=2, buchi=False, muto=False):
+# Una giornata FERMA: 0,6 gradi di escursione in 24 ore, cioe' il 2026-10-05
+# dentro casa. Non e' un caso di fantasia -- e' meta' dell'anno, da ottobre a
+# marzo, e fino a quel giorno nessun caso di prova l'aveva mai disegnata: tutte
+# le serie qui sopra fanno due gradi, che e' esattamente la soglia sopra la
+# quale le etichette dell'asse non si toccano.
+SERIE_FERMA = [round(23.7 + (v - 26.5) * 0.3, 1) for v in SERIE_A]
+
+
+def dati_prova(quanti=2, buchi=False, muto=False, fermo=False):
     """I nodi da disegnare. `buchi` apre due finestre senza dati nella serie
     del primo nodo -- il caso che la curva deve saper mostrare; `muto` spegne
     il secondo nodo, che e' l'altra condizione che cambia la pagina."""
     a, b = list(SERIE_A), list(SERIE_B)
+    if fermo:
+        a = list(SERIE_FERMA)
+        b = [round(v - 0.1, 1) for v in SERIE_FERMA]
     if buchi:
         for i in range(12, 15):
             a[i] = None
@@ -672,8 +707,36 @@ def drawGrafico24h(t, n, x0, y0, x1, y1, yEtichette, yOrari=0):
     span = (vMax - vMin) or 1
     yMax = y1 - _tronca((vMaxVero - vMin) * (y1 - y0), span)
     yMin = y1 - _tronca((vMinVero - vMin) * (y1 - y0), span)
-    t.drawRight(fmtNum(vMaxVero / 10.0, 1), x0 - 5, yMax + 5)
-    t.drawRight(fmtNum(vMinVero / 10.0, 1), x0 - 5, yMin + 5)
+    # Le due etichette si allontanano dal punto medio quando non ci stanno:
+    # vedi il commento lungo nel .ino. Il troncamento verso lo zero conta --
+    # distMin e' dispari.
+    sMax = fmtNum(vMaxVero / 10.0, 1)
+    sMin = fmtNum(vMinVero / 10.0, 1)
+    _bxA, byA, _bwA, bhA = t.getTextBounds(sMax)
+    _bxB, byB, _bwB, _bhB = t.getTextBounds(sMin)
+    distMin = (byA + bhA) - byB + 1
+    if vMinVero == vMaxVero:
+        # Giornata piatta: due volte lo stesso numero non e' un asse.
+        t.drawRight(sMax, x0 - 5, yMax + 5)
+    else:
+        baseMax = yMax + 5
+        baseMin = yMin + 5
+        if baseMin - baseMax < distMin:
+            tetto = y0 - byA
+            fondo = y1 + 5
+            centro = _tronca(baseMax + baseMin, 2)
+            baseMax = centro - _tronca(distMin, 2)
+            baseMin = baseMax + distMin
+            if baseMax < tetto:
+                baseMax = tetto
+                baseMin = baseMax + distMin
+            if baseMin > fondo:
+                baseMin = fondo
+                baseMax = baseMin - distMin
+            if baseMax < tetto:
+                baseMax = tetto
+        t.drawRight(sMax, x0 - 5, baseMax)
+        t.drawRight(sMin, x0 - 5, baseMin)
 
     xPrec = yPrec = None
     n_slot = len(serie)
@@ -802,7 +865,62 @@ def blocco_compatto(t, n, y, h):
     _barometro(t, n, y + h - 6)
 
 
-def scena_nodi(t, nodi, allarme=""):
+# L'icona per una classe di cielo. `None` per "ignoto": chi disegna deve poter
+# decidere di non disegnare niente, che e' diverso da disegnare un punto
+# interrogativo. I nomi sono quelli che /api/cielo gia' espone, cioe' l'uscita
+# di cielo_classe_nome() -- qui non si riclassifica niente.
+CIELO_ICONE = {
+    "sereno":         "IC_CIELO_SOLE",
+    "poco nuvoloso":  "IC_CIELO_SOLE_NUVOLA",
+    "coperto":        "IC_CIELO_NUVOLA",
+    "nebbia":         "IC_CIELO_NEBBIA",
+    "pioggia":        "IC_CIELO_PIOGGIA",
+    "neve":           "IC_CIELO_NEVE",
+    "temporale":      "IC_CIELO_TEMPORALE",
+}
+
+
+def cielo_disegnabile(c):
+    """La condizione di nodiRigaBassa() per il cielo: dato fresco E classe con
+    un'icona. Un dato valido ma `ignoto` non prende i 24 px."""
+    return bool(c) and c.get("valido") and c.get("adesso") in CIELO_ICONE
+
+
+def drawCielo(t, c, yBase=NODI_BOT):
+    """Traduzione di drawCielo(): due icone quando il tempo cambia entro tre
+    ore, una sola quando non cambia, e si misura tutto partendo da destra --
+    la riga la divide con la pillola d'allarme, che cresce da sinistra."""
+    if not cielo_disegnabile(c):
+        return
+    adesso, breve = c["adesso"], c.get("breve", c["adesso"])
+    cambia = breve != adesso
+    ic2 = CIELO_ICONE.get(breve) if cambia else None
+    # Il testo e' la classe di ARRIVO quando cambia: se fra tre ore piove, la
+    # parola che serve e' "pioggia".
+    testo = breve if cambia else adesso
+
+    t.setFont("FreeSans9pt7b")
+    _bx, _by, bw, _bh = t.getTextBounds(testo)
+    larg = 20 + 4 + ((20 + 10) if ic2 else 0) + bw
+    x = 388 - larg
+
+    iw, ih, ib = icona(CIELO_ICONE[adesso])
+    t.drawBitmap(x, yBase - 20, ib, iw, ih)
+    x += 20 + 4
+    if ic2:
+        # La freccia fra le due: due trattini e una punta, disegnati e non
+        # scritti, perche' "->" in FreeSans a 9pt e' un trattino e un maggiore.
+        t.fillRect(x, yBase - 11, 6, 2)
+        t.fillTriangle(x + 6, yBase - 14, x + 6, yBase - 6, x + 10, yBase - 10)
+        x += 10
+        iw, ih, ib = icona(ic2)
+        t.drawBitmap(x, yBase - 20, ib, iw, ih)
+        x += 20 + 4
+    t.setCursor(x, yBase - 5)
+    t.print(testo)
+
+
+def scena_nodi(t, nodi, allarme="", cielo=None):
     t.fillScreen(BIANCO)
     t.setTextColor(NERO)
     if not nodi:
@@ -810,13 +928,20 @@ def scena_nodi(t, nodi, allarme=""):
         t.drawCenter("NESSUN NODO", 200, 145)
         return
     quanti = min(len(nodi), NODI_VISIBILI)
-    bot = NODI_BOT - (ALLARME_H if allarme else 0)
+    # nodiRigaBassa(): la riga in fondo c'e' se c'e' un allarme OPPURE il
+    # cielo. La condizione sta QUI in un posto solo, come nel .ino -- copiata
+    # a mano si e' gia' sfasata una volta, il giorno in cui il cielo e'
+    # arrivato, e l'icona era finita sopra l'asse dell'ultimo grafico.
+    riga_bassa = bool(allarme) or cielo_disegnabile(cielo)
+    bot = NODI_BOT - (ALLARME_H if riga_bassa else 0)
     h = _tronca(bot - NODI_TOP, quanti)
     comodo = quanti <= NODI_COMODI_FINO_A and h >= NODI_H_GRAFICO
     for i in range(quanti):
         (blocco_comodo if comodo else blocco_compatto)(t, nodi[i], NODI_TOP + i * h, h)
     if allarme:
         drawAllarme(t, allarme)
+    if cielo_disegnabile(cielo):
+        drawCielo(t, cielo)
 
 
 # ---------------------------------------------------------------------------
@@ -1011,7 +1136,7 @@ def _nodi_da_api(host):
     return nodi
 
 
-def _confronta(vero, mio):
+def _confronta(vero, mio, zitto=False):
     diversi = 0
     for y in range(H):
         for x in range(W):
@@ -1019,6 +1144,8 @@ def _confronta(vero, mio):
             b = (mio[y * STRIDE + (x >> 3)] >> (7 - (x & 7))) & 1
             if a != b:
                 diversi += 1
+    if zitto:
+        return diversi
     print("pixel diversi: %d su %d (%.3f%%)"
           % (diversi, W * H, diversi * 100.0 / (W * H)))
     if diversi:
@@ -1077,10 +1204,20 @@ def valida_dettaglio(host):
         print("il nodo %r della pagina non e' in elenco" % nodo)
         return -1
 
+    def rendi(lista):
+        tt = Tela()
+        scena_dettaglio(tt, lista[0])
+        return bytearray(tt.bin())
+
     t = Tela()
     scena_dettaglio(t, nodi[0])
-    diversi = _confronta(vero, bytearray(t.bin()))
+    diversi = _confronta(vero, bytearray(t.bin()), zitto=True)
+    if diversi == 0:
+        print("pixel diversi: 0 su %d: il mock e il vetro coincidono." % (W * H))
+    else:
+        diversi = _spiega_limite(vero, nodi, rendi, diversi)
 
+    # La pagina si rimette SEMPRE: questa scheda sta appesa a un muro.
     _api(host, "/api/pannello/vai?i=%d" % prima, post=True)
     return diversi
 
@@ -1109,11 +1246,82 @@ def valida(host):
         return -1
 
     nodi = _nodi_da_api(host)
+    # Il cielo si legge DOPO il ridisegno e insieme ai nodi: e' una riga del
+    # pannello come le altre, e dalla v68 decide anche l'altezza dei blocchi.
+    cielo = _api(host, "/api/cielo")
     vero = bytearray(scarica(host))
 
     t = Tela()
-    scena_nodi(t, nodi, allarme_da_stato(st))
-    return _confronta(vero, bytearray(t.bin()))
+    scena_nodi(t, nodi, allarme_da_stato(st), cielo)
+    def rendi(lista):
+        tt = Tela()
+        scena_nodi(tt, lista, allarme_da_stato(st), cielo)
+        return bytearray(tt.bin())
+
+    diversi = _confronta(vero, bytearray(t.bin()), zitto=True)
+    if diversi == 0:
+        print("pixel diversi: 0 su %d: il mock e il vetro coincidono." % (W * H))
+        return 0
+    return _spiega_limite(vero, nodi, rendi, diversi)
+
+
+# Un valore a meta' strada fra due decimi NON e' ricostruibile dal JSON, e il
+# confronto esatto ne paga il prezzo. `/api/nodi` espone DUE decimali, ma la
+# cifra che il pannello mostra la decide la TERZA: la scheda formatta un
+# `float` vero (`String(v, dec)`), mentre qui si riparte da "23.55", che come
+# float32 vale 23,549999 -- e se il valore della scheda era 23,5505 lei scrive
+# "23,6" e questo "23,5". Una cifra, ~164 pixel, e nessuno dei due ha sbagliato
+# niente.
+#
+# Misurato il 2026-10-05: sei valori (due nodi x T/RH/pressione), e con la
+# terza cifra a 5 la resa e' incerta per circa meta' di quei casi. Capitava
+# quindi a ogni paio di validazioni, e si presentava come un difetto.
+#
+# Invece di tollerare silenziosamente uno scarto -- che mascherebbe un difetto
+# vero proprio li' -- si PROVA: per ogni valore al limite si rende la scena con
+# l'altra resa possibile, in tutte le combinazioni. Se una torna a zero, le
+# differenze sono spiegate PER INTERO e lo si dice con nomi e numeri. Se non
+# torna a zero, resta un difetto e il conto non e' stato nascosto.
+def _limite(v):
+    """La resa di `v` cambia se il valore vero stava un millesimo piu' su?"""
+    if v is None:
+        return False
+    return ("%.1f" % _f32(v)) != ("%.1f" % _f32(v + 0.001))
+
+
+def _spiega_limite(vero, nodi, rendi, diversi):
+    """`rendi(lista_nodi)` -> i 15.000 byte della scena. Cosi' vale per la
+    pagina nodi e per quella dettaglio, che differiscono solo nel disegno."""
+    import copy
+    import itertools
+    sospetti = [(i, k) for i, nd in enumerate(nodi)
+                for k in ("t", "rh", "p") if _limite(nd.get(k))]
+    if not sospetti:
+        print("Nessun valore e' al limite fra due decimi: le differenze non si")
+        print("spiegano con l'arrotondamento, e vanno guardate.")
+        return diversi
+
+    for quanti in range(1, len(sospetti) + 1):
+        for combo in itertools.combinations(sospetti, quanti):
+            prova = copy.deepcopy(nodi)
+            for i, k in combo:
+                prova[i][k] += 0.001
+            if _confronta(vero, rendi(prova), zitto=True) == 0:
+                print("pixel diversi: %d, e sono SPIEGATI PER INTERO da un valore"
+                      % diversi)
+                print("a meta' strada fra due decimi, che il JSON a due decimali")
+                print("non sa restituire:")
+                for i, k in combo:
+                    print("  %s  %s = %s  -> la scheda ha scritto il decimo di sopra"
+                          % (nodi[i]["nome"], k, nodi[i][k]))
+                print("Il disegno coincide: rilanciare fra qualche minuto, con")
+                print("altri valori, per vedere lo zero.")
+                return 0
+
+    print("Ci sono valori al limite (%s) ma NON bastano a spiegare le"
+          % ", ".join("%s.%s" % (nodi[i]["nome"], k) for i, k in sospetti))
+    print("differenze: resta qualcosa da guardare.")
+    return diversi
 
 
 def casi(cartella):
@@ -1125,11 +1333,25 @@ def casi(cartella):
         ("muto",    dati_prova(muto=True),  "SD NON MONTATA"),
         ("tre",     dati_prova(quanti=3),   ""),
         ("quattro", dati_prova(quanti=4),   ""),
+        ("fermo",   dati_prova(fermo=True), ""),
         ("nessuno", [],                     ""),
+        # La riga del cielo (v68) nei suoi due rami: una icona quando il tempo
+        # non cambia, DUE piu' la freccia quando cambia entro tre ore -- che e'
+        # il ramo per cui quella riga vale i 24 px che costa. Il terzo caso e'
+        # il peggiore per la larghezza: la pillola piu' lunga accanto alle due
+        # icone e alla parola piu' lunga.
+        ("cielo",   dati_prova(),           "",
+         {"valido": True, "adesso": "coperto",       "breve": "coperto"}),
+        ("cielo_cambia", dati_prova(),      "",
+         {"valido": True, "adesso": "poco nuvoloso", "breve": "pioggia"}),
+        ("cielo_pieno",  dati_prova(),      "SD NON MONTATA",
+         {"valido": True, "adesso": "sereno",        "breve": "temporale"}),
     ]
-    for nome, nodi, al in prove:
+    for prova in prove:
+        nome, nodi, al = prova[0], prova[1], prova[2]
+        cielo = prova[3] if len(prova) > 3 else None
         t = Tela()
-        scena_nodi(t, nodi, al)
+        scena_nodi(t, nodi, al, cielo)
         p = os.path.join(cartella, "caso_%s.png" % nome)
         t.png(p, 2)
         print("%-9s %s  nero %.1f%%" % (nome, p, t.nero_pct()))

@@ -170,7 +170,7 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v77";
+static const char FW_VERSION[] = "v78";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -1466,11 +1466,64 @@ static void drawGrafico24h(int indice, int16_t x0, int16_t y0, int16_t x1, int16
   }
 
   // --- minimo e massimo, all'altezza a cui stanno -------------------------
+  // ...finche' c'e' posto, e una giornata ferma e' il caso in cui non ce n'e'.
+  // Sotto i 2 gradi di escursione lo `span` resta fisso a 24 decimi (vedi il
+  // respiro qui sopra), quindi i due valori veri occupano solo la parte
+  // centrale dell'area e le due baseline distano `escursione/24 * altezza`:
+  // con 0,6 gradi su 36 px di grafico fanno **nove pixel**, mentre "24,0"
+  // ne misura sedici -- da baseline-12 a baseline+4, perche' la virgola
+  // scende sotto. Il minimo finisce scritto dentro al massimo.
+  //
+  // Non si vedeva prima perche' d'estate l'escursione in casa sta sopra i due
+  // gradi: e' un difetto che compare in ottobre e dura fino a marzo. Trovato
+  // il 2026-10-05 sull'anteprima, non sul vetro.
+  //
+  // Quando non ci stanno si allontanano dal loro punto medio fino alla
+  // distanza minima e non oltre: e' la bugia piu' piccola che risolve il
+  // caso. L'una resta sopra l'altra, la scala e l'ordine non cambiano, e si
+  // perde solo la corrispondenza esatta fra la quota dell'etichetta e quella
+  // del punto -- che a nove pixel di distanza non era leggibile comunque.
   const int16_t span = (vMax - vMin) ? (vMax - vMin) : 1;
   const int16_t yMax = y1 - (int16_t)(((int32_t)(vMaxVero - vMin) * (y1 - y0)) / span);
   const int16_t yMin = y1 - (int16_t)(((int32_t)(vMinVero - vMin) * (y1 - y0)) / span);
-  drawRight(fmtNum(vMaxVero / 10.0f, 1), x0 - 5, yMax + 5);
-  drawRight(fmtNum(vMinVero / 10.0f, 1), x0 - 5, yMin + 5);
+
+  const String sMax = fmtNum(vMaxVero / 10.0f, 1);
+  const String sMin = fmtNum(vMinVero / 10.0f, 1);
+  // Misurata, non stimata: il fondo di quella sopra contro la cima di quella
+  // sotto, piu' un pixel perche' non si tocchino. Con un font diverso il
+  // numero si aggiorna da se'.
+  int16_t bxA, byA, bxB, byB; uint16_t bwA, bhA, bwB, bhB;
+  tela.getTextBounds(sMax, 0, 0, &bxA, &byA, &bwA, &bhA);
+  tela.getTextBounds(sMin, 0, 0, &bxB, &byB, &bwB, &bhB);
+  const int16_t distMin = (int16_t)(byA + (int16_t)bhA) - byB + 1;
+
+  // Una giornata esattamente piatta ha min e max uguali, e due volte lo stesso
+  // numero non e' un asse: se ne scrive UNO. Stessa regola dello zero sui
+  // persi, che non si disegna.
+  if (vMinVero == vMaxVero) {
+    drawRight(sMax, x0 - 5, yMax + 5);
+  } else {
+    int16_t baseMax = yMax + 5;
+    int16_t baseMin = yMin + 5;
+    if (baseMin - baseMax < distMin) {
+      // Il tetto e' `y0`: piu' su c'e' la riga delle variazioni. Il fondo e'
+      // lo stesso di sempre, `y1 + 5`; le ore dell'asse stanno a destra di
+      // `x0` e queste a sinistra, quindi non si incontrano.
+      const int16_t tetto  = y0 - byA;
+      const int16_t fondo  = y1 + 5;
+      const int16_t centro = (int16_t)((baseMax + baseMin) / 2);
+      baseMax = centro - distMin / 2;
+      baseMin = baseMax + distMin;
+      if (baseMax < tetto) { baseMax = tetto; baseMin = baseMax + distMin; }
+      if (baseMin > fondo) { baseMin = fondo; baseMax = baseMin - distMin; }
+      // Area troppo bassa per tenerle entrambe: meglio vicine che sopra la
+      // riga di un altro nodo. Oggi non capita -- il blocco comodo garantisce
+      // 26 px e ne servono 17 -- ma il grafico lo si e' gia' stretto una volta.
+      if (baseMax < tetto) baseMax = tetto;
+    }
+    drawRight(sMax, x0 - 5, baseMax);
+    drawRight(sMin, x0 - 5, baseMin);
+  }
 
   // --- la curva -----------------------------------------------------------
   int16_t xPrec = 0, yPrec = 0;
