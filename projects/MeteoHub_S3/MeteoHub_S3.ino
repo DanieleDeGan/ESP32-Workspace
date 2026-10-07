@@ -170,7 +170,13 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
-static const char FW_VERSION[] = "v78";
+// v79 (2026-10-07) — l'immagine della notte esce A GIRO: ognuna una volta
+// sola, e quando sono finite si ricomincia con un ordine nuovo. Prima si
+// sorteggiava fra tutte evitando solo quella di ieri, e con diciassette
+// immagini le ripetizioni si vedevano -- paradosso del compleanno, non un
+// generatore rotto. Il giro e' un seme in NVS piu' il nome dell'ultima uscita:
+// nessun elenco di "gia' viste", niente che cresca, e un OTA non lo azzera.
+static const char FW_VERSION[] = "v79";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -577,12 +583,18 @@ static const uint32_t CHECK_MS  = 5000UL;   // ogni quanto si guarda se e' cambi
 static bool     s_inSilenzio    = false;
 static uint8_t  s_pagPrimaSil   = 0;
 static uint8_t  s_pagSilScelta  = PAG_SIL_NESSUNA;
-// Modalita' "a caso fra tutte quelle sulla card": qui non c'e' uno slot, c'e'
-// un file. Il nome resta finche' dura la fascia; l'ultimo sorteggiato si
-// ricorda per non ripescarlo due notti di fila (in RAM: un riavvio che lo
-// dimentica non e' un guasto, e' solo una notte che puo' ripetersi).
+// Modalita' "fra tutte quelle sulla card": qui non c'e' uno slot, c'e' un
+// file. Il nome resta finche' dura la fascia; l'ultimo mostrato si ricorda per
+// non ripeterlo quando il giro RICOMINCIA (dentro un giro non puo' tornare da
+// se', ci pensa immagineDelGiro()). Questo resta in RAM: il giro vero vive in
+// NVS, e un riavvio che dimentica solo "quella di ieri" non e' un guasto --
+// e' una notte che, alla fine di un giro, puo' ripetersi.
 static char     s_silImgNome[IMG_NOME_MAX + 1]   = "";
 static char     s_silImgUltima[IMG_NOME_MAX + 1] = "";
+// Quante immagini restano nel giro dopo quella a schermo. Vale -1 finche' non
+// se n'e' scelta una: "non lo so" e "ne resta zero" sono due cose diverse, e
+// un contatore che partisse da 0 direbbe la seconda.
+static int      s_silGiroResta  = -1;
 // Quante pagine ha disegnato showPage(): serve solo a sapere se, al mattino,
 // sul vetro c'e' ancora l'immagine della notte o qualcosa che l'utente ha
 // chiesto nel frattempo dal tasto BOOT o dal web. Un confronto fra due numeri
@@ -2738,6 +2750,7 @@ size_t         app_tela_bytes()  { return IMG_BYTES; }
 // modo di distinguerle sarebbe guardare l'ora e fidarsi.
 bool app_pannello_sospeso()        { return s_inSilenzio; }
 const char* app_silenzio_immagine() { return s_silImgNome; }
+int         app_silenzio_giro_resta() { return s_silGiroResta; }
 uint32_t app_refresh_evitati()     { return s_nodiInvariati; }
 
 void app_chiedi_refresh()          { s_refreshChiesto = true; }
@@ -3573,53 +3586,206 @@ static void screenGrafico()
 // STESSA sequenza ad ogni riavvio, cioe' la stessa immagine tutte le notti
 // dopo ogni power-cycle -- che e' esattamente il difetto che si vorrebbe
 // evitare, ma silenzioso.
-// Un'immagine a caso fra TUTTE quelle sulla card, non solo fra le pagine in
-// elenco: l'archivio non ha il tetto dei sedici slot, e per disegnarla non
-// serve che sia una pagina -- screenImmagine() lavora su un nome di file.
+// Un'immagine fra TUTTE quelle sulla card, non solo fra le pagine in elenco:
+// l'archivio non ha il tetto dei sedici slot, e per disegnarla non serve che
+// sia una pagina -- screenImmagine() lavora su un nome di file.
 //
-// Due passate sulla directory invece di un elenco di nomi in RAM: quante
-// immagini ci siano lo decide la card (15.000 byte l'una su 14,9 GB), e
-// tenerne in memoria un numero fisso sarebbe un tetto arbitrario e MUTO --
-// esattamente il difetto che sd_img_page() ha gia' tolto alla pagina web. La
-// scansione costa due volte al giorno.
-struct SceltaImg { char* out; size_t cap; };
-static void sceltaImgCb(const char* nome, size_t, void* arg)
+// IL GIRO (v79). Fino alla v78 si sorteggiava ogni notte fra tutte, evitando
+// soltanto quella di ieri, e le ripetizioni si vedevano: con diciassette
+// immagini la probabilita' di ripescare una delle ultime cinque e' ~27% ogni
+// notte, e in due settimane qualcuna esce tre volte mentre altre non escono
+// mai. E' il paradosso del compleanno, non un generatore rotto -- ma da fuori
+// un pannello che rifa' la foto di tre giorni fa somiglia a un sorteggio
+// guasto. Ora le immagini escono A GIRO: ognuna una volta sola, e quando sono
+// finite si ricomincia con un ordine nuovo.
+//
+// COME, senza tenere un elenco ne' in RAM ne' sulla card: il giro e' un SEME
+// (uint32), e l'ordine delle immagini e' quello delle loro chiavi
+// hash(nome, seme). Si ricorda solo il NOME dell'ultima uscita, e la prossima
+// e' il suo SUCCESSORE in quell'ordine -- una passata sulla directory,
+// nessuna lista, niente che cresca col numero di immagini. Quando un
+// successore non c'e' piu', il giro e' finito: seme nuovo, ordine nuovo. E'
+// lo stesso motivo per cui sd_img_page() lavora a pagine e non riempie un
+// array: quante immagini ci siano lo decide la card, non una costante qui.
+//
+// Tre conseguenze, tutte volute:
+//  - un'immagine CARICATA a giro iniziato entra subito, se la sua chiave cade
+//    dopo quella dell'ultima uscita; altrimenti al giro dopo. Nessun
+//    azzeramento e nessun caso speciale da scrivere;
+//  - un'immagine CANCELLATA esce dal giro da sola, perche' il successore si
+//    cerca fra i file che ci sono adesso;
+//  - l'ordine di un giro non e' quello del giro prima, perche' il seme
+//    cambia. Con un elenco di "gia' viste" si sarebbe ripetuta ogni volta la
+//    stessa sequenza, e su un pannello che si guarda ogni sera si nota.
+//
+// Il seme e l'ultima uscita stanno in NVS perche' un giro dura diciassette
+// notti e un OTA ci cade dentro quasi sempre: tenendoli in RAM, ogni
+// aggiornamento avrebbe rimesso il difetto che questo codice serve a
+// togliere. Una scrittura per notte, come il contatore dei boot.
+static const char*    GIRO_NS    = "silgiro";
+static const uint32_t GIRO_MAGIC = 0x47495231;   // "GIR1"
+static uint32_t s_giroSeme = 0;                        // 0 = mai sorteggiato
+static char     s_giroUltimo[IMG_NOME_MAX + 1] = "";   // "" = giro appena iniziato
+
+// FNV-1a a 32 bit col seme come valore iniziale: due righe, nessuna tabella,
+// e cambiando seme cambia tutto l'ordine. Non serve che sia crittografica,
+// serve che sparga -- e si prova a mente.
+static uint32_t giroChiave(const char* nome, uint32_t seme)
 {
-  SceltaImg* s = (SceltaImg*)arg;
-  // Un nome piu' lungo del buffer NON si tronca: troncato comporrebbe il path
-  // di un file che non esiste, e la notte si passerebbe con "immagine non
-  // disponibile" sul pannello. Meglio lasciarlo vuoto e sorteggiarne un altro.
-  // Non capita alle immagini caricate dalla pagina (sd_img_name_safe le tiene
-  // entro IMG_NOME_MAX), capita a un file copiato a mano sulla card.
-  if (strlen(nome) >= s->cap) { s->out[0] = '\0'; return; }
-  strncpy(s->out, nome, s->cap - 1);
-  s->out[s->cap - 1] = '\0';
+  uint32_t h = seme ? seme : 2166136261UL;
+  for (const char* p = nome; *p; p++) {
+    h ^= (uint8_t)*p;
+    h *= 16777619UL;
+  }
+  return h;
 }
 
-static bool immagineACasoDallaCard(char* out, size_t cap, const char* evita)
+// L'ordine del giro: prima la chiave, a pari chiave il nome. Il pareggio non
+// va lasciato indefinito: due nomi con la stessa chiave sono improbabili (32
+// bit su diciassette nomi) ma se capitasse, senza un criterio stabile una
+// delle due immagini resterebbe fuori dal giro per sempre, in silenzio.
+static int giroCmp(uint32_t ha, const char* na, uint32_t hb, const char* nb)
+{
+  if (ha != hb) return (ha < hb) ? -1 : 1;
+  return strcmp(na, nb);
+}
+
+static void giroCarica()
+{
+  Preferences p;
+  if (!p.begin(GIRO_NS, true)) return;
+  if (p.getUInt("magic", 0) == GIRO_MAGIC) {
+    s_giroSeme = p.getUInt("seme", 0);
+    p.getString("ultimo", s_giroUltimo, sizeof(s_giroUltimo));
+  }
+  p.end();
+}
+
+static void giroSalva()
+{
+  Preferences p;
+  if (!p.begin(GIRO_NS, false)) return;
+  p.putUInt("magic", GIRO_MAGIC);
+  p.putUInt("seme", s_giroSeme);
+  p.putString("ultimo", s_giroUltimo);
+  p.end();
+}
+
+// Un seme diverso da quello di prima: con lo stesso seme l'ordine sarebbe
+// identico, cioe' il giro nuovo ripartirebbe dalla stessa immagine.
+static void giroNuovo()
+{
+  uint32_t s;
+  do { s = esp_random(); } while (s == 0 || s == s_giroSeme);
+  s_giroSeme = s;
+  s_giroUltimo[0] = '\0';
+}
+
+// Scegliere il successore e contare quante ne restano, in UNA passata: la
+// callback vede ogni nome una volta e non ne tiene in memoria nemmeno uno in
+// piu' di quello buono.
+struct GiroScelta {
+  uint32_t    seme;
+  bool        dopoValido;   // false = giro appena iniziato, si prende il minimo
+  uint32_t    hDopo;
+  const char* nomeDopo;
+  char*       out;          // il migliore trovato finora, e il risultato
+  size_t      cap;
+  uint32_t    hOut;
+  bool        trovato;
+  int         restanti;     // quante restano nel giro, questa compresa
+  int         totale;       // quante immagini usabili ci sono in tutto
+};
+
+static void giroCb(const char* nome, size_t, void* arg)
+{
+  GiroScelta* g = (GiroScelta*)arg;
+  // Un nome piu' lungo del buffer NON si tronca: troncato comporrebbe il path
+  // di un file che non esiste, e la notte si passerebbe con "immagine non
+  // disponibile" sul pannello. Non capita alle immagini caricate dalla pagina
+  // (sd_img_name_safe le tiene entro IMG_NOME_MAX), capita a un file copiato
+  // a mano sulla card: resta fuori dal giro, come prima restava fuori dal
+  // sorteggio.
+  if (strlen(nome) >= g->cap) return;
+  g->totale++;
+
+  const uint32_t h = giroChiave(nome, g->seme);
+  // Gia' uscita in questo giro: tutto cio' che sta PRIMA dell'ultima uscita,
+  // lei compresa.
+  if (g->dopoValido && giroCmp(h, nome, g->hDopo, g->nomeDopo) <= 0) return;
+  g->restanti++;
+
+  if (!g->trovato || giroCmp(h, nome, g->hOut, g->out) < 0) {
+    strncpy(g->out, nome, g->cap - 1);
+    g->out[g->cap - 1] = '\0';
+    g->hOut    = h;
+    g->trovato = true;
+  }
+}
+
+// L'uscita di stanotte diventa il punto da cui ripartira' la prossima: e'
+// l'unica cosa che il giro ricorda, ed e' il momento in cui la NVS si scrive.
+static void giroRegistra(const char* nome)
+{
+  strncpy(s_giroUltimo, nome, sizeof(s_giroUltimo) - 1);
+  s_giroUltimo[sizeof(s_giroUltimo) - 1] = '\0';
+  giroSalva();
+}
+
+// La prossima immagine del giro. `evita` e' quella mostrata ieri: serve solo
+// quando il giro RICOMINCIA -- dentro un giro un'immagine non puo' tornare, e
+// con una sola immagine sulla card rifarla non e' una ripetizione, e' l'unica
+// che c'e'. `restano` riceve quante ne mancano DOPO questa.
+static bool immagineDelGiro(char* out, size_t cap, const char* evita, int* restano)
 {
   if (!out || cap == 0) return false;
   out[0] = '\0';
+  if (restano) *restano = -1;              // -1 = non lo so, 0 = ne resta zero
+  if (s_giroSeme == 0) giroNuovo();        // primo uso, o NVS mai scritta
 
-  // quante=0: non consegna niente, conta e basta -- la callback non viene mai
-  // chiamata, quindi l'arg nullo qui e' sicuro.
-  int totale = 0;
-  sd_img_page(sceltaImgCb, nullptr, 0, 0, "", &totale);
-  if (totale <= 0) return false;
+  // Il primo tentativo cerca nel giro in corso; se un successore non c'e'
+  // piu', il giro e' finito e il secondo riparte con un seme nuovo. I
+  // tentativi oltre il secondo servono solo a non far ricominciare il giro
+  // dall'immagine di ieri (capita una volta su diciassette): si cambia seme,
+  // cioe' ordine, e si riprova.
+  for (int tent = 0; tent < 6; tent++) {
+    GiroScelta g;
+    memset(&g, 0, sizeof(g));
+    g.seme       = s_giroSeme;
+    g.dopoValido = (s_giroUltimo[0] != '\0');
+    g.hDopo      = g.dopoValido ? giroChiave(s_giroUltimo, s_giroSeme) : 0;
+    g.nomeDopo   = s_giroUltimo;
+    g.out        = out;
+    g.cap        = cap;
+    out[0]       = '\0';
 
-  SceltaImg s = { out, cap };
-  // Due tentativi: con poche immagini la stessa uscirebbe due notti di fila
-  // abbastanza spesso, e un pannello che non e' cambiato somiglia a un
-  // pannello fermo. Con una sola immagine sulla card non c'e' scelta, e
-  // rifarla e' giusto: non e' una ripetizione, e' l'unica che c'e'.
-  for (int giro = 0; giro < 2; giro++)
-  {
-    out[0] = '\0';
-    sd_img_page(sceltaImgCb, &s, (int)(esp_random() % (uint32_t)totale), 1, "", nullptr);
-    if (out[0] == '\0') continue;      // nome troppo lungo, o file sparito nel frattempo
-    if (totale < 2 || evita == nullptr || strcmp(out, evita) != 0) return true;
+    sd_img_page(giroCb, &g, 0, 0x7FFFFFFF, "", nullptr);
+
+    if (g.trovato) {
+      if (g.totale > 1 && evita && *evita && strcmp(out, evita) == 0) {
+        giroNuovo();                       // il giro nuovo ripartiva da ieri
+        continue;
+      }
+      giroRegistra(out);
+      if (restano) *restano = g.restanti - 1;
+      return true;
+    }
+    // Card assente, vuota, o solo nomi inutilizzabili: non c'e' niente da
+    // mostrare, e il chiamante lo sa gestire (lascia il pannello com'era).
+    if (g.totale == 0) return false;
+    giroNuovo();                           // giro finito: si ricomincia
   }
-  return out[0] != '\0';
+
+  // Sei tentativi esauriti: succede solo con due o tre immagini sulla card,
+  // dove "non ripetere quella di ieri" e "ricominciare il giro" possono
+  // chiedere la stessa cosa. Si mostra quella che c'e' -- meglio una
+  // ripetizione che un pannello lasciato com'era -- e l'uscita si registra
+  // comunque, o il giro non avanzerebbe mai da quel punto.
+  if (out[0] != '\0') {
+    giroRegistra(out);
+    return true;
+  }
+  return false;
 }
 
 static uint8_t immagineACaso()
@@ -3999,6 +4165,9 @@ void setup()
   // la correzione, invece di classificare un trend grezzo e correggersi al
   // secondo pacchetto.
   mareaCarica();
+  // Il giro delle immagini della notte: va ripreso da dov'era, o un OTA a
+  // meta' giro rimetterebbe le ripetizioni che il giro serve a togliere.
+  giroCarica();
 
   pages_begin();
   msg_begin();
@@ -4283,7 +4452,8 @@ void loop()
       // schermata che della notte non parla.
       if (silPag == PAG_SIL_CARD) {
         s_pagSilScelta = PAG_SIL_NESSUNA;
-        if (immagineACasoDallaCard(s_silImgNome, sizeof(s_silImgNome), s_silImgUltima)) {
+        if (immagineDelGiro(s_silImgNome, sizeof(s_silImgNome),
+                            s_silImgUltima, &s_silGiroResta)) {
           strncpy(s_silImgUltima, s_silImgNome, sizeof(s_silImgUltima) - 1);
           s_silImgUltima[sizeof(s_silImgUltima) - 1] = '\0';
 
@@ -4295,7 +4465,12 @@ void loop()
           segnaFull();
           pages_disegnata(millis());
           s_silDisegnoAl = s_disegniPagina;   // sul vetro c'e' un file, non una pagina
-          Serial.printf("[epd] ore di silenzio: /images/%s.bin e mi fermo\n", s_silImgNome);
+          // Quante ne restano nel giro si stampa perche' e' l'unico modo di
+          // vedere da fuori che il giro sta girando: una sola notte non
+          // distingue un giro da un sorteggio fortunato.
+          Serial.printf("[epd] ore di silenzio: /images/%s.bin e mi fermo"
+                        " (nel giro ne restano %d)\n",
+                        s_silImgNome, s_silGiroResta);
         } else {
           // Nessuna immagine sulla card (o card assente): ci si ferma com'era.
           // Disegnare l'avviso "immagine non disponibile" spegnerebbe la pagina
@@ -4336,6 +4511,7 @@ void loop()
         // scelto.
         if (s_disegniPagina == s_silDisegnoAl) showPage(pages_current());
         s_silImgNome[0] = '\0';
+        s_silGiroResta = -1;   // di giorno non c'e' un giro a schermo
       }
       // Si torna indietro solo se nessuno ha toccato niente nel frattempo:
       // altrimenti si porterebbe via la pagina che l'utente ha scelto a mano.

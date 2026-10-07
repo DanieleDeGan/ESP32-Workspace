@@ -77,6 +77,12 @@ bool app_pannello_sospeso();
 // cosa che non e' quella mostrata.
 const char* app_silenzio_immagine();
 
+// Quante immagini restano nel giro della notte DOPO quella a schermo, -1 se
+// non ce n'e' una. Serve a vedere da fuori che il giro gira: una notte sola
+// non distingue un giro da un sorteggio fortunato, e questo numero che scende
+// di uno a notte -- per poi tornare al totale -- lo dice al primo sguardo.
+int app_silenzio_giro_resta();
+
 // Quante volte il pannello NON e' stato ridisegnato perche' il contenuto era
 // identico a quello gia' a schermo.
 uint32_t app_refresh_evitati();

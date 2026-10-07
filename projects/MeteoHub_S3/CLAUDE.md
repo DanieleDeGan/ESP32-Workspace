@@ -39,6 +39,7 @@ CDC, deep sleep, OTA, scritture su SD, default NVS) `docs/Trappole-Hardware.md`.
 | `tools/analisi.py` | cosa dicono davvero i CSV dei nodi: le analisi che a bordo non si possono fare |
 | `tools/previsione_verifica.py` | **la previsione azzecca?** Confronta il trend a 3 h con quello che la pressione ha poi fatto, contro le due previsioni che non costano niente. `--marea` misura il ciclo giornaliero |
 | `tools/marea_simula.py` | **la taratura della marea rifatta fuori dalla scheda**, con gli algoritmi della `v75` e della `v76`, sui CSV scaricati. `--confronta <ip>` legge `marea_tab` e dice se la scheda coincide col modello: è la verifica dopo ogni OTA che tocchi la marea |
+| `tools/giro_simula.py` | **il giro delle immagini della notte, rifatto fuori dalla scheda**: nove prove sui nomi veri (`--host <ip>` li prende dalla card) — giro completo senza ripetizioni, ordine diverso ogni giro, niente ripetizioni a cavallo, immagine aggiunta/cancellata, una sola immagine, una scrittura NVS per notte. Su hardware la stessa verifica costerebbe diciassette notti |
 | `tools/cambio_ora.py` | **le due notti all'anno in cui l'orologio salta**: rifà in Python il controllo del firmware e ci fa girare sopra cinque anni di calendario, perché il caso vero capita due volte l'anno e aspettarlo per provarlo vorrebbe dire scoprirlo tardi. Non parla con la scheda |
 
 
@@ -189,12 +190,57 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
     - **Card vuota o assente: non si disegna niente** e ci si ferma com'era.
       Un «immagine non disponibile» spegnerebbe la pagina dei nodi per tutta
       la notte in cambio di un messaggio che nessuno sta guardando.
-    - **Due passate su `/images` invece di un elenco di nomi in RAM**
-      (`sd_img_page()` conta, poi consegna l'n-esima): quante immagini ci
-      siano lo decide la card, e un tetto in memoria sarebbe arbitrario e
-      muto. Costa due scansioni al giorno. Il sorteggio evita l'immagine
-      della notte prima — su un pannello «non è cambiato» e «è fermo» si
-      somigliano troppo.
+    - **LE IMMAGINI ESCONO A GIRO** (`v79`, 2026-10-07): ognuna una volta
+      sola, e quando sono finite si ricomincia con un ordine nuovo. Fino alla
+      `v78` si sorteggiava fra tutte evitando solo quella di ieri, e **le
+      ripetizioni si vedevano**: con diciassette immagini la probabilità di
+      ripescare una delle ultime cinque è ~27 % ogni notte, e in due settimane
+      qualcuna esce tre volte mentre altre non escono mai. È il paradosso del
+      compleanno, non un generatore rotto — ma un pannello che rifà la foto di
+      tre giorni fa somiglia a un sorteggio guasto, ed è stato segnalato
+      guardandolo.
+      - **Il giro è un SEME, non un elenco di «già viste»**: l'ordine è quello
+        delle chiavi `hash(nome, seme)` (FNV-1a a 32 bit), e come stato si
+        tiene **solo il nome dell'ultima uscita**. La prossima è il suo
+        SUCCESSORE in quell'ordine — **una** passata sulla directory (prima
+        erano due), nessuna lista, niente che cresca col numero di immagini.
+        Quando un successore non c'è più il giro è finito: seme nuovo, ordine
+        nuovo. È la stessa regola per cui `sd_img_page()` lavora a pagine:
+        quante immagini ci siano lo decide la card, non una costante qui.
+      - **Un elenco delle viste sarebbe stato peggio di così**, non solo più
+        grosso: l'ordine di ogni giro sarebbe stato lo stesso (si pesca a caso
+        fra le rimaste, ma l'insieme di partenza è sempre quello), mentre col
+        seme ogni giro ha una sequenza sua.
+      - **Il seme e l'ultima uscita stanno in NVS** (namespace `silgiro`,
+        magic `GIR1`): un giro dura diciassette notti e un OTA ci cade dentro
+        quasi sempre — in RAM, ogni aggiornamento avrebbe rimesso il difetto.
+        Una scrittura per notte, come `boot_n`.
+      - **Un'immagine caricata a giro iniziato entra subito** se la sua chiave
+        cade dopo quella dell'ultima uscita, altrimenti al giro dopo; una
+        **cancellata** esce da sé, perché il successore si cerca fra i file
+        che ci sono adesso. Nessun azzeramento e nessun caso speciale.
+      - **A pareggio di chiave decide il nome**: due nomi con lo stesso hash
+        sono improbabili (32 bit su diciassette nomi) ma senza un criterio
+        stabile una delle due immagini resterebbe fuori dal giro **per
+        sempre, in silenzio**.
+      - **La stessa non esce due notti di fila nemmeno a cavallo di due
+        giri**: se il giro nuovo ripartirebbe da quella di ieri si cambia
+        seme e si rifà (capita una volta su N). Su un pannello «non è
+        cambiato» e «è fermo» si somigliano troppo.
+      - **`silenzio_giro_resta` in `/api/pannello`**, e in testa a `/pannello`
+        «nel giro ne restano N» (-1 = nessuna immagine a schermo, cioè di
+        giorno): una notte sola non distingue un giro da un sorteggio
+        fortunato, e un numero che scende di uno a notte — per poi tornare al
+        totale — lo dice al primo sguardo. È la stessa ragione per cui esiste
+        `marea_tab`.
+      - **Provato fuori dalla scheda** con `python tools/giro_simula.py
+        [--host <ip>]`, che rifà l'algoritmo riga per riga e verifica le nove
+        proprietà sui nomi veri: il giro completo senza ripetizioni, l'ordine
+        diverso ad ogni giro, nessuna ripetizione a cavallo, l'immagine
+        aggiunta, quella cancellata, il caso di una sola immagine sulla card e
+        la scrittura NVS una per notte. **Su hardware "non si ripete" si
+        verifica in diciassette notti**, e un difetto si vedrebbe come «mi
+        sembra che si ripeta» — cioè come il difetto di prima.
   - **BOOT breve scorre anche le pagine escluse dalla rotazione.** Il tasto è
     la via di governo quando la rete è giù: non deve dipendere da come è
     configurata la rotazione.

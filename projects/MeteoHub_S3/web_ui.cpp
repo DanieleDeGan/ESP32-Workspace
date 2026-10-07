@@ -1979,15 +1979,20 @@ static const char PANNELLO_PAGE[] PROGMEM = R"HTML(
  <div class="esito" id="ss"></div>
  <p class="muted" id="prientro" hidden>Qualunque pagina guardata durante le ore
  di silenzio si prende il pannello fino al mattino &mdash; giusto cos&igrave;, chi
- l'ha chiesta la voleva. Questo pulsante torna all'immagine, e siccome la
- sorteggia di nuovo serve anche a <b>cambiarla</b> se quella di stanotte non
- piace. Compare solo dentro la fascia.</p>
+ l'ha chiesta la voleva. Questo pulsante torna all'immagine, e siccome prende
+ la <b>prossima del giro</b> serve anche a <b>cambiarla</b> se quella di
+ stanotte non piace &mdash; quella scartata ha comunque consumato il suo turno
+ e tornera' al giro seguente. Compare solo dentro la fascia.</p>
  <p class="muted">Con una sola pagina attiva non ruota: non c'&egrave; dove andare, e un
  cambio &egrave; sempre un refresh completo (~2,2 s, e lampeggia).</p>
  <p class="muted">&laquo;Fra tutte quelle sulla card&raquo; pesca nell'archivio
  completo delle immagini, non solo fra le pagine in elenco: non consuma uno
- slot, e la stessa non esce due notti di fila. Quale sia toccata a stanotte lo
- dice l'intestazione qui sopra.</p>
+ slot. Le immagini escono <b>a giro</b> &mdash; ognuna una volta sola, e quando
+ sono finite si ricomincia con un ordine nuovo &mdash; quindi nessuna si ripete
+ finch&eacute; non si sono viste tutte. Quale sia toccata a stanotte, e quante
+ ne restano nel giro, lo dice l'intestazione qui sopra. Un'immagine caricata a
+ giro iniziato entra subito se il suo posto nell'ordine non &egrave; ancora
+ passato, altrimenti al giro dopo; una cancellata esce da s&eacute;.</p>
  <p class="muted">Scegliendo una pagina, in quelle ore il pannello ci va e
  <b>smette di aggiornarsi</b> del tutto: due refresh invece di ~640. Con
  &laquo;nessuna&raquo; si ferma solo la rotazione, come prima. I nodi
@@ -2214,7 +2219,13 @@ function render(d){
   box.appendChild(el);
   if(p.corrente&&!NOTT) E('oraNome').textContent = p.tipo + (p.param? ' \u2014 '+p.param : '');
  });
- if(NOTT) E('oraNome').textContent = 'immagine della notte \u2014 ' + NOTT;
+ if(NOTT){
+  // Quante ne restano nel giro: e' il modo di vedere che il giro gira davvero,
+  // senza aspettare diciassette notti per accorgersene.
+  const R=(typeof d.silenzio_giro_resta==='number')?d.silenzio_giro_resta:-1;
+  E('oraNome').textContent = 'immagine della notte \u2014 ' + NOTT +
+   (R<0 ? '' : (R===0 ? ' (ultima del giro)' : ' (nel giro ne restano '+R+')'));
+ }
 
  box.querySelectorAll('[data-mini]').forEach(m=>{
   if(m.dataset.tipo=='immagine'&&m.dataset.mini) anteprimaPigra(m,m.dataset.mini);});
@@ -2557,6 +2568,7 @@ static void handleApiPannello() {
   // file non lo conosce. Senza questo campo la risposta resterebbe vera e
   // fuorviante insieme.
   j += ",\"silenzio_immagine\":"; appendJsonString(j, app_silenzio_immagine());
+  j += ",\"silenzio_giro_resta\":"; j += app_silenzio_giro_resta();
   // "21:15", non piu' il numero dell'ora: da v43 la fascia si muove a quarti,
   // e un intero non potrebbe che mentire su tre valori su quattro. Il quarto
   // grezzo resta accanto, per chi preferisce contare invece di leggere.
@@ -2964,7 +2976,7 @@ static const Rotta ROTTE[] = {
   { HTTP_GET,  "/api/pannello/slot",    handleApiPannelloSlot,       "stato grezzo dei 16 slot: usato, tipo, attiva, param", "" },
   { HTTP_GET,  "/api/pannello/anteprima", handleApiPannelloAnteprima,  "i 15.000 byte che il pannello sta mostrando (formato .bin)", "" },
   { HTTP_POST, "/api/pannello/refresh", handleApiPannelloRefresh,    "ridisegna la pagina corrente (completo, ~2,2 s)", "" },
-  { HTTP_POST, "/api/pannello/silenzio/rientra", handleApiPannelloSilenzioRientra, "rimette l'immagine della notte (e ne sorteggia un'altra): serve dopo aver guardato una pagina durante le ore di silenzio. 409 fuori dalla fascia", "" },
+  { HTTP_POST, "/api/pannello/silenzio/rientra", handleApiPannelloSilenzioRientra, "rimette l'immagine della notte (prendendo la prossima del giro): serve dopo aver guardato una pagina durante le ore di silenzio. 409 fuori dalla fascia", "" },
   { HTTP_POST, "/api/pannello/aggiungi",handleApiPannelloAggiungi,   "aggiunge una pagina: immagine, grafico o dettaglio di un nodo", "param=NOME | tipo=grafico | tipo=dettaglio&param=NODO" },
   { HTTP_POST, "/api/pannello/rimuovi", handleApiPannelloRimuovi,    "toglie una pagina dall'elenco (lo slot 0 non si tocca)", "i=slot" },
   { HTTP_POST, "/api/pannello/sposta",  handleApiPannelloSposta,     "sposta una pagina di un posto nell'elenco", "i=slot, dir=-1|1" },
