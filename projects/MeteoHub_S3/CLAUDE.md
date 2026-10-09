@@ -233,6 +233,25 @@ vede allo stesso modo — e in più dice qualcosa di utile quando funziona.
         fortunato, e un numero che scende di uno a notte — per poi tornare al
         totale — lo dice al primo sguardo. È la stessa ragione per cui esiste
         `marea_tab`.
+      - **...ma quei due campi vivono solo finché l'immagine è a schermo**, e
+        alle sette si azzerano: di giorno non c'era modo di sapere cosa aveva
+        mostrato la notte né a che punto fosse il giro, che sta in NVS e
+        nessuno espone. Da `v80` l'ingresso in fascia lascia una riga nel
+        **diario** (`silenzio_immagine`, `<nome>: nel giro ne restano N su T`),
+        che è l'unica traccia leggibile a distanza di settimane — il posto
+        giusto, perché il diario esiste per dire **quando**. Una riga a notte,
+        più una per ogni rientro chiesto a mano, col tetto per tipo di
+        `app_evento()`. **Il totale accanto al numero non è un di più**: «ne
+        restano 12» riletto fra un mese non dice niente se nel frattempo le
+        immagini sulla card sono diventate quaranta.
+      - **Perché `immagineDelGiro()` ha due `int*` invece di una struct di
+        esito**, che sarebbe più pulita: Arduino **genera i prototipi delle
+        funzioni del `.ino` e li mette in cima al file**, quindi un tipo
+        definito accanto alla funzione non esiste ancora quando il prototipo lo
+        nomina — `'GiroEsito' has not been declared`, su una riga che non si è
+        scritta. Una struct andrebbe dichiarata in testa al file o in un
+        header, cioè lontano da dove serve. Vale per qualunque funzione nuova
+        di questo sketch che prenda o torni un tipo proprio.
       - **Provato fuori dalla scheda** con `python tools/giro_simula.py
         [--host <ip>]`, che rifà l'algoritmo riga per riga e verifica le nove
         proprietà sui nomi veri: il giro completo senza ripetizioni, l'ordine

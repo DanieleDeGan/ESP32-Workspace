@@ -170,13 +170,20 @@
 // meta'. Stessa disciplina di `prova-canale` e `prova-riallineo` sul nodo: una
 // funzione che si attiva una volta all'anno, e mai sotto osservazione, e' una
 // funzione che non si sa se esiste.
+// v80 (2026-10-08) — l'immagine della notte lascia una riga nel diario
+// (`silenzio_immagine`, col nome e «ne restano N su T»). Il nome e il
+// contatore del giro vivono solo finche' l'immagine e' a schermo: alle sette
+// si azzerano, e di giorno non c'era piu' modo di sapere cosa aveva mostrato
+// la notte ne' a che punto fosse il giro -- che sta in NVS e nessuno espone.
+// Il totale accanto al numero serve a chi rilegge fra un mese, quando le
+// immagini sulla card possono essere diventate quaranta.
 // v79 (2026-10-07) — l'immagine della notte esce A GIRO: ognuna una volta
 // sola, e quando sono finite si ricomincia con un ordine nuovo. Prima si
 // sorteggiava fra tutte evitando solo quella di ieri, e con diciassette
 // immagini le ripetizioni si vedevano -- paradosso del compleanno, non un
 // generatore rotto. Il giro e' un seme in NVS piu' il nome dell'ultima uscita:
 // nessun elenco di "gia' viste", niente che cresca, e un OTA non lo azzera.
-static const char FW_VERSION[] = "v79";
+static const char FW_VERSION[] = "v80";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW
@@ -3735,12 +3742,26 @@ static void giroRegistra(const char* nome)
 // La prossima immagine del giro. `evita` e' quella mostrata ieri: serve solo
 // quando il giro RICOMINCIA -- dentro un giro un'immagine non puo' tornare, e
 // con una sola immagine sulla card rifarla non e' una ripetizione, e' l'unica
-// che c'e'. `restano` riceve quante ne mancano DOPO questa.
-static bool immagineDelGiro(char* out, size_t cap, const char* evita, int* restano)
+// che c'e'.
+//
+// `restano` riceve quante ne mancano DOPO questa (-1 = non lo so), `totale`
+// quante sono in tutto (0 = non lo so). Il totale serve al diario: «ne
+// restano 12» riletto fra un mese non dice niente se nel frattempo le
+// immagini sulla card sono diventate quaranta.
+//
+// Due puntatori e non una struct di esito, che sarebbe stata piu' pulita:
+// Arduino genera i prototipi delle funzioni del `.ino` e li mette IN CIMA al
+// file, quindi un tipo definito qui accanto non esiste ancora quando il
+// prototipo lo nomina -- `'GiroEsito' has not been declared`, su una riga che
+// non si e' scritta. Una struct andrebbe dichiarata in testa al file o in un
+// header, cioe' lontano da dove serve.
+static bool immagineDelGiro(char* out, size_t cap, const char* evita,
+                            int* restano, int* totale)
 {
   if (!out || cap == 0) return false;
   out[0] = '\0';
-  if (restano) *restano = -1;              // -1 = non lo so, 0 = ne resta zero
+  if (restano) *restano = -1;
+  if (totale)  *totale  = 0;
   if (s_giroSeme == 0) giroNuovo();        // primo uso, o NVS mai scritta
 
   // Il primo tentativo cerca nel giro in corso; se un successore non c'e'
@@ -3768,6 +3789,7 @@ static bool immagineDelGiro(char* out, size_t cap, const char* evita, int* resta
       }
       giroRegistra(out);
       if (restano) *restano = g.restanti - 1;
+      if (totale)  *totale  = g.totale;
       return true;
     }
     // Card assente, vuota, o solo nomi inutilizzabili: non c'e' niente da
@@ -3783,7 +3805,7 @@ static bool immagineDelGiro(char* out, size_t cap, const char* evita, int* resta
   // comunque, o il giro non avanzerebbe mai da quel punto.
   if (out[0] != '\0') {
     giroRegistra(out);
-    return true;
+    return true;                 // i due conti restano "non lo so": non lo sono
   }
   return false;
 }
@@ -4452,8 +4474,9 @@ void loop()
       // schermata che della notte non parla.
       if (silPag == PAG_SIL_CARD) {
         s_pagSilScelta = PAG_SIL_NESSUNA;
+        int giroTot = 0;
         if (immagineDelGiro(s_silImgNome, sizeof(s_silImgNome),
-                            s_silImgUltima, &s_silGiroResta)) {
+                            s_silImgUltima, &s_silGiroResta, &giroTot)) {
           strncpy(s_silImgUltima, s_silImgNome, sizeof(s_silImgUltima) - 1);
           s_silImgUltima[sizeof(s_silImgUltima) - 1] = '\0';
 
@@ -4471,6 +4494,26 @@ void loop()
           Serial.printf("[epd] ore di silenzio: /images/%s.bin e mi fermo"
                         " (nel giro ne restano %d)\n",
                         s_silImgNome, s_silGiroResta);
+
+          // ...e una riga nel diario, perche' `silenzio_immagine` e
+          // `silenzio_giro_resta` vivono solo FINCHE' l'immagine e' a schermo:
+          // alle sette si azzerano, e di giorno non esiste piu' modo di sapere
+          // cosa ha mostrato la notte ne' a che punto sia il giro. Il giro sta
+          // in NVS e nessuno lo espone -- questa riga e' la sua unica traccia
+          // leggibile, e il posto giusto e' il diario, che si rilegge a
+          // distanza di settimane. Una riga a notte (piu' una per ogni
+          // rientro chiesto a mano), col tetto per tipo che ci mette sopra
+          // app_evento().
+          char det[96];
+          if (giroTot > 0) {
+            snprintf(det, sizeof(det), "%s: nel giro ne restano %d su %d",
+                     s_silImgNome, s_silGiroResta, giroTot);
+          } else {
+            // Il ramo dei sei tentativi esauriti: l'immagine c'e' ma il conto
+            // no, e scrivere "restano -1" sarebbe peggio che non scriverlo.
+            snprintf(det, sizeof(det), "%s", s_silImgNome);
+          }
+          evento("silenzio_immagine", det);
         } else {
           // Nessuna immagine sulla card (o card assente): ci si ferma com'era.
           // Disegnare l'avviso "immagine non disponibile" spegnerebbe la pagina

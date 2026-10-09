@@ -2986,7 +2986,7 @@ static const Rotta ROTTE[] = {
   { HTTP_POST, "/api/messaggio/cancella",handleApiMessaggioCancella, "toglie il messaggio dal pannello", "" },
 
   { HTTP_GET,  "/api/immagini",         handleApiImmagini,           "le immagini sulla card, a pagine, col totale filtrato", "da=0&quante=12&cerca=TESTO" },
-  { HTTP_GET,  "/api/eventi",           handleApiEventi,             "il diario degli eventi di un mese (boot, NTP, nodo muto, card, OTA, associazione)", "m=AAAA-MM (default: il mese corrente)" },
+  { HTTP_GET,  "/api/eventi",           handleApiEventi,             "il diario degli eventi di un mese (boot, NTP, nodo muto, card, OTA, associazione, immagine della notte)", "m=AAAA-MM (default: il mese corrente)" },
   { HTTP_POST, "/api/prova/blocco",     handleApiProvaBlocco,        "PROVA: blocca il loop apposta per verificare che il watchdog riavvii davvero. La scheda smette di rispondere e riparte", "s=secondi (default 90, max 120)" },
   { HTTP_GET,  "/api/epd/totale",       handleApiEpdTotale,          "quanti refresh ha fatto il pannello: si contano dalla card", "" },
   { HTTP_GET,  "/api/epd/registro",     handleApiEpdRegistro,        "il registro dei refresh del pannello, un file al mese", "m=AAAA-MM" },
