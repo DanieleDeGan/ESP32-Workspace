@@ -79,6 +79,72 @@ perdere consegne — cosa che era già stata sospettata durante il guasto di fin
 agosto e che allora **non era misurabile**, perché `battery_mv` era 0.
 **Costo**: basso nel firmware; la parte difficile è il numero.
 
+### 44. Backoff della rete di sicurezza sul nodo a batteria
+**Cosa**: dopo il primo rientro di sicurezza (5 risvegli muti → riavvio → 5
+minuti di WiFi acceso), **raddoppiare la soglia** dei risvegli muti — 5, 10,
+20, 40 (tetto) — e tornare a 5 alla prima consegna riuscita. In più:
+**chiudere la finestra di veglia dopo ~60 s se l'AP non si associa**, perché
+senza rete nessuno potrà aprire la pagina e quei cinque minuti sono radio
+accesa per niente.
+**Perché qui**: con l'hub irraggiungibile il nodo rifà il rientro ogni ~30
+minuti per sempre. Sono **48 vegliate al giorno × ~7 mAh = ~336 mAh/giorno**
+contro i ~17 del funzionamento normale: **venti volte il consumo**, cioè una
+cella che da sei settimane passa a **tre giorni**. E il sintomo non somiglia
+alla causa — si torna a casa, si trova il nodo morto e la batteria a zero, e
+si sospetta la cella mentre era sana: la colpa era dell'hub spento.
+**Nota**: la rete di sicurezza in sé **serve** e non va toccata (un nodo che
+dorme non risponde all'OTA, quindi deve esistere un modo di farsi trovare):
+quello che manca è solo il «ho già provato dieci volte». Il precedente interno
+è `cielo.cpp`, che per Open-Meteo raddoppia già l'attesa 5→10→20 min dopo tre
+errori di fila, con la stessa motivazione scritta lì: *un'interruzione vera
+dura ore, non minuti*.
+**Serve anche un contatore esposto** (quante vegliate di sicurezza) in
+`/api/stato`: oggi il fenomeno si vedrebbe solo come `boot_count` che sale e
+batteria che scende, cioè come due sintomi che nessuno collega.
+**Si prova** spegnendo l'hub, o con `GET /api/comando?c=prova-canale` che
+fabbrica già il caso del canale sbagliato.
+**Costo**: basso (~40 righe in `MeteoNode_C3.ino`, più la riga in `/api/stato`).
+
+### 45. L'ora senza internet — e con lei la registrazione (RTC, NVS, browser)
+**Cosa**: dare all'hub una fonte d'ora che non sia NTP. Tre pezzi indipendenti,
+in ordine di costo: **(a)** l'ora salvata in NVS ogni ~10 min, per non
+ripartire dal build-time dopo un OTA o un riavvio; **(b)** `POST /api/ora` con
+l'**epoch UTC**, che la dashboard manda da sé quando `ora_fonte != NTP` (il
+telefono ha l'ora giusta dalla rete cellulare anche se casa è senza linea),
+più due campi manuali in `/pannello` visibili **solo** in quel caso;
+**(c)** un **DS3231** su I2C — `D4/D5` (GPIO5/6) sono liberi e il `.ino` lo
+dichiara già —, ~3 €, deriva ~1 min/anno, batteria tampone per anni.
+**Perché qui**: la comunicazione nodi↔hub è già indipendente da internet
+(ESP-NOW è radio diretta, niente router e niente IP), ma **la registrazione
+no**. Senza NTP l'hub non si ferma: dopo la finestra di grazia di 5 minuti
+scrive comunque, con l'ora stimata dal **build-time** — cioè dati veri in un
+file datato il giorno in cui è stato compilato il firmware, e un salto
+dell'orologio quando l'NTP arriva. E restano spenti **riepiloghi giornalieri**
+(quindi tara della marea e pagina analisi) e **ore di silenzio** del pannello,
+che chiedono tutti `rtctime_isSynced()`. Caso cattivo reale: blackout, torna
+la corrente ma non la linea.
+**Le tre cose da non sbagliare**: l'ora viaggia come **epoch UTC** e mai come
+stringa locale (il fuso qui è già costato la marea anticipata di un'ora, `v65`);
+serve una **gerarchia delle fonti** — `NTP > RTC > MANUALE/BROWSER > STIMA` —
+dove una fonte **non sovrascrive mai una migliore** (un telefono con l'ora
+sbagliata non deve spostare un orologio sincronizzato), l'ora manuale **si
+scrive nell'RTC** o al riavvio si perde proprio ciò per cui l'RTC esiste, e al
+ritorno dell'NTP si **ritara l'RTC** se differisce di oltre un paio di secondi;
+**validare l'epoch** rifiutando qualunque valore anteriore al build-time o
+oltre ~10 anni avanti, o un POST sbagliato porta la scheda nel 1970 e i CSV si
+chiamano `1970-01-01.csv`.
+**Da aggiungere**: i valori `RTC` e `BROWSER` alla colonna `fonte_ora` (che
+esiste già e vale `NTP`/`STIMA`), lo sblocco dei riepiloghi quando l'ora è
+*attendibile* e non solo *NTP*, e una riga nel diario ad ogni salto
+dell'orologio — un salto è precisamente ciò che rende incomprensibili i dati a
+posteriori.
+**Da decidere a parte**: che fare delle righe già scritte con ora `STIMA`. Oggi
+restano dove sono, marcate; l'alternativa più pulita (mandarle in quarantena
+invece di scriverle nel giorno sbagliato) è un cambiamento più profondo.
+**Costo**: basso per (a) e (b), che si possono fare **subito e senza
+hardware**; medio per (c) — tocca l'hardware, ma è l'unico pezzo che non ha
+bisogno né di internet né di una persona.
+
 ### 0. Togliere la marea barometrica dalla previsione — FATTA (`v63`-`v66`)
 
 **Fatta il 2026-09-08/09, e non come era scritto qui sotto**: la tabella non è
