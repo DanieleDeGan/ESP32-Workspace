@@ -48,6 +48,7 @@ toccare) vedi `docs/FILES.md`. Per il pinout/hardware della board AMOLED vedi
 | `projects/MeteoHub_S3/` | **progetto** (XIAO ESP32-S3 Sense): hub della stazione meteo — nodi via ESP-NOW, pannello **e-ink WeAct 4.2"** (SSD1683), CSV su microSD, NTP, web UI, OTA | [`projects/MeteoHub_S3/CLAUDE.md`](projects/MeteoHub_S3/CLAUDE.md) |
 | `projects/MeteoNode_C3/` | **progetto** (XIAO ESP32-C3, e lo stesso sketch su ESP32 "classico"): AHT20 + BMP280, trend barometrico, nodo ESP-NOW, **deep sleep** | [`projects/MeteoNode_C3/CLAUDE.md`](projects/MeteoNode_C3/CLAUDE.md) |
 | `projects/Timelapse_XIAO/` | **progetto** (XIAO ESP32-S3 Sense): camera timelapse a intervallo, archivio per giorno su microSD, galleria web, NTP + OTA | [`projects/Timelapse_XIAO/CLAUDE.md`](projects/Timelapse_XIAO/CLAUDE.md) |
+| `projects/MorseKey_C3/` | **progetto** (ESP32-C3 Supermini): decoder Morse per tasto telegrafico J. Junker — latch sul contatto in scambio al posto del debounce, soglie adattive, testo e WPM su OLED SSD1306, tono di ascolto su buzzer passivo | [`projects/MorseKey_C3/CLAUDE.md`](projects/MorseKey_C3/CLAUDE.md) |
 | `projects/EnvNode_C3/` | **hardware smantellato il 2026-08-31** (ESP32-C3): DHT11 + microSD SPI + dashboard + hub ESP-NOW. Resta come riferimento: è la copia da cui sono nati `remote_nodes`, `sd_logger`, `rtc_time`, `forecast.h` | [`projects/EnvNode_C3/CLAUDE.md`](projects/EnvNode_C3/CLAUDE.md) |
 | `examples/Orientation_IMU/` | demo autosufficiente: livella per veicolo basata sull'IMU onboard, UI costruita in codice (non SquareLine) | — |
 | `examples/Link_Hub_Demo/` | demo lato hub di `EspNowLink`: schermo AMOLED, pairing/lista nodi associati | — |
@@ -228,7 +229,11 @@ librerie della board AMOLED, che nessuno dei due usa:
 ```
 arduino-cli compile --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=min_spiffs" starters/C3_OLED_OTA
 arduino-cli compile --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=min_spiffs" --libraries libraries projects/EnvNode_C3
+arduino-cli compile --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc" projects/MorseKey_C3
 ```
+
+`projects/MorseKey_C3/` non ha OTA, quindi gli basta la partizione di default;
+si carica via USB.
 
 Equivalente Arduino IDE: Board **ESP32C3 Dev Module**, USB CDC On Boot
 **Enabled**, Flash **4MB**, Partition Scheme **Minimal SPIFFS (1.9MB APP with
