@@ -47,6 +47,7 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <Preferences.h>
 
 // ============================ Hardware ============================
 static constexpr int     PIN_LAVORO = 3;     // contatto A del tasto
@@ -56,6 +57,7 @@ static constexpr int     PIN_SCL    = 6;     // -> SCL dell'OLED
 static constexpr int     PIN_LED    = 8;     // LED blu onboard (attivo LOW): acceso a tasto premuto
 static constexpr int     PIN_BUZZER = 7;     // buzzer PASSIVO, + via 100 ohm, - a GND
 static constexpr uint32_t TONO_HZ   = 650;   // tono di ascolto, il classico dei telegrafisti
+static constexpr int     PIN_MODO   = 9;     // tasto BOOT della scheda: decoder <-> allenatore
 static constexpr uint8_t OLED_ADDR  = 0x3C;
 static constexpr int     OLED_W     = 128;
 static constexpr int     OLED_H     = 64;
@@ -67,7 +69,8 @@ static constexpr int     OLED_H     = 64;
 //   v4  2026-10-13  soglie delle pause ricavate da punto/linea: a velocita' le lettere si fondevano
 //   v5  2026-10-13  spazio fra parole da 4 a 3 linee medie
 //   v6  2026-10-13  diagnostica su Serial spenta (DIAGNOSTICA = true per riaccenderla)
-static const char* FW_VERSION = "v6";
+//   v7  2026-10-13  allenatore (tasto BOOT): lettere Koch, rapporto linea/punto, sovrapposizioni
+static const char* FW_VERSION = "v7";
 
 Adafruit_SSD1306 oled(OLED_W, OLED_H, &Wire, -1);
 static bool oledPresente = false;       // deciso all'avvio: si collega a scheda spenta
@@ -102,6 +105,7 @@ static constexpr float PESO    = 0.2f;  // quanto conta l'ultimo segno nella med
 static bool  ultimoLinea       = false; // l'ultimo segno battuto era una linea
 
 static char    simbolo[9];              // punti e linee della lettera in corso
+static uint16_t durate[8];              // e quanto e' durato ciascuno (ms), per l'allenatore
 static uint8_t nSimbolo = 0;
 static bool    simboloTroppoLungo = false;
 static bool    premuto = false;
@@ -162,22 +166,167 @@ static void cancellaUltimo() {
   daRidisegnare = true;
 }
 
-static void chiudiLettera() {
-  simbolo[nSimbolo] = '\0';
-  bool tuttiPunti = simboloTroppoLungo || nSimbolo >= 8;
-  for (uint8_t i = 0; i < nSimbolo && tuttiPunti; i++) if (simbolo[i] != '.') tuttiPunti = false;
-  if (simboloTroppoLungo || nSimbolo >= 8) {
-    if (tuttiPunti) cancellaUltimo();
-    else aggiungiCarattere('*');
-  } else {
-    char c = '*';                       // codice sconosciuto
-    for (const auto& m : MORSE) if (strcmp(m.codice, simbolo) == 0) { c = m.c; break; }
-    aggiungiCarattere(c);
+// ============================ Allenatore ============================
+// Seconda modalita', si passa dall'una all'altra col tasto BOOT. Chiede una
+// lettera alla volta fra le prime `livello` dell'ordine Koch; con 90 % di
+// giuste sulle ultime 20 entra la successiva. Se si sbaglia, il buzzer fa
+// sentire la lettera giusta col ritmo da manuale e la si ripete.
+//
+// Sapendo quale lettera ha chiesto, l'allenatore assegna ogni durata al tipo
+// giusto anche quando il decoder l'avrebbe classificata male: e' cosi' che
+// misura il rapporto linea/punto (obiettivo 3) e le sovrapposizioni, cioe' le
+// lettere in cui un punto e' durato quanto una linea.
+static bool allenamento = false;
+static const char KOCH[] = "KMRSUAPTLOWI.NJEF0Y,VG5/Q9ZH38B?427C1D6X";
+static constexpr int LIVELLO_MIN = 2;
+static constexpr int STORICO = 20;      // tentativi su cui si giudica, e su cui si contano le sovrapposizioni
+static int      livello = LIVELLO_MIN;  // quante lettere di KOCH sono in gioco (salvato in NVS)
+static char     bersaglio = 'K';
+static const char* codiceBersaglio = "-.-";
+static bool     tentativoSbagliato = false;  // la lettera in gioco e' gia' stata sbagliata: conta una volta
+static bool     annuncio = false;       // la lettera in gioco e' appena entrata
+static uint32_t storicoEsiti = 0, storicoSovr = 0;   // un bit per tentativo, 1 = giusta / sovrapposta
+static uint8_t  nEsiti = 0, nSovr = 0;
+static float    mediaRapporto = 0, ultimoRapporto = 0;   // 0 = nessuna misura
+static char     ultimoBattuto = 0;      // ultimo tentativo: lettera, codice, esito
+static bool     ultimoGiusto = false;
+static char     ultimoCodice[9] = "";
+static bool     eventiScartati = false; // suona() ha buttato la coda: l'evento in corso non vale piu'
+Preferences prefs;
+
+static const char* codiceDi(char c) {
+  for (const auto& m : MORSE) if (m.c == c) return m.codice;
+  return "";
+}
+
+static void registra(uint32_t& storico, uint8_t& n, bool bit) {
+  storico = ((storico << 1) | bit) & ((1u << STORICO) - 1);
+  if (n < STORICO) n++;
+}
+
+static int percentualeGiuste() { return nEsiti ? __builtin_popcount(storicoEsiti) * 100 / nEsiti : 0; }
+
+// Fa sentire una lettera col ritmo da manuale (linea = 3 punti, pause di un
+// punto) alla velocita' a cui si sta battendo. Bloccante, al massimo ~2 s:
+// quello che si batte nel frattempo si butta, e il decoder riparte da zero.
+static void suona(const char* codice) {
+  uint32_t u = (uint32_t)mediaPunto;
+  delay(300);
+  for (const char* p = codice; *p; p++) {
+    digitalWrite(PIN_LED, LOW);
+    ledcWriteTone(PIN_BUZZER, TONO_HZ);
+    delay(*p == '-' ? 3 * u : u);
+    digitalWrite(PIN_LED, HIGH);
+    ledcWriteTone(PIN_BUZZER, 0);
+    delay(u);
   }
+  codaFondo = codaTesta;
+  premuto = latch;
   nSimbolo = 0;
   simboloTroppoLungo = false;
   letteraAperta = false;
-  parolaAperta = true;
+  primoSegno = true;
+  tUltimo = millis();
+  eventiScartati = true;
+}
+
+static void nuovaLettera() {
+  char prima = bersaglio;
+  for (int i = 0; i < 10 && bersaglio == prima; i++)    // mai la stessa due volte di fila
+    bersaglio = KOCH[random(3) == 0 ? livello - 1 : random(livello)];   // l'ultima entrata esce piu' spesso
+  codiceBersaglio = codiceDi(bersaglio);
+  tentativoSbagliato = false;
+  annuncio = false;
+  daRidisegnare = true;
+}
+
+static void misuraTempi() {
+  ultimoRapporto = 0;
+  if (nSimbolo != strlen(codiceBersaglio)) return;   // segni in piu' o in meno: non si sa chi e' chi
+  uint32_t sommaP = 0, sommaL = 0;
+  uint8_t nP = 0, nL = 0;
+  uint16_t maxP = 0, minL = 65535;
+  for (uint8_t i = 0; i < nSimbolo; i++) {
+    if (codiceBersaglio[i] == '.') { sommaP += durate[i]; nP++; maxP = max(maxP, durate[i]); }
+    else                           { sommaL += durate[i]; nL++; minL = min(minL, durate[i]); }
+  }
+  if (!nP || !nL) return;               // E, T, M, O, S...: niente da confrontare
+  ultimoRapporto = ((float)sommaL / nL) / ((float)sommaP / nP);
+  mediaRapporto = mediaRapporto == 0 ? ultimoRapporto : mediaRapporto + PESO * (ultimoRapporto - mediaRapporto);
+  registra(storicoSovr, nSovr, maxP >= minL);
+  Serial.printf("[allena] punti %lu ms (max %u), linee %lu ms (min %u), rapporto %.1f%s\n",
+                sommaP / nP, maxP, sommaL / nL, minL, ultimoRapporto, maxP >= minL ? "  SOVRAPPOSTI" : "");
+}
+
+static void disegna();
+
+static void allenatoreValuta(char c) {
+  simbolo[nSimbolo] = '\0';
+  misuraTempi();
+  bool giusta = c == bersaglio;
+  ultimoGiusto = giusta;
+  ultimoBattuto = c;
+  strcpy(ultimoCodice, simbolo);
+  Serial.printf("[allena] chiesta %c %s, battuta %c %s: %s\n", bersaglio, codiceBersaglio, c, simbolo,
+                giusta ? "giusta" : "sbagliata");
+  if (!tentativoSbagliato) registra(storicoEsiti, nEsiti, giusta);
+
+  if (!giusta) {
+    tentativoSbagliato = true;
+    if (oledPresente) disegna();        // l'errore si vede prima di sentire la lettera giusta
+    suona(codiceBersaglio);
+    daRidisegnare = true;
+    return;
+  }
+  if (nEsiti == STORICO && percentualeGiuste() >= 90 && livello < (int)strlen(KOCH)) {
+    livello++;
+    prefs.putUChar("livello", livello);
+    storicoEsiti = 0;
+    nEsiti = 0;
+    bersaglio = KOCH[livello - 1];
+    codiceBersaglio = codiceDi(bersaglio);
+    tentativoSbagliato = false;
+    annuncio = true;
+    Serial.printf("[allena] livello %d: entra %c %s\n", livello, bersaglio, codiceBersaglio);
+    if (oledPresente) disegna();
+    suona(codiceBersaglio);
+    suona(codiceBersaglio);
+    daRidisegnare = true;
+    return;
+  }
+  nuovaLettera();
+}
+
+static void cambiaModo() {
+  allenamento = !allenamento;
+  prefs.putBool("allena", allenamento);
+  nSimbolo = 0;
+  simboloTroppoLungo = false;
+  letteraAperta = false;
+  parolaAperta = false;
+  primoSegno = true;
+  if (allenamento) nuovaLettera();
+  Serial.printf("\n[modo] %s\n", allenamento ? "allenatore" : "decoder");
+  daRidisegnare = true;
+}
+
+static void chiudiLettera() {
+  simbolo[nSimbolo] = '\0';
+  bool troppoLungo = simboloTroppoLungo || nSimbolo >= 8;
+  bool tuttiPunti = troppoLungo;
+  for (uint8_t i = 0; i < nSimbolo && tuttiPunti; i++) if (simbolo[i] != '.') tuttiPunti = false;
+  char c = '*';                         // codice sconosciuto
+  if (!troppoLungo)
+    for (const auto& m : MORSE) if (strcmp(m.codice, simbolo) == 0) { c = m.c; break; }
+
+  if (allenamento) { if (!tuttiPunti) allenatoreValuta(c); }   // il segnale di errore: si riprova e basta
+  else if (tuttiPunti) cancellaUltimo();
+  else aggiungiCarattere(c);
+
+  nSimbolo = 0;
+  simboloTroppoLungo = false;
+  letteraAperta = false;
+  parolaAperta = !allenamento;          // nell'allenatore niente spazi
   daRidisegnare = true;
 }
 
@@ -188,6 +337,7 @@ static void tastoPremuto(uint32_t t) {
   pausaPrima = primoSegno ? 0 : pausa;
   if (!primoSegno) {
     if (letteraAperta && pausa >= sogliaLettera()) chiudiLettera();
+    if (eventiScartati) return;         // l'allenatore ha suonato: questa pressione e' di prima
     if (parolaAperta && pausa >= sogliaParola()) { aggiungiCarattere(' '); parolaAperta = false; }
   }
   premuto = true;
@@ -195,10 +345,11 @@ static void tastoPremuto(uint32_t t) {
 }
 
 // Pressione tenuta per AZZERA_MS: si cancella tutto mentre il tasto e' ancora
-// giu', cosi' si vede subito che e' successo e si puo' lasciare.
+// giu', cosi' si vede subito che e' successo e si puo' lasciare. Nell'allenatore
+// salta la lettera, senza contarla.
 static void azzera() {
-  lunTesto = 0;
-  testo[0] = '\0';
+  if (allenamento) nuovaLettera();
+  else { lunTesto = 0; testo[0] = '\0'; }
   nSimbolo = 0;
   simboloTroppoLungo = false;
   letteraAperta = false;
@@ -228,7 +379,7 @@ static void tastoRilasciato(uint32_t t) {
     Serial.printf("\n  %c %4lu ms dopo pausa %4lu | medie punto %3.0f linea %3.0f | soglie segno %3.0f lettera %3.0f parola %3.0f\n",
                   linea ? '-' : '.', durata, pausaPrima, mediaPunto, mediaLinea,
                   sogliaSegno(), sogliaLettera(), sogliaParola());
-  if (nSimbolo < 8) simbolo[nSimbolo++] = linea ? '-' : '.';
+  if (nSimbolo < 8) { durate[nSimbolo] = min(durata, (uint32_t)65535); simbolo[nSimbolo++] = linea ? '-' : '.'; }
   else simboloTroppoLungo = true;
   simbolo[nSimbolo] = '\0';
   letteraAperta = true;
@@ -236,13 +387,46 @@ static void tastoRilasciato(uint32_t t) {
 }
 
 // ============================ Disegno ============================
+static int wpm() { return (int)(1200.0f / mediaPunto + 0.5f); }   // PARIS: unita' ms = 1200 / WPM
+
+static void disegnaAllenatore() {
+  oled.setCursor(0, 0);
+  oled.printf(annuncio ? "NUOVA %d/%d" : "ALLENA %d/%d", livello, (int)strlen(KOCH));
+  if (nEsiti) {
+    oled.setCursor(OLED_W - 6 * 4, 0);
+    oled.printf("%3d%%", percentualeGiuste());
+  }
+  oled.drawFastHLine(0, 10, OLED_W, SSD1306_WHITE);
+
+  oled.setTextSize(4);                  // la lettera da battere, 24x32
+  oled.setCursor(6, 16);
+  oled.write(bersaglio);
+  oled.setTextSize(1);
+  oled.setCursor(0, 56);                // sotto: i segni che si stanno battendo,
+  if (nSimbolo) oled.print(simbolo);    // oppure il suggerimento dopo un errore
+  else if (tentativoSbagliato || annuncio) oled.print(codiceBersaglio);
+
+  constexpr int X = 44;
+  oled.setCursor(X, 14);
+  if (ultimoBattuto) oled.printf("%s %c %s", ultimoGiusto ? "OK" : "NO", ultimoBattuto, ultimoCodice);
+  oled.setCursor(X, 25);
+  if (ultimoRapporto > 0) oled.printf("L/P %.1f", ultimoRapporto);
+  oled.setCursor(X, 35);
+  if (mediaRapporto > 0) oled.printf("media %.1f (3)", mediaRapporto);
+  oled.setCursor(X, 45);
+  if (nSovr) oled.printf("sovrap %d/%d", __builtin_popcount(storicoSovr), nSovr);
+  oled.setCursor(X, 56);
+  oled.printf("WPM %d", wpm());
+}
+
 static void disegna() {
   oled.clearDisplay();
   oled.setTextSize(1);
   oled.setTextColor(SSD1306_WHITE);
+  if (allenamento) { disegnaAllenatore(); oled.display(); return; }
 
   oled.setCursor(0, 0);
-  oled.printf("WPM %d", (int)(1200.0f / mediaPunto + 0.5f));   // PARIS: unita' ms = 1200 / WPM
+  oled.printf("WPM %d", wpm());
   simbolo[nSimbolo] = '\0';
   oled.setCursor(OLED_W - 6 * 8, 0);
   oled.print(simbolo);
@@ -271,6 +455,12 @@ void setup() {
   pinMode(PIN_RIPOSO, INPUT_PULLUP);
   ledcAttach(PIN_BUZZER, TONO_HZ, 8);
   ledcWriteTone(PIN_BUZZER, 0);
+  pinMode(PIN_MODO, INPUT_PULLUP);
+
+  prefs.begin("morsekey");
+  livello = constrain(prefs.getUChar("livello", LIVELLO_MIN), LIVELLO_MIN, (int)strlen(KOCH));
+  allenamento = prefs.getBool("allena", false);
+  if (allenamento) nuovaLettera();
 
   // periphBegin=false: teniamo i pin passati a Wire.begin().
   Wire.begin(PIN_SDA, PIN_SCL);
@@ -287,8 +477,9 @@ void setup() {
     oled.printf("MorseKey_C3 %s\n\nbatti col tasto", FW_VERSION);
     oled.display();
   }
-  Serial.printf("MorseKey_C3 %s pronto, OLED %s\n", FW_VERSION,
-                oledPresente ? "presente" : "assente (0x3C non risponde): il testo esce solo qui");
+  Serial.printf("MorseKey_C3 %s pronto, OLED %s, modo %s (livello %d)\n", FW_VERSION,
+                oledPresente ? "presente" : "assente (0x3C non risponde): il testo esce solo qui",
+                allenamento ? "allenatore" : "decoder", livello);
   delay(1200);
 
   latch = digitalRead(PIN_LAVORO) == LOW;
@@ -302,9 +493,20 @@ void loop() {
   while (codaFondo != codaTesta) {
     Evento e = { coda[codaFondo].premuto, coda[codaFondo].t };
     codaFondo = (codaFondo + 1) % CODA;
+    eventiScartati = false;
     if (e.premuto) tastoPremuto(e.t); else tastoRilasciato(e.t);
-    digitalWrite(PIN_LED, e.premuto ? LOW : HIGH);
-    ledcWriteTone(PIN_BUZZER, e.premuto ? TONO_HZ : 0);
+    digitalWrite(PIN_LED, premuto ? LOW : HIGH);          // premuto, non e.premuto: dopo suona()
+    ledcWriteTone(PIN_BUZZER, premuto ? TONO_HZ : 0);     // l'evento puo' essere stato scartato
+  }
+
+  // Tasto BOOT: cambia modalita'. Dopo l'avvio e' un pulsante come un altro.
+  static bool bootPrima = HIGH;
+  static uint32_t tBoot = 0;
+  bool boot = digitalRead(PIN_MODO);
+  if (boot != bootPrima && millis() - tBoot > 50) {
+    tBoot = millis();
+    bootPrima = boot;
+    if (boot == LOW) cambiaModo();
   }
 
   if (premuto && !azzeramento && millis() - tUltimo >= AZZERA_MS) azzera();
