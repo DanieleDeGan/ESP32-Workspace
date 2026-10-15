@@ -2792,7 +2792,15 @@ di pagine con tipo/layout/attiva/durata, e i tre comandi dell'interfaccia
 Astrazione "pagina" (elenco + callback di disegno), cambio con il tasto BOOT
 oppure da web. Il cambio pagina è sempre un refresh completo.
 
-### Fase 7 — configurare i nodi dall'hub (idea del 2026-08-24, da fare dopo `MeteoHub_S3`)
+### Fase 7 — configurare i nodi dall'hub (idea del 2026-08-24, rivista il 2026-10-11)
+
+> **Rivista il 2026-10-11, prima di scrivere una riga di codice**: il testo
+> che segue è il progetto di agosto, lasciato com'è perché i conti
+> sull'energia e le trappole valgono ancora. **Il meccanismo però è cambiato**
+> — il nodo non ascolta più una finestra fissa sperando che arrivi qualcosa,
+> ma *chiede* e l'hub risponde sempre — e l'elenco di cosa si configura è
+> deciso. Tutto nella sezione *«Revisione del 2026-10-11»* in fondo alla
+> fase. Dove i due testi non coincidono, vale la revisione.
 
 **L'idea**: l'utente apre la UI dell'hub, imposta la cadenza di un nodo (o delle
 fasce orarie con cadenze diverse), e il nodo la riceve **al suo prossimo
@@ -2890,6 +2898,188 @@ La veglia dura quanto serve (0,68 s misurati) e finisce da sola; l'unico
 parametro è il periodo. L'unica veglia configurabile è quella dei 5 minuti con
 WiFi/OTA dopo un'accensione vera (`VEGLIA_MS`), che è la via di recupero e
 conviene lasciare com'è.
+
+#### Revisione del 2026-10-11 — il nodo chiede, l'hub risponde sempre
+
+Rivista sul codice di oggi (nodo `v19`, hub `v80`, `EspNowLink` come sta). **Non
+è ancora implementata**: si parte quando lo decide l'utente.
+
+**Perché il progetto di agosto non va bene così com'è.** Prevedeva che l'hub
+rispedisse il comando dopo ogni DATA, e che il nodo restasse in ascolto una
+finestra fissa ogni N risvegli. Tre difetti:
+
+- la finestra va dimensionata **a priori** (300 ms nel conto di sopra) e si
+  paga intera anche quando non c'è niente da ricevere, cioè quasi sempre;
+- l'hub **spara alla cieca**: quasi tutti quei tentativi cadono su un nodo che
+  dorme già, e ognuno è tempo di `loop()` dell'hub;
+- la conferma è **indiretta** — l'hub se ne accorge dalla cadenza osservata,
+  dopo ~4 cicli.
+
+**Il meccanismo nuovo.** Nei risvegli in cui tocca (uno ogni N), il nodo, dopo
+il DATA consegnato, manda una **richiesta**: *«ho la radio accesa, hai qualcosa
+per me?»*. L'hub **risponde sempre** — con la configurazione, o con
+*«niente»* — e il nodo va a dormire **appena riceve la risposta**. La finestra
+dura quanto l'hub ci mette a rispondere, non un timeout: il timeout resta solo
+per l'hub occupato. Nessun tentativo a vuoto dall'hub, e la conferma è
+esplicita: la richiesta successiva porta la revisione applicata.
+
+| | carica per ciclo (70 mA in RX, **stima**) |
+|---|---|
+| finestra fissa di 300 ms (progetto di agosto) | +21 mAs (+34 %) |
+| richiesta + risposta in ~30 ms | ~+2 mAs (~+3,4 %) |
+| richiesta ogni 3 cicli | ~+1 % |
+
+**Il «~30 ms» non è misurato**, ed è il numero da cui dipende tutto: è la
+latenza di `remote_loop()` sull'hub, il cui `loop()` sta fermo a volte per
+secondi (refresh e-ink, download, DNS). Per questo il **primo passo è la
+misura**: il nodo riporta nella richiesta la latenza della risposta precedente,
+così la si legge nei dati senza amperometro — come il periodo misurato, che fa
+già da amperometro gratuito per la veglia.
+
+**Nel protocollo, senza toccare la struct** (`link_parse_message()` scarta
+ogni lunghezza diversa da `sizeof(link_message_t)`: allargarla isolerebbe ogni
+firmware non aggiornato, nodo camera compreso):
+
+- **richiesta nodo → hub**: tipo nuovo in coda all'enum,
+  `LINK_MSG_CONFIG_REQ = 4`. Un hub vecchio lo riceve, non è né DATA né HELLO,
+  e lo ignora: il nodo va in timeout e prosegue. Campi:
+  - `seq` = revisione di configurazione **applicata**;
+  - `value[0]` = intervallo di sonno in vigore, `value[1]` = N in vigore,
+    `value[2]` = latenza dell'ultima risposta in ms;
+  - `name` e `node_type` **veri**, riempiti dalla libreria come nei DATA:
+    `LinkPeer::onReceive()` aggiorna nome e tipo del peer **ad ogni
+    messaggio** (`link_peer.cpp:115`), quindi un nome vuoto qui rinominerebbe
+    il nodo sull'hub;
+  - `battery_mv` = batteria, come nei DATA.
+- **risposta hub → nodo**: `LINK_MSG_COMMAND`, che esiste già. Tutta la
+  configurazione in un colpo:
+
+  | campo | contenuto |
+  |---|---|
+  | `seq` | revisione (monotona) |
+  | `value[0]` | durata del sonno, secondi (interi esatti in un float fino a 2²⁴) |
+  | `value[1]` | N, ogni quanti risvegli il nodo chiede |
+  | `value[2]` | soglia di batteria, mV, sotto cui un nodo sveglio torna a dormire da solo |
+  | `name` | nome |
+  | `battery_mv` | **16 bit di flag**: in un COMMAND il campo è libero |
+
+  Con revisione uguale a quella applicata, la risposta vale *«niente»*.
+
+**Un nodo che manda richieste dichiara da sé di saperle gestire.** L'hub
+mostra il pannello di configurazione solo per i nodi che ne hanno mandata
+almeno una; per il nodo camera o per un firmware vecchio scrive *«firmware
+senza configurazione remota»*, invece di accodare comandi che nessuno leggerà.
+
+**Cosa si configura** (deciso il 2026-10-11):
+
+| | tipo | note |
+|---|---|---|
+| durata del sonno | stato | clamp sul nodo, sempre (`INTERVALLO_MIN_S`/`MAX_S`) |
+| ogni quanti risvegli chiedere (N) | stato | tetto stretto: sbagliarlo si paga N cicli prima di poterlo correggere |
+| **sveglio / in deep sleep** | stato | è `s_sleepOn`, che **esiste già** in NVS (la modalità del nodo a muro). *Svegliati* = `sleep=false`, *torna a dormire* = `sleep=true` |
+| nome | stato | sposta anche gli storici su SD, vedi sotto |
+| riavvia | azione | via d'uscita da uno stato strano senza andarci di persona |
+| azzera contatori diagnostici | azione | risvegli, consegne, scansioni del canale: dopo un esperimento, senza power-cycle |
+| dissociati | azione | chiude la voce 36 del backlog: oggi *Dimentica* lascia il nodo convinto di essere associato |
+
+Gli **stati** viaggiano sempre tutti insieme, quindi rimandarli non fa danni. Le
+**azioni** valgono una volta per revisione: un comando ripetuto non riavvia il
+nodo due volte.
+
+**Sveglio senza il limite dei 5 minuti — con una rete di sicurezza.** Da
+sveglio il nodo chiede a ogni DATA a costo zero (la radio è accesa comunque),
+quindi *torna a dormire* arriva entro un intervallo. Ma sveglio col WiFi sono
+~70 mA: la cella da 1500 mAh dura **~21 ore**, e dimenticarselo acceso un
+pomeriggio costa una fetta grossa di carica. Quindi **nessun limite di tempo,
+ma uno di carica**: sotto la soglia di `value[2]` il nodo torna a dormire da
+solo (solo dove c'è il partitore, `BATTERY_ADC_ENABLED`), e la pagina dell'hub
+mostra *«sveglio da 3 h 20 min, ~230 mAh consumati»*.
+
+**L'altitudine è stata tolta dall'elenco, e il motivo è nel codice.** Il nodo
+manda la pressione **alla stazione** (`hub_link.cpp:168`); la riduzione al
+livello del mare la fa l'hub con **una sola altitudine per tutti**
+(`remote_nodes.cpp:189`). Quella del nodo serve solo alla sua pagina, cioè al
+trend a 3 ore che a sonno acceso resta vuoto comunque (voce 37 del backlog).
+Quella che manca davvero è **un'altitudine per nodo sull'hub** — il commento in
+`remote_nodes.cpp:308` la prevede già — ed è un'impostazione dell'hub, non un
+comando: funziona anche coi nodi che non verranno mai aggiornati.
+
+**Rinomina con lo spostamento degli storici** (era la voce 13, ferma per due
+casi che con il rinomina *partito dall'hub* diventano gestibili):
+
+- **quando**: l'hub sa quale nome ha chiesto e a quale MAC, quindi sposta la
+  cartella **all'arrivo del primo DATA di quel MAC col nome nuovo, prima di
+  loggarlo**. Nessuna riga finisce nella cartella sbagliata, neanche per un
+  giro (l'ordine nel risveglio è DATA → richiesta → COMMAND: il nome nuovo si
+  vede solo dal risveglio dopo);
+- **destinazione già esistente** (nome riciclato): si fondono i file giorno per
+  giorno, senza sovrascrivere;
+- **SD assente** in quel momento: lo spostamento resta in coda in NVS e si fa
+  al prossimo montaggio;
+- **le pagine del pannello legate al nome** (voce 35) si aggiornano nello
+  stesso istante, o il pannello scrive «NODO NON IN ELENCO».
+
+**Le regole del progetto di agosto che restano**, più due nuove:
+
+1. **Il nodo non si fida del numero che riceve**: clamp sempre, lato nodo.
+2. **Revisione monotona in NVS sul nodo**: un COMMAND con revisione minore o
+   uguale all'ultima applicata si scarta (voce 36, Proposte 4.5).
+3. **NVS si scrive solo se cambia**: il *«niente»* non costa cicli di
+   cancellazione.
+4. **Le fasce orarie restano tutte sull'hub**, che ha l'ora vera, e sono un
+   secondo passo che non tocca il firmware del nodo.
+5. **Hub assente**: il nodo tiene l'ultima configurazione e continua. *(nuova)*
+   Una richiesta andata in timeout allunga l'attesa prima della successiva
+   (backoff), così un hub bloccato non costa batteria a ogni ciclo.
+6. **Chi comanda** *(nuova)*: la richiesta porta i valori **in vigore** sul
+   nodo. Se sull'hub non c'è niente in coda, l'hub li **adotta** — anche quelli
+   cambiati dalla pagina del nodo durante una veglia; se c'è qualcosa in coda,
+   vince l'hub. Due padroni senza conflitto: ultima scrittura vince.
+7. **Callback cortissimi da entrambe le parti.** Sul nodo, `hub_link.cpp:25`
+   oggi scarta tutto ciò che non è WELCOME: va accettato anche il COMMAND,
+   copiandolo e basta. Sull'hub la richiesta **non può** arrivare per
+   callback: `remote_nodes.cpp` non registra `Link_OnMessage()`, *polla* —
+   quindi la libreria deve tenerla per peer, come fa col `welcomePending`, e
+   lo sketch prelevarla da `remote_loop()`. La risposta parte da lì, **mai** dal
+   callback, e con **un tentativo solo**: i 3 di `sendReliable()` sono fino a
+   900 ms bloccanti col WebServer sincrono, e se il nodo non sente la risposta
+   richiederà comunque al giro dopo.
+
+**Comandi valutati e lasciati fuori:**
+
+- **altitudine sul nodo**: vedi sopra, è un'impostazione dell'hub;
+- **correzione (offset) per nodo**: utile — i due BMP280 differiscono di
+  1,265 hPa, misurato il 26/08 — ma **sull'hub**, dove i dati arrivano, così
+  vale anche per lo storico;
+- **risparmio automatico** (sotto una tensione, intervallo più lungo): utile,
+  ma è l'hub che decide e manda un comando normale. Nessun firmware nuovo;
+- **credenziali WiFi via ESP-NOW**: viaggerebbero in chiaro. Per cambiare WiFi
+  si passa da *svegliati* + pagina/OTA, come oggi;
+- **canale radio**: il nodo lo trova da solo (`hub_scan_channels()`, Fase 9);
+  imporglielo aggiungerebbe solo un modo nuovo di perderlo;
+- **«rispondi subito»**: un nodo che dorme non si raggiunge. L'urgenza resta il
+  power-cycle, o un N piccolo deciso prima.
+
+**Rapporto con la voce 24 del backlog** (`LINK_MSG_STATUS`): la richiesta ne
+porta già una parte (intervallo, N, revisione, batteria), ma non firmware,
+`boot_count` e contatori — tre float non bastano. La voce 24 resta separata.
+
+**Ordine di lavoro:**
+
+1. `EspNowLink`: `LINK_MSG_CONFIG_REQ`, `Link_Node_RequestConfig()`, la
+   richiesta tenuta per peer sull'hub e un modo di prelevarla; risposta con
+   tentativo singolo. Ricompilare anche `starters/XIAO_S3_Camera/` per
+   verificare che per lui non cambi niente.
+2. Nodo: richiesta + attesa con uscita alla risposta, **N = 1 e nessuna
+   configurazione applicata**: solo la misura della latenza, qualche giorno di
+   dati per sapere cosa costa davvero.
+3. Hub: coda per MAC, risposta, adozione dei valori del nodo, sezione nella
+   pagina del nodo con lo stato vero (*«in coda — il nodo chiede fra ~12
+   minuti»*, poi *«applicata alle 14:32»*).
+4. Nodo: applicazione dei valori, revisione in NVS, sveglio/sonno con la soglia
+   di batteria, le tre azioni.
+5. Hub: rinomina con spostamento degli storici, altitudine per nodo.
+6. Più avanti, se servono: fasce orarie e risparmio automatico, solo sull'hub.
 
 ### Fase 8 — l'orologio senza internet (idea del 2026-08-25, nulla di fatto)
 

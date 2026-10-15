@@ -547,7 +547,8 @@ resta come rete, o si sposterebbe il punto di rottura invece di toglierlo.
 Rinominare un nodo fa scrivere al pannello «NODO NON IN ELENCO» con una
 spiegazione falsa. `param` è `char[24]`: un MAC testuale (17+1) **ci sta**, il
 blob NVS non va toccato. In alternativa una `remote_on_rename()`, che serve
-comunque alla voce 13.
+comunque alla voce 13. **Dal 2026-10-11** il rinomina dall'hub (voce 11) deve
+aggiornare queste pagine nello stesso istante in cui sposta la cartella.
 
 ### 36. Prima dei COMMAND, la numerazione anti-doppione
 Nota da fissare *prima* di scrivere la voce 11: un comando accettato senza
@@ -557,6 +558,8 @@ andarci di persona. Un contatore monotono in NVS sul nodo copre il caso facile
 non protegge l'HELLO, perché il broadcast ESP-NOW non si può cifrare. E
 «dimentica nodo» dovrebbe accodare una **dissociazione**, o il nodo resta
 convinto di essere associato (oggi serve un power-cycle).
+**Dal 2026-10-11 entrambe le cose sono dentro la voce 11**: la revisione è il
+`seq` del COMMAND, salvata in NVS sul nodo, e *dissociati* è uno dei flag.
 
 ### 37. La pagina del nodo promette uno storico che a sonno acceso non arriva
 Con il deep sleep la RAM si azzera 288 volte al giorno, quindi i tre grafici a
@@ -600,11 +603,27 @@ riceve **al suo prossimo risveglio**.
 **Perché qui**: oggi per cambiare quel numero bisogna staccare la batteria,
 aspettare la finestra di veglia e usare la pagina del nodo — cioè l'unica cosa
 che il deep sleep rende difficile è proprio configurarlo.
-**Stato**: era rimandata *"a dopo `MeteoHub_S3`"* perché la UI doveva vivere
-sull'hub vero. **Quell'hub adesso esiste**: la voce è sbloccata.
+**Stato**: **progettata di nuovo il 2026-10-11**, pronta da implementare,
+in attesa del via. Il progetto completo è in `docs/Stazione-Meteo.md`, Fase 7,
+sezione *«Revisione del 2026-10-11»*.
+**Il meccanismo**: niente finestra fissa. Ogni N risvegli il nodo, dopo il DATA,
+manda una **richiesta** (`LINK_MSG_CONFIG_REQ`, tipo nuovo, struct invariata);
+l'hub **risponde sempre** con un COMMAND — la configurazione, o *«niente»* — e il
+nodo dorme appena l'ha ricevuto. Si paga la latenza dell'hub (~30 ms stimati,
+**da misurare per primo**: ~+3 % di carica a richiesta ogni ciclo, ~+1 % ogni
+tre) invece dei 300 ms fissi del progetto di agosto (+34 %).
+**Cosa si configura**: durata del sonno, N, sveglio/deep sleep (è `s_sleepOn`,
+esiste già; sveglio senza limite di tempo ma con una **soglia di batteria** che
+lo rimanda a dormire), nome (con spostamento degli storici: voce 13), e le
+azioni riavvia, azzera contatori, dissociati (voce 36). **Non** l'altitudine:
+il nodo manda la pressione alla stazione e la riduzione la fa l'hub, quindi
+serve un'altitudine per nodo **sull'hub**, che è un'altra cosa.
 **Attenzione**: l'ACK di ESP-NOW **non** può portare la configurazione — è di
-livello MAC e dice solo consegnato/non consegnato. Serve un COMMAND separato,
-con il nodo che resta in ascolto una finestra dopo il proprio DATA.
+livello MAC e dice solo consegnato/non consegnato. E l'hub non può rispondere
+dal callback di ricezione: la richiesta va tenuta per peer nella libreria e
+prelevata da `remote_loop()`, con un tentativo solo.
+**Costo**: medio-alto. Tocca `EspNowLink` (condivisa con tutti i nodi), il
+firmware del nodo e la UI dell'hub; sei passi, elencati nella revisione.
 
 ### 12. Rollup e decimazione per la web UI di `EnvNode_C3` (2026-08-09)
 **Cosa**: (a) una riga per giorno con min/media/max, così lo storico
@@ -626,6 +645,11 @@ agganciata a `SD.rename()` nel `.ino`.
 la cartella di destinazione che **esiste già** (nome riciclato: i due storici
 andrebbero fusi, non sovrascritti) e la **SD assente** proprio in quel momento,
 che lascerebbe il rinominare a metà.
+**Aggiornamento 2026-10-11**: diventa parte della voce 11. Con il rinomina
+partito dall'hub entrambi i casi hanno una risposta — fusione giorno per giorno,
+spostamento in coda in NVS fino al prossimo montaggio — e il momento giusto è
+noto: all'arrivo del primo DATA di quel MAC col nome nuovo, **prima** di
+loggarlo. Dettagli nella revisione della Fase 7.
 
 ### 14. Il partitore della batteria (hardware) — FATTA (2026-09-09, nodo `v19`)
 
@@ -695,6 +719,11 @@ premessa era.
 | **Calcolare le grandezze derivate sul nodo** | 2026-09-02 | Contraddice la scelta già motivata in `meteo_calc.h`: il nodo trasmette **misure**, e un errore di formula finirebbe nello storico su card per sempre. Sull'hub si ricalcola ad ogni disegno, e i CSV di ieri bastano a rifare i conti. |
 | **Alzare `NODI_VISIBILI` oltre 4** sul pannello | 2026-09-02 | Il limite non è il numero ma il corpo del carattere: da tre nodi in su si passa già al blocco compatto, e a cinque il pannello smetterebbe di leggersi da tre metri — che è la distanza a cui la pagina funziona. Per più nodi ci sono già la pagina dettaglio e la rotazione. |
 | **Cifrare ESP-NOW adesso** (PMK + LMK) | 2026-09-02 | Fattibile — una LMK condivisa sta dentro il limite di sei del chip — ma il **broadcast non si può cifrare**, quindi l'HELLO resta in chiaro e la fase scoperta resta scoperta. Ha senso solo insieme ai COMMAND, e anche allora **dopo** la numerazione anti-doppione (voce 36), che copre il caso facile a un centesimo del costo. In più una chiave finita per sbaglio in un commit va cambiata su tutti i nodi: un OTA ciascuno più un power-cycle per quelli a batteria. |
+| **Nodo in ascolto a finestra fissa**, con l'hub che rimanda il comando dopo ogni DATA (progetto di agosto della voce 11) | 2026-10-11 | La finestra si paga intera anche quando non c'è niente (quasi sempre), l'hub trasmette a vuoto su nodi che dormono già, e la conferma arriva solo dalla cadenza osservata. Sostituito da *richiesta del nodo + risposta sempre*, che costa la latenza dell'hub invece di un timeout. |
+| **Configurare l'altitudine sul nodo** dall'hub | 2026-10-11 | Il nodo manda la pressione alla stazione; il livello del mare lo calcola l'hub con la propria altitudine. Quella del nodo serve solo alla sua pagina. Serve invece un'**altitudine per nodo sull'hub**, che vale anche per i nodi mai aggiornati. |
+| **Credenziali WiFi via ESP-NOW** | 2026-10-11 | Viaggerebbero in chiaro (ESP-NOW non è cifrato, voce 36). Per cambiare WiFi: *svegliati* dall'hub, poi pagina del nodo/OTA. |
+| **Imporre il canale radio a un nodo** | 2026-10-11 | Lo trova già da solo (`hub_scan_channels()`, Fase 9). Un canale imposto aggiunge solo un modo nuovo di perderlo. |
+| **Offset di calibrazione e risparmio automatico come comandi al nodo** | 2026-10-11 | Utili, ma **sull'hub**: l'offset dove arrivano i dati (vale anche per lo storico), il risparmio come decisione dell'hub tradotta in un normale cambio di intervallo. Nessun firmware nuovo. |
 
 ---
 
