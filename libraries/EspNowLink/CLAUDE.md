@@ -283,6 +283,12 @@ dava la cosa per fatta, ed è per questo che nessuno l'ha cercata.
   3584 (`0x0E00`), e la pressione è quella del campione prima. L'hub ha
   contato **255 persi e un riavvio** che non erano mai successi, e
   `seq_assurdi` è rimasto a zero, perché un salto di 256 è plausibile.
+  **Quella riga è ancora nel CSV sulla card** (riga 70 di
+  `MeteoEsp32_2026-10-15.csv`, `seq` 3839): l'hub non permette di modificare i
+  CSV via rete, e il danno è sotto il rumore (un campione in più nella
+  completezza del 15/10, pressione dentro l'intervallo vero). Chi analizza quel
+  giorno la scarti; se si sfila la card per altro, si toglie e si lancia
+  `POST /api/nodi/riepilogo/rifai`.
 - **Il segnale da riconoscere**: un salto di `seq` seguito subito da un ritorno
   indietro, con il nodo che **non** si è riavviato (`boot_count` e `uptime`
   sul nodo invariati). Un nodo che riparte davvero torna a numeri piccoli.
