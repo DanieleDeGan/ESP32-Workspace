@@ -183,7 +183,14 @@
 // immagini le ripetizioni si vedevano -- paradosso del compleanno, non un
 // generatore rotto. Il giro e' un seme in NVS piu' il nome dell'ultima uscita:
 // nessun elenco di "gia' viste", niente che cresca, e un OTA non lo azzera.
-static const char FW_VERSION[] = "v80";
+// v81 (2026-10-15) — nessuna riga di questo sketch: e' EspNowLink. L'ultimo
+// DATA di un nodo si poteva leggere A META' SCRITTURA, perche' il task della
+// radio lo copiava fuori dal lock che Link_Hub_GetPeerInfo() prende per
+// leggerlo. Il 15/10 alle 05:43:30 ne e' uscito da MeteoEsp32 un seq 3839,
+// fatto del byte basso del 3583 e di quello alto del 3584: una riga in piu'
+// nel CSV, con la pressione del campione prima, 255 "persi" e un "riavvio"
+// che non erano mai successi. Vedi LinkPeer::onReceive().
+static const char FW_VERSION[] = "v81";
 
 // ---------------------------------------------------------------------------
 // Hub ESP-NOW

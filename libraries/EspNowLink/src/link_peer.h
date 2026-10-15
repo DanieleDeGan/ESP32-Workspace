@@ -31,6 +31,14 @@ extern char g_link_self_name[LINK_NAME_LEN];
  *  posto della costante ESPNOW_LINK_CHANNEL quando si crea un LinkPeer. */
 extern uint8_t g_link_channel;
 
+/** Il lock del registro dei peer, e anche dei CAMPI di ogni peer che
+ *  onReceive() scrive dal task del driver WiFi (nodeType, name, lastSeenMs,
+ *  lastData, hasData, welcomePending). Vive qui e non in link_hub.cpp perche'
+ *  chi scrive quei campi e' LinkPeer: con un lock solo dalla parte di chi
+ *  legge, la copia di lastData si poteva leggere a meta' scrittura — vedi
+ *  LinkPeer::onReceive(). */
+extern portMUX_TYPE g_link_registry_mux;
+
 /** Setup specifico di ruolo, chiamato una sola volta da Link_Init() in base
  *  a g_link_self_type (implementati in link_node.cpp / link_hub.cpp). */
 void link_node_start(void);

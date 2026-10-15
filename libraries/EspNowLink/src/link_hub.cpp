@@ -26,7 +26,9 @@
 static LinkPeer *s_peers[ESPNOW_LINK_MAX_PEERS] = {nullptr};
 static int s_peer_count = 0;
 static volatile bool s_pairing_mode = false;
-static portMUX_TYPE s_registry_mux = portMUX_INITIALIZER_UNLOCKED;
+// Il lock e' definito in link_peer.cpp, perche' deve prenderlo anche
+// LinkPeer::onReceive() quando scrive i campi del peer (vedi link_peer.h).
+static portMUX_TYPE &s_registry_mux = g_link_registry_mux;
 
 // Cestino dei peer dimenticati: NON si fa delete subito (vedi
 // Link_Hub_ForgetPeer), si libera al giro dopo da Link_Hub_Poll().

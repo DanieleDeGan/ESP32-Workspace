@@ -271,6 +271,25 @@ nell'uso normale:
   `name` con un NUL — nell'unico punto da cui ogni messaggio passa, cosi' vale
   anche per il codice applicativo che verra' scritto dopo.
 
+**Il lock del registro valeva solo da una parte** (corretto il 2026-10-15,
+hub `v81`). `Link_Hub_GetPeerInfo()` leggeva `lastData` dentro
+`s_registry_mux`, ma `LinkPeer::onReceive()` — che gira sul task del driver
+WiFi, cioè sull'altro core — lo scriveva **fuori**: un lock preso da chi legge
+e non da chi scrive non esclude niente. Il commento in `remote_nodes.cpp`
+dava la cosa per fatta, ed è per questo che nessuno l'ha cercata.
+- **Come si è visto**: nei dati, non nel codice. Il 15/10 alle 05:43:30 il CSV
+  di `MeteoEsp32` ha **due righe nello stesso secondo**: `seq` 3839 e poi 3584.
+  3839 è `0x0EFF`, cioè il byte basso del 3583 (`0x0DFF`) e quello alto del
+  3584 (`0x0E00`), e la pressione è quella del campione prima. L'hub ha
+  contato **255 persi e un riavvio** che non erano mai successi, e
+  `seq_assurdi` è rimasto a zero, perché un salto di 256 è plausibile.
+- **Il segnale da riconoscere**: un salto di `seq` seguito subito da un ritorno
+  indietro, con il nodo che **non** si è riavviato (`boot_count` e `uptime`
+  sul nodo invariati). Un nodo che riparte davvero torna a numeri piccoli.
+- **Ora il lock è uno solo, `g_link_registry_mux` in `link_peer.cpp`**, preso
+  da entrambe le parti per tutti i campi del peer che la radio aggiorna. Dentro
+  ci sono solo copie di pochi byte; la callback dell'app resta fuori.
+
 **Limite noto**: l'unicast ESP-NOW tra un hub ESP32-S3 e un nodo ESP32
 "classico" (Xtensa D0WD) è risultato inaffidabile/lento ad associarsi su
 hardware reale (broadcast sempre ok, WELCOME/unicast spesso perso), coerente

@@ -10,6 +10,7 @@
 link_node_type_t g_link_self_type = LINK_NODE_UNKNOWN;
 char g_link_self_name[LINK_NAME_LEN] = {0};
 uint8_t g_link_channel = ESPNOW_LINK_CHANNEL;
+portMUX_TYPE g_link_registry_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static Link_MessageCb s_message_cb = nullptr;
 
@@ -110,6 +111,19 @@ void LinkPeer::onReceive(const uint8_t *data, size_t len, bool broadcast)
     if (!link_parse_message(data, (int)len, &msg)) {
         return;   // scarta traffico non nostro (altro protocollo/versione sullo stesso canale)
     }
+    // Tutto quello che segue si scrive SOTTO il lock del registro, lo stesso
+    // che Link_Hub_GetPeerInfo() prende per leggere. Questa funzione gira sul
+    // task del driver WiFi, il lettore su loop(), e su un chip dual-core sono
+    // due core che vanno davvero in parallelo: un lock preso da una parte
+    // sola non esclude niente. Trovato sui dati il 2026-10-15: alle 05:43:30
+    // l'hub ha registrato da MeteoEsp32 un DATA con seq 3839 (0x0EFF), cioe'
+    // il byte basso del 3583 (0x0DFF) e quello alto del 3584 (0x0E00), con la
+    // pressione del campione vecchio — e subito dopo il 3584 pulito. Una
+    // copia di lastData letta mentre questa la stava riscrivendo, che l'hub
+    // ha contato come 255 pacchetti persi e un riavvio del nodo.
+    //
+    // Nel lock solo copie di pochi byte: niente callback, niente driver.
+    portENTER_CRITICAL(&g_link_registry_mux);
     lastSeenMs = millis();
 
     // Nome e tipo si aggiornano ad OGNI messaggio, non solo al primo: sono
@@ -139,6 +153,10 @@ void LinkPeer::onReceive(const uint8_t *data, size_t len, bool broadcast)
         // altrimenti hub_on_new_peer per un MAC gia' registrato).
         welcomePending = true;
     }
+    portEXIT_CRITICAL(&g_link_registry_mux);
+
+    // Fuori dal lock: la callback dell'app e' codice di altri, e la copia che
+    // riceve (msg) e' locale, quindi non ha bisogno di protezione.
     link_notify_app(addr(), &msg);
 }
 
